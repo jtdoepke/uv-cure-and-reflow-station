@@ -14,7 +14,9 @@ Anything that `#include`s `LovyanGFX.hpp` cannot compile for the native target (
   the `IDisplay`/`ITouch` ports (`lib/display_port/`); tests inject fakes from
   `test/helpers/fake_touch.h`. `lib/app_logic/tap_counter.h` is the pattern to copy.
 - **New UI** → `lib/ui_logic/`, tested in `test/test_ui/` on LVGL's headless dummy display.
-  `lib/ui_logic/main_ui.cpp` + `test/test_ui/test_main_ui.cpp` are the pattern to copy.
+  `lib/ui_logic/main_ui.cpp` + `test/test_ui/test_main_ui.cpp` are the pattern to copy. How
+  to structure UI state so it stays testable (view models owning `lv_subject_t`, subjects
+  as the UI/app boundary): the **ui-development** skill's `references/architecture.md`.
 - **Only the firmware adapter** (`src/main.cpp`, `include/LGFX_CYD2USB.hpp`) touches LGFX.
 
 If a native build errors on ESP-IDF/Arduino/SPI headers, a LovyanGFX include leaked past
@@ -31,7 +33,7 @@ library's own `platformio.ini`).
 |---|---|---|
 | `pio test -e native_logic` | pure logic vs fakes, host GCC | `lib_ignore = LovyanGFX lvgl`; ArduinoFake available (`lib_compat_mode = off`, `gnu++17`) |
 | `pio test -e native_ui` | LVGL 9.5 headless (`LV_USE_TEST=1`), real `lib/ui_logic` widgets, simulated input | `lib_ignore = LovyanGFX` |
-| `pio test -e embedded` | on the real board via Micro-USB: `gfx.init()`, geometry, brightness, heap, human-in-the-loop touch | needs hardware; not run in CI |
+| `pio test -e embedded` | on the real board via Micro-USB: `gfx.init()`, geometry, brightness, heap, human-in-the-loop touch | suite: `test/test_embedded_hw/`; needs hardware; not run in CI |
 
 `make test` = the two native envs; CI (`.github/workflows/ci.yml`) runs those plus a
 `pio run -e esp32dev` compile-check on every push. Nothing under `.pio/` is ever edited —

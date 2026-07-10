@@ -66,8 +66,9 @@ instead of re-deriving:
 - CI lint failures, fresh-clone toolchain setup (mise/pre-commit), `make tidy`,
   clang-format version bumps → **lint-format-toolchain**
 - Designing screens (touch targets, colors, safety confirmations), seeing/iterating on
-  the rendered UI, simulator screenshots, on-device screenshot + touch injection →
-  **ui-development**
+  the rendered UI, simulator screenshots, on-device screenshot + touch injection,
+  structuring UI code (view models, `lv_subject_t` bindings, styles/themes, LVGL
+  callbacks in C++) → **ui-development**
 
 ## Pointers
 

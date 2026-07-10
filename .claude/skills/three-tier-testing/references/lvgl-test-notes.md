@@ -58,6 +58,21 @@ For oven-controller screens, model widget state as `lv_subject_t` values
 (`lv_subject_init_int` / `lv_subject_set_int`) and bind widgets with `lv_label_bind_text`,
 `lv_slider_bind_value`, `lv_obj_bind_flag_if_eq`. Screen-transition logic then tests as
 plain subject reads/writes — no clicking simulation needed for state-machine coverage.
+Testing implications:
+
+- **Test view models and app logic, never pixels.** A transition like "start pressed
+  while door open → state = FAULT" is a pure function of subject values and fully
+  assertable with `lv_subject_get_int()` after calling the intent method.
+- **Don't mock LVGL — link it headless.** Subjects are LVGL types; the `native_ui` env
+  already compiles real LVGL for the host, which is the approach LVGL's own CI uses.
+  Reserve input simulation (`lv_test_mouse_*`) for verifying that *bindings* wire a
+  widget to its subject; cover the state machine itself through subjects.
+- Wrap screen create/delete cycles with the memory-leak check above — dangling observers
+  show up as leaks (prefer `lv_subject_add_observer_obj`, which auto-unsubscribes when
+  its widget is deleted).
+
+The full architecture (view models, subjects as the only UI/app interface, callback
+trampolines, threading): the **ui-development** skill's `references/architecture.md`.
 
 ## SDL escalation path (deliberately not set up)
 

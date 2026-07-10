@@ -1,13 +1,15 @@
 ---
 name: ui-development
-description: This skill should be used when designing or iterating on UI screens for the oven controller — creating a new screen, choosing layout/colors/touch-target sizes, adding controls for heat or UV, "take a screenshot of the UI", "what does the screen look like", "click the button and show me", verifying layout/color/spacing changes after editing lib/ui_logic, or capturing screenshots / injecting touches on the physical board over WiFi. Not for writing UI unit tests (see three-tier-testing) or display hardware faults (see hardware-bringup).
+description: This skill should be used when designing or iterating on UI screens for the oven controller — creating a new screen, choosing layout/colors/touch-target sizes, adding controls for heat or UV, "take a screenshot of the UI", "what does the screen look like", "click the button and show me", verifying layout/color/spacing changes after editing lib/ui_logic, capturing screenshots / injecting touches on the physical board over WiFi, or structuring UI code — view models, lv_subject_t observer bindings, screen navigation, styles/themes, wiring LVGL event callbacks to C++. Not for writing UI unit tests (see three-tier-testing) or display hardware faults (see hardware-bringup).
 ---
 
 # UI Development: Iterate Visually, Design for Gloves
 
-Two halves: **the loop** (how to see and drive the UI while editing it) and **the design
+Three concerns: **the loop** (how to see and drive the UI while editing it), **the design
 rules** (what every screen must satisfy — this is a glove-operated hazardous machine, not
-a phone app). Check new/changed screens against the design rules before calling them done.
+a phone app), and **the code architecture** (how screens are structured so they stay
+host-testable). Check new/changed screens against the design rules before calling them
+done.
 
 ## The host loop (default — seconds per iteration, no hardware)
 
@@ -72,6 +74,26 @@ reference: `references/device-api.md`.
 - A screenshot proves rendering, not behavior — keep asserting behavior in
   `test/test_ui` (see three-tier-testing).
 
+## Code architecture (how screens are structured)
+
+Full patterns, code snippets, and this-board caveats: `references/architecture.md`. The
+load-bearing rules:
+
+- **MVVM via LVGL's Observer/Subject API.** App/domain logic in `lib/app_logic/` (no
+  `lv_` calls); view models own `lv_subject_t` state and expose intent methods; views
+  only build widget trees and call `lv_*_bind_*`. Subjects are **the only interface**
+  between UI and app logic, and the only globals (`extern` in one `subjects.h`).
+- **Events route through a captureless-lambda or templated trampoline** into view-model
+  methods (`user_data` carries `this` — it's consumed; per-widget payloads go through
+  subjects instead).
+- **LVGL is not thread-safe.** Arduino `loop()` is the single UI task; future FreeRTOS
+  tasks (heater, sensors, WiFi) never call `lv_*` — they marshal data into `loop()` via
+  queue/volatile (gateway pattern, as `src/ui_dev_tools.cpp` does for injected touch).
+- **Shared `static lv_style_t` + design tokens** for theming; styles must outlive every
+  widget referencing them; `LV_STYLE_CONST_INIT` keeps fixed styles in flash.
+- **Screens: create-on-demand, state in subjects** (a recreated screen re-reads current
+  state), delete on leave — this board has no PSRAM to hoard screens in.
+
 ## Design rules (pass/fail for every screen)
 
 Physical reality: 2.8″ 320×240 resistive panel ≈ **0.18 mm/px (5.6 px/mm)**, operated
@@ -114,7 +136,7 @@ standards, and patterns: `references/design-guide.md`. The hard rules:
 
 ## When NOT to use this skill
 
-- Writing or debugging UI unit tests, or deciding where new code lives →
-  **three-tier-testing**.
+- Writing or debugging UI unit tests, deciding which test tier covers new code, or a
+  native build failing on ESP-IDF/Arduino headers → **three-tier-testing**.
 - Blank/garbled screen, wrong colors on glass, dead touch → **hardware-bringup**.
 - Editor false errors in firmware code → **clangd-xtensa-setup**.
