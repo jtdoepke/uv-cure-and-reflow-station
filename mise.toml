@@ -12,7 +12,13 @@
 # clang-tidy is local/advisory only (`make tidy`); the tidy wheel ships fewer patch releases,
 # so 20.1.0 is the nearest to clang-format 20.1.8 — the exact patch need not match (they're
 # independent tools).
+#
+# platformio ships the `pio` build CLI; left unpinned to track CI, which installs it with
+# `pip install --upgrade platformio` (.github/workflows/ci.yml). PlatformIO pins its own
+# toolchains/platforms in platformio.ini, so the Core version here isn't the reproducibility
+# lever the clang pins are.
 [tools]
 uv = "latest"
 "pipx:clang-format" = "20.1.8"
 "pipx:clang-tidy" = "20.1.0"
+"pipx:platformio" = "latest"

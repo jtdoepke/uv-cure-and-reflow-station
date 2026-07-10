@@ -37,9 +37,9 @@ touch-counting UI. Verified working end-to-end on hardware. Display/touch config
 
 ## Commands
 
-PlatformIO is the build system; if `pio` isn't on PATH, use `~/.platformio/penv/bin/pio`.
-The firmware env is `esp32dev` (the `pio run` default). The `Makefile` wraps common
-invocations (`make help` lists them).
+PlatformIO is the build system; `pio` is expected on PATH (mise provides it — see
+`mise.toml`; run `mise install` on a fresh clone). The firmware env is `esp32dev` (the
+`pio run` default). The `Makefile` wraps common invocations (`make help` lists them).
 
 - Build: `pio run` (or `make build`)
 - Upload + monitor: `pio run -t upload -t monitor` (115200 baud)
