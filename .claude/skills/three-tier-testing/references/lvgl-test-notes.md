@@ -48,7 +48,9 @@ whole-app stress runs, LVGL's own threshold is "< 100 bytes permanent leak is no
 `lv_test_screenshot_compare("ref.png")` needs `LV_USE_TEST_SCREENSHOT_COMPARE=1` +
 `LV_USE_LODEPNG` + 32-bit color and allocates a few MB with standard malloc — a
 desktop-only technique, currently off in `include/lv_conf.h`. Enable only if pixel-level
-regressions become a real problem.
+regressions become a real problem. For *visual inspection* (rendering the UI to a PNG to
+look at, not regression-compare), use the `native_sim` simulator instead — see the
+**ui-development** skill.
 
 ## Observer/Subject pattern (for future screens)
 
@@ -63,4 +65,6 @@ LovyanGFX ships an SDL desktop backend (`Panel_sdl`, `#define LGFX_SDL`) that co
 real pixels on the host and exercise the actual flush path. It needs SDL2, a display server
 (or `xvfb-run`/`SDL_VIDEODRIVER=dummy` in CI), and a harness around its blocking
 main-thread event loop. **Escalation trigger:** only build such an env if UI regressions
-(color/layout bugs visible on glass) repeatedly slip past the dummy-display tests.
+(color/layout bugs visible on glass) repeatedly slip past the dummy-display tests. Note
+the cheaper escalations that already exist in the **ui-development** skill: the
+`native_sim` PNG simulator (host, headless) and the on-device screenshot/touch API.

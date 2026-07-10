@@ -44,6 +44,10 @@ PlatformIO is the build system; `pio` is expected on PATH (mise provides it — 
 - Build: `pio run` (or `make build`)
 - Upload + monitor: `pio run -t upload -t monitor` (115200 baud)
 - Host tests: `make test` == `pio test -e native_logic -e native_ui`
+- See the UI / simulate clicks: `make sim-shot ARGS="click 160 120"` → Read
+  `.pio/sim/ui.png` (details → ui-development skill)
+- Screenshot/touch the physical board over WiFi: `make dev-flash`, then
+  `make dev-shot IP=<ip>` / `make dev-touch IP=<ip> X=160 Y=120` (→ ui-development skill)
 - Clean (if an `lv_conf.h` edit seems ignored): `pio run -t clean`
 - Lint: `make lint` before committing — CI (`.github/workflows/ci.yml`) runs the same
   hooks plus the native tests and a firmware compile-check.
@@ -61,6 +65,9 @@ instead of re-deriving:
   `make compiledb` → **clangd-xtensa-setup**
 - CI lint failures, fresh-clone toolchain setup (mise/pre-commit), `make tidy`,
   clang-format version bumps → **lint-format-toolchain**
+- Designing screens (touch targets, colors, safety confirmations), seeing/iterating on
+  the rendered UI, simulator screenshots, on-device screenshot + touch injection →
+  **ui-development**
 
 ## Pointers
 
