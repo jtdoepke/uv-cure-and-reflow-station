@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(include/secrets.h)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_input.path // \"\"' | grep -q 'include/secrets\\.h$' && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"include/secrets.h holds WiFi credentials and must never be read\"}}' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
