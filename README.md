@@ -36,6 +36,7 @@ UI, or any connection to the oven's electrics. See the [Roadmap](#roadmap).
 ## Hardware
 
 ### Controller — ESP32-2432S028 "Cheap Yellow Display" (dual-USB v3)
+
 - ESP32-WROOM-32 (no PSRAM), 320×240 **ST7789** SPI TFT, **XPT2046** resistive touch.
 - This is the "7789" v3 board (Micro-USB **and** USB-C ports). Flash over the **Micro-USB**
   port — the USB-C port lacks CC resistors and won't enumerate on many hosts.
@@ -43,11 +44,13 @@ UI, or any connection to the oven's electrics. See the [Roadmap](#roadmap).
   [`include/LGFX_CYD2USB.hpp`](include/LGFX_CYD2USB.hpp).
 
 ### The oven (donor appliance)
+
 - A microwave / air-fryer combo. The **microwave magnetron is not used** and should be
   removed/disconnected — only the **resistive heating element(s)** and fan are reused for
   reflow. The original control board and keypad are removed and replaced by the CYD.
 
 ### Planned control electronics (not yet designed/wired)
+
 | Function | Likely part | Notes |
 |----------|-------------|-------|
 | Switch heating element | Solid-state relay (SSR) sized for the element's current | Zero-cross SSR; drive from a CYD GPIO |
@@ -91,9 +94,22 @@ pio test -e embedded       # on the real CYD: display/touch/heap checks (Micro-U
 The two native suites (plus a firmware compile-check) also run in CI on every push
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
+### Formatting & linting
+
+Code is auto-formatted with clang-format and checked by pre-commit (whitespace, YAML,
+Markdown); CI enforces both. One-time setup:
+
+```bash
+pip install pre-commit && pre-commit install   # or: make hooks
+mise install                                    # provides the pinned clang-format
+```
+
+Then `make format` formats C++ and `make lint` runs every check. See the **Linting &
+formatting** section of [`CLAUDE.md`](CLAUDE.md) for details.
+
 ## Project structure
 
-```
+```text
 platformio.ini            PlatformIO config — esp32dev firmware + native/embedded test envs
 include/
   LGFX_CYD2USB.hpp        LovyanGFX display + touch configuration for this board

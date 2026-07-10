@@ -1,0 +1,5 @@
+# Vendored/near-upstream LVGL config — kept line-for-line comparable to LVGL's
+# lv_conf_template.h so LVGL upgrades stay diffable. Never reformat it.
+# (The pre-commit `exclude` regex is the authoritative guard; this covers editor-on-save
+# and direct `clang-format` invocations too. Honored by clang-format >= 18.)
+include/lv_conf.h

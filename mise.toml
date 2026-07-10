@@ -1,0 +1,18 @@
+# Tool versions for this project, managed by mise (https://mise.jdx.dev).
+#   mise install        # fetch the pinned tools (needs only mise on a fresh clone)
+#   mise exec -- clang-format --version
+#
+# clang-format / clang-tidy come from prebuilt PyPI wheels (LLVM binaries; the clang-format
+# wheel is the same artifact pre-commit's mirror wraps). mise installs them via its pipx
+# backend, which uses `uv`. uv is pinned here too so a fresh clone needs nothing but mise
+# itself (mise fetches uv as a static binary, then uv installs the wheels — no system
+# pipx/python/conda).
+#
+# Keep clang-format's version in sync with the clang-format rev in .pre-commit-config.yaml.
+# clang-tidy is local/advisory only (`make tidy`); the tidy wheel ships fewer patch releases,
+# so 20.1.0 is the nearest to clang-format 20.1.8 — the exact patch need not match (they're
+# independent tools).
+[tools]
+uv = "latest"
+"pipx:clang-format" = "20.1.8"
+"pipx:clang-tidy" = "20.1.0"

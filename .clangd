@@ -1,0 +1,32 @@
+# clangd config — makes VSCode's clangd linting (and clang-based tools) understand the
+# ESP32 Xtensa GCC build described by compile_commands.json (run `make compiledb` to (re)generate
+# it for the esp32dev firmware env). clangd is clang-based, so out of the box it:
+#   1. rejects Xtensa-only GCC flags  -> "unknown argument '-mlongcalls'" etc.
+#   2. mis-detects the target as the host (64-bit) -> pointer-size / static_assert errors in
+#      ESP-IDF headers, and falls into the RISC-V branch (riscv/rv_utils.h not found)
+#   3. can't find the toolchain's own system headers -> "machine/endian.h file not found"
+# This file fixes (1) and (2); `.vscode/settings.json`'s --query-driver fixes (3) by letting
+# clangd ask xtensa-esp32-elf-g++ for its builtin include paths.
+CompileFlags:
+  # (1) Strip Xtensa-only GCC flags mainline clang doesn't accept.
+  Remove:
+    - -mlongcalls
+    - -mtext-section-literals
+    - -mdisable-hardware-atomics
+    - -mfix-esp32-psram-cache-issue
+    - -mfix-esp32-psram-cache-strategy=*
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -freorder-blocks
+  Add:
+    # (2) Target the real 32-bit Xtensa (clang >= 19 / Espressif's esp-clang ships this target)
+    # so pointer sizes and struct static_asserts match, and force the Xtensa header branch.
+    # If clangd reports "unknown target 'xtensa'", your clangd build lacks Xtensa support —
+    # drop this line (flag errors still go away) or point clangd at Espressif's esp-clang.
+    - --target=xtensa
+    - -D__XTENSA__=1
+    # (3b) Drop clang's default *system* include dirs (host /usr/include) so it doesn't pull in
+    # host glibc (features.h -> gnu/stubs.h -> missing gnu/stubs-32.h, a fatal error that would
+    # truncate the LovyanGFX headers). clang's own builtins and the --query-driver newlib
+    # headers (.vscode/settings.json) are kept.
+    - -nostdlibinc

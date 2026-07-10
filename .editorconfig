@@ -1,0 +1,27 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{c,cpp,h,hpp}]
+max_line_length = 100
+
+# Vendored LVGL config — editors must leave its whitespace/EOF alone.
+[include/lv_conf.h]
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+# platformio.ini indents its build_flags/lib_deps continuation lines with TABS.
+[platformio.ini]
+indent_style = tab
+
+[*.md]
+trim_trailing_whitespace = false   # trailing 2 spaces = hard line break in Markdown
+
+[Makefile]
+indent_style = tab

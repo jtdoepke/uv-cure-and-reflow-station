@@ -1,0 +1,12 @@
+{
+  // clangd config for the ESP32 Xtensa build (works with .clangd at the repo root).
+  // The toolchain's system-include paths are baked into compile_commands.json by
+  // `make compiledb` (tools/clangd-inject-sysincludes.py), so no --query-driver is needed.
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}",
+    "--header-insertion=never",
+    "--background-index"
+  ],
+  // Let clangd own C/C++ linting; disable Microsoft IntelliSense so the two don't double-report.
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

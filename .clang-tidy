@@ -1,0 +1,16 @@
+---
+# Local/manual static analysis only — NOT run in pre-commit or CI (see CLAUDE.md).
+# Run with `make tidy` (regenerates compile_commands.json first). Findings are advisory.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  readability-else-after-return,
+  -bugprone-easily-swappable-parameters
+# Only surface diagnostics from our own code; skip Arduino/ESP32/LVGL/LovyanGFX headers.
+HeaderFilterRegex: '^(src|lib|include/LGFX_CYD2USB\.hpp|test)'
+WarningsAsErrors: ''
+FormatStyle: file
+---

@@ -1,0 +1,44 @@
+# Pre-commit hooks: C++ formatting + whitespace/YAML/Markdown hygiene.
+#   one-time setup:  pip install pre-commit && pre-commit install   (or `make hooks`)
+#   check manually:  pre-commit run --all-files                     (or `make lint`)
+# CI runs the same hooks (see .github/workflows/ci.yml). clang-tidy is NOT here by design
+# (it's local-only via `make tidy`).
+
+# Vendored/generated files that no hook should touch.
+exclude: '^(include/lv_conf\.h|get-platformio\.py|compile_commands\.json)$'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]   # keep intentional MD hard breaks
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-case-conflict
+
+  # Self-contained clang-format (ships its own binary — no mise needed for pre-commit).
+  # Keep this rev's version in sync with clang-format in mise.toml so `make format` and the
+  # hook produce identical output.
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v20.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yaml]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: [-c, .markdownlint.yaml]
