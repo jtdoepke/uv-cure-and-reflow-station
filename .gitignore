@@ -7,3 +7,6 @@
 # Build/tooling artifacts, not source
 compile_commands.json
 get-platformio.py
+
+# WiFi credentials for the esp32dev_uidev env (copy include/secrets.h.example)
+include/secrets.h

@@ -8,13 +8,18 @@
 #include <lvgl.h>
 #include "LGFX_CYD2USB.hpp"
 #include "main_ui.h" // UI construction lives in lib/ui_logic (host-testable)
+#if defined(UI_DEV_TOOLS)
+#include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_uidev env only)
+#endif
 
 static const uint16_t SCR_W = 320, SCR_H = 240; // landscape
 static LGFX gfx;
 
 // 1/10-screen partial draw buffer, RGB565 (2 bytes/pixel). This board has no PSRAM,
-// so never allocate a full-frame buffer.
-static uint8_t draw_buf[SCR_W * SCR_H / 10 * 2];
+// so never allocate a full-frame buffer. Heap-allocated in setup() rather than static:
+// the WiFi stack in the esp32dev_uidev env overflows the static DRAM segment otherwise.
+static constexpr size_t DRAW_BUF_BYTES = SCR_W * SCR_H / 10 * 2;
+static uint8_t *draw_buf = nullptr;
 static uint32_t last_tick = 0;
 
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -28,6 +33,15 @@ static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 }
 
 static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
+#if defined(UI_DEV_TOOLS)
+  int16_t sx, sy;
+  if (ui_dev_touch_get(&sx, &sy)) { // injected touch takes precedence over the panel
+    data->point.x = sx;
+    data->point.y = sy;
+    data->state = LV_INDEV_STATE_PRESSED;
+    return;
+  }
+#endif
   uint16_t x, y;
   if (gfx.getTouch(&x, &y)) { // getTouch() returns calibrated screen coords
     data->point.x = x;
@@ -42,6 +56,7 @@ static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
 // Confirms the panel works and colors are right BEFORE the UI loads:
 //   - a color shown as its photo-negative -> flip cfg.invert in LGFX_CYD2USB.hpp
 //   - RED renders as blue / BLUE as red    -> flip cfg.rgb_order
+#if !defined(UI_DEV_TOOLS) // skipped in the dev env: saves 3.2 s per flash-iterate cycle
 static void run_display_test() {
   lv_obj_t *scr = lv_screen_active();
   const uint32_t colors[] = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF};
@@ -58,6 +73,7 @@ static void run_display_test() {
   lv_obj_delete(lbl);
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
 }
+#endif // !UI_DEV_TOOLS
 
 void setup() {
   Serial.begin(115200);
@@ -68,17 +84,29 @@ void setup() {
 
   lv_init();
 
+  draw_buf = static_cast<uint8_t *>(malloc(DRAW_BUF_BYTES)); // internal DRAM (no PSRAM)
+  if (draw_buf == nullptr) {
+    Serial.println("FATAL: LVGL draw buffer allocation failed");
+    abort();
+  }
+
   lv_display_t *disp = lv_display_create(SCR_W, SCR_H);
   lv_display_set_flush_cb(disp, my_disp_flush);
-  lv_display_set_buffers(disp, draw_buf, nullptr, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, draw_buf, nullptr, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touch_read);
 
+#if !defined(UI_DEV_TOOLS)
   run_display_test();
+#endif
 
   create_main_ui(lv_screen_active());
+
+#if defined(UI_DEV_TOOLS)
+  ui_dev_tools_begin(gfx);
+#endif
 }
 
 void loop() {
@@ -86,5 +114,8 @@ void loop() {
   lv_tick_inc(now - last_tick);
   last_tick = now;
   lv_timer_handler();
+#if defined(UI_DEV_TOOLS)
+  ui_dev_tools_loop();
+#endif
   delay(5);
 }

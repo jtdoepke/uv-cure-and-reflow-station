@@ -1,5 +1,6 @@
 # Convenience wrappers. PlatformIO remains the source of truth for builds/tests.
-.PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot
+.PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot \
+	dev-flash dev-status dev-shot dev-touch
 .DEFAULT_GOAL := help
 
 help:      ## Show this help
@@ -57,3 +58,19 @@ sim:       ## Build the host UI simulator (env native_sim)
 sim-shot: sim  ## Render the UI to a PNG: make sim-shot ARGS="click 160 120 wait 300"
 	@mkdir -p $(dir $(SIM_OUT))
 	.pio/build/native_sim/program --out $(SIM_OUT) $(ARGS)
+
+# On-device UI dev loop (esp32dev_uidev env; board on Micro-USB, WiFi creds in
+# include/secrets.h — see the ui-development skill).
+DEV_OUT ?= .pio/sim/device.png
+
+dev-flash: ## Flash firmware + UI dev tools, then print the device IP
+	pio run -e esp32dev_uidev -t upload
+
+dev-status: ## Query device IP/status over serial (no flash)
+	pio run -e esp32dev_uidev -t status
+
+dev-shot:  ## Screenshot the physical display: make dev-shot IP=192.168.x.x
+	tools/cyd-shot.sh $(IP) $(DEV_OUT)
+
+dev-touch: ## Inject a touch on the device: make dev-touch IP=192.168.x.x X=160 Y=120
+	curl -sf "http://$(IP)/api/touch/simulate?x=$(X)&y=$(Y)" && echo
