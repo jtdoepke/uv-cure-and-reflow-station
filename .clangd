@@ -9,6 +9,8 @@
 # tools/clangd-inject-sysincludes.py to bake the toolchain's builtin include paths into
 # compile_commands.json as -isystem flags (clangd's --query-driver is not used — probing the
 # GCC driver fails because of the clang-only flags added below).
+# NOTE: tools/tidy-sanitize-compiledb.py mirrors the Remove/Add lists below so `make tidy`
+# can lint src/ with the same fixups (clang-tidy doesn't read this file) — keep them in sync.
 CompileFlags:
   # (1) Strip Xtensa-only GCC flags mainline clang doesn't accept.
   Remove:

@@ -28,15 +28,18 @@ compiledb: ## Regenerate compile_commands.json for clangd/IDE (esp32dev firmware
 	pio run -e esp32dev -t compiledb
 	python3 tools/clangd-inject-sysincludes.py compile_commands.json
 
-# Host-buildable library logic (the firmware glue in src/ and include/LGFX_CYD2USB.hpp needs
-# the ESP32 Xtensa toolchain, which clang-tidy can't target — that code is linted by clangd in
-# the editor instead, via .clangd). tidy regenerates its own host (native_ui) compile DB each
-# run so it's always fresh, uses it from .pio/tidy, then restores the esp32dev DB for clangd.
-tidy: ## Local static analysis of host-buildable lib logic (advisory; not a CI gate)
+# Two passes: (1) host-buildable library logic via a fresh native_ui compile DB in .pio/tidy;
+# (2) the firmware glue (src/*.cpp, and include/LGFX_CYD2USB.hpp via its TU) via a sanitized
+# copy of the esp32dev DB in .pio/tidy-esp32 — tools/tidy-sanitize-compiledb.py applies the
+# same Xtensa fixups .clangd describes (clang-tidy doesn't read .clangd). The esp32dev DB is
+# restored at the root for clangd in between.
+tidy: ## Local static analysis of lib logic + firmware glue (advisory; not a CI gate)
 	pio run -e native_ui -t compiledb
 	@mkdir -p .pio/tidy && mv -f compile_commands.json .pio/tidy/compile_commands.json
 	clang-tidy -p .pio/tidy $$(git ls-files 'lib/**/*.cpp')
 	@$(MAKE) --no-print-directory compiledb
+	python3 tools/tidy-sanitize-compiledb.py compile_commands.json .pio/tidy-esp32
+	clang-tidy -p .pio/tidy-esp32 $$(git ls-files 'src/*.cpp')
 
 test:      ## Host test suites (no board)
 	pio test -e native_logic -e native_ui

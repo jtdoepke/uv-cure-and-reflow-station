@@ -51,9 +51,14 @@ so the absolute per-machine toolchain paths never get committed.
 esp32dev DB by re-running `make compiledb`. If editor diagnostics go weird after a tidy
 run, re-run `make compiledb` and restart the clangd server.
 
+Tidy's firmware pass consumes a sanitized copy of the esp32dev DB (`.pio/tidy-esp32/`)
+produced by `tools/tidy-sanitize-compiledb.py`, which **mirrors this repo's `.clangd`
+Remove/Add flag lists** (clang-tidy doesn't read `.clangd`). When adding or removing a
+flag in `.clangd`, make the same change in that script.
+
 ## When NOT to use this skill
 
 - An error also appears in a real `pio run` build → it's a genuine compile error, fix the code.
-- `make tidy` / clang-tidy findings in `lib/**` → see the **lint-format-toolchain** skill
-  (clangd covers only the Xtensa-only firmware glue that clang-tidy can't target).
+- `make tidy` / standalone clang-tidy findings → see the **lint-format-toolchain** skill
+  (tidy lints `lib/**` via a host DB and `src/*` via a sanitized esp32dev DB).
 - Test failures or native-build header leaks → see the **three-tier-testing** skill.

@@ -28,7 +28,7 @@ directly.
 | `make format` | clang-format in place (tracked C/C++, minus `include/lv_conf.h`) |
 | `make format-check` | dry-run with `--Werror` |
 | `make lint` (alias `make check`) | `pre-commit run --all-files` — clang-format + whitespace/EOF + `yamllint` + `markdownlint`. Fixer hooks rewrite files in place: a failing run often leaves the fix already applied — re-run to confirm green |
-| `make tidy` | clang-tidy over `lib/**/*.cpp` (advisory, local only) |
+| `make tidy` | clang-tidy over `lib/**/*.cpp` + `src/*.cpp` (advisory, local only) |
 
 ## Version-sync rule (checkable)
 
@@ -55,23 +55,31 @@ shows `include/lv_conf.h` changes that weren't an intentional upstream sync, rev
 
 ## make tidy mechanics
 
-clang-tidy can't target the ESP32 Xtensa toolchain, so `make tidy` lints only the
-**host-buildable** library logic (`lib/**/*.cpp`): it regenerates a `native_ui` host
-compile DB into `.pio/tidy/`, runs `clang-tidy -p .pio/tidy`, then restores the esp32dev
-DB at root (for clangd) via `make compiledb`. Requirements and known patterns:
+`make tidy` runs two passes:
 
-- The ESP32 toolchain must be installed (`pio run` once) or the final `compiledb` step fails.
-- The firmware glue (`src/main.cpp`, `include/LGFX_CYD2USB.hpp`) is **not** in tidy's scope;
-  it is linted by clangd in the editor (which embeds the same clang-tidy checks) — see the
-  **clangd-xtensa-setup** skill.
+1. **Library logic** (`lib/**/*.cpp`) — regenerates a `native_ui` host compile DB into
+   `.pio/tidy/`, runs `clang-tidy -p .pio/tidy`, then restores the esp32dev DB at root
+   (for clangd) via `make compiledb`.
+2. **Firmware glue** (`src/*.cpp`, and `include/LGFX_CYD2USB.hpp` through its translation
+   unit) — `tools/tidy-sanitize-compiledb.py` writes a clang-tidy-compatible copy of the
+   esp32dev DB into `.pio/tidy-esp32/`, applying the same Xtensa fixups `.clangd` gives
+   the editor (strip GCC-only flags, add `--target=xtensa`), because clang-tidy doesn't
+   read `.clangd`. **If editing `.clangd`'s Remove/Add flag lists, update that script's
+   mirror lists in the same commit.**
+
+Requirements and notes:
+
+- The ESP32 toolchain must be installed (`pio run` once) or the compiledb steps fail.
+- clangd in the editor runs the same clang-tidy checks live on the firmware glue — see
+  the **clangd-xtensa-setup** skill.
 - Config: `.clang-tidy` (Arduino/ESP32/LVGL headers filtered out via `HeaderFilterRegex`).
 
 ## Known C++ fix patterns (from past findings)
 
-- Narrowing-conversion warnings in LVGL flush code (surfaced by clangd's embedded
-  clang-tidy in `src/main.cpp`, not `make tidy`): use `int32_t` for area width/height —
-  matches LVGL's `lv_area_t` coords and LovyanGFX's `setAddrWindow`/`pushPixels`
-  signatures — and `nullptr` over `NULL`.
+- Narrowing-conversion warnings in LVGL flush code in `src/main.cpp` (covered by
+  `make tidy`'s firmware pass and clangd's embedded clang-tidy): use `int32_t` for area
+  width/height — matches LVGL's `lv_area_t` coords and LovyanGFX's
+  `setAddrWindow`/`pushPixels` signatures — and `nullptr` over `NULL`.
 
 ## Pre-commit checklist
 
