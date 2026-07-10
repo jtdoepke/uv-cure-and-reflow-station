@@ -10,6 +10,19 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Formatting + whitespace/YAML/Markdown hygiene. The hooks are self-contained
+  # (clang-format ships its own binary), so this job needs no PlatformIO or mise.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: pre-commit/action@v3.0.1
+
   test:
     runs-on: ubuntu-latest
     steps:
