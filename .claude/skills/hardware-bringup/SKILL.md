@@ -79,6 +79,10 @@ LovyanGFX handles both.
 `pio test -e embedded` (board on Micro-USB) asserts `gfx.init()`, rotated 320×240
 dimensions, brightness, ≥50 KB heap headroom, and a human-in-the-loop touch target.
 
+To capture what's actually on the glass (`make dev-shot`) or inject touches
+(`make dev-touch`) over WiFi while diagnosing, see the **ui-development** skill's
+device tools (requires the `esp32dev_uidev` firmware via `make dev-flash`).
+
 ## When NOT to use this skill
 
 - Writing or debugging tests, or deciding where new code lives → **three-tier-testing**.
