@@ -20,6 +20,7 @@ repos:
         args: [--maxkb=512]
       - id: check-merge-conflict
       - id: check-yaml
+        args: [--allow-multiple-documents]   # .clang-format/.clang-tidy are multi-doc YAML
       - id: check-case-conflict
 
   # Self-contained clang-format (ships its own binary — no mise needed for pre-commit).
