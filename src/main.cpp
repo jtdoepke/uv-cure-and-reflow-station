@@ -18,8 +18,8 @@ static uint8_t draw_buf[SCR_W * SCR_H / 10 * 2];
 static uint32_t last_tick = 0;
 
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-  uint32_t w = area->x2 - area->x1 + 1;
-  uint32_t h = area->y2 - area->y1 + 1;
+  int32_t w = area->x2 - area->x1 + 1;
+  int32_t h = area->y2 - area->y1 + 1;
   gfx.startWrite();
   gfx.setAddrWindow(area->x1, area->y1, w, h);
   gfx.pushPixels((uint16_t *)px_map, w * h, true);
@@ -52,7 +52,7 @@ static void run_display_test() {
     lv_obj_set_style_bg_color(scr, lv_color_hex(colors[i]), LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl, lv_color_hex(i == 3 ? 0x000000 : 0xFFFFFF), 0);
     lv_label_set_text(lbl, names[i]);
-    lv_refr_now(NULL);
+    lv_refr_now(nullptr);
     delay(800);
   }
   lv_obj_delete(lbl);
@@ -70,7 +70,7 @@ void setup() {
 
   lv_display_t *disp = lv_display_create(SCR_W, SCR_H);
   lv_display_set_flush_cb(disp, my_disp_flush);
-  lv_display_set_buffers(disp, draw_buf, NULL, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, draw_buf, nullptr, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
