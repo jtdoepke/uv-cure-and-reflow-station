@@ -14,7 +14,7 @@
 
 class TapCounter {
 public:
-  explicit TapCounter(ITouch& touch) : touch_(touch) {}
+  explicit TapCounter(ITouch &touch) : touch_(touch) {}
 
   // Sample the touch panel once. Returns true if this call registered a *new* press
   // (a release->press transition), false otherwise.
@@ -34,10 +34,14 @@ public:
   int count() const { return count_; }
   int last_x() const { return last_x_; }
   int last_y() const { return last_y_; }
-  void reset() { count_ = 0; was_pressed_ = false; last_x_ = last_y_ = 0; }
+  void reset() {
+    count_ = 0;
+    was_pressed_ = false;
+    last_x_ = last_y_ = 0;
+  }
 
 private:
-  ITouch& touch_;
+  ITouch &touch_;
   int count_ = 0;
   int last_x_ = 0;
   int last_y_ = 0;

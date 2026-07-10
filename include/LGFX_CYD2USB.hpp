@@ -5,7 +5,7 @@
 #include <LovyanGFX.hpp>
 
 class LGFX : public lgfx::LGFX_Device {
-  lgfx::Panel_ST7789 _panel_instance;   // ST7789 for the 2-USB board
+  lgfx::Panel_ST7789 _panel_instance; // ST7789 for the 2-USB board
   lgfx::Bus_SPI _bus_instance;
   lgfx::Light_PWM _light_instance;
   lgfx::Touch_XPT2046 _touch_instance;
@@ -43,7 +43,7 @@ public:
       cfg.dummy_read_pixel = 16;
       cfg.dummy_read_bits = 1;
       cfg.readable = true;
-      cfg.invert = false;    // 2-USB ST7789: false gives correct colors
+      cfg.invert = false; // 2-USB ST7789: false gives correct colors
       cfg.rgb_order = false;
       cfg.dlen_16bit = false;
       cfg.bus_shared = false;

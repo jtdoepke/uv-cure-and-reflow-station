@@ -12,7 +12,7 @@
 
 struct IDisplay {
   virtual ~IDisplay() = default;
-  virtual bool begin() = 0;                    // mirrors LGFX::init() -> bool
+  virtual bool begin() = 0; // mirrors LGFX::init() -> bool
   virtual int width() const = 0;
   virtual int height() const = 0;
   virtual void setBrightness(uint8_t level) = 0;

@@ -12,7 +12,9 @@ void setUp(void) {}
 void tearDown(void) {}
 
 // LovyanGFX init() returns bool — a real assertion, not just "didn't crash".
-void test_gfx_init(void) { TEST_ASSERT_TRUE(gfx.init()); }
+void test_gfx_init(void) {
+  TEST_ASSERT_TRUE(gfx.init());
+}
 
 void test_rotated_dimensions(void) {
   gfx.setRotation(1); // landscape

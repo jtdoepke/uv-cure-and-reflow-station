@@ -8,5 +8,5 @@
 
 struct ITouch {
   virtual ~ITouch() = default;
-  virtual bool getTouch(int* x, int* y) = 0;
+  virtual bool getTouch(int *x, int *y) = 0;
 };

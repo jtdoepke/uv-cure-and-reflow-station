@@ -3,13 +3,13 @@
 // Tap counter lives in the click handler's user_data-referenced label. We keep the count
 // as a static local so the demo needs no extra state object; when the real mode UI lands
 // this becomes a proper model (an lv_subject_t or an app_logic object).
-static void btn_event_cb(lv_event_t* e) {
+static void btn_event_cb(lv_event_t *e) {
   static int count = 0;
-  lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
+  lv_obj_t *label = (lv_obj_t *)lv_event_get_user_data(e);
   lv_label_set_text_fmt(label, "Touched %d", ++count);
 }
 
-MainUi create_main_ui(lv_obj_t* parent) {
+MainUi create_main_ui(lv_obj_t *parent) {
   MainUi ui{};
 
   ui.title = lv_label_create(parent);

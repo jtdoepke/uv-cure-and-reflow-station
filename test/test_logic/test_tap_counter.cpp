@@ -7,7 +7,9 @@
 
 static FakeTouch touch;
 
-void setUp(void) { touch = FakeTouch(); } // reset the double before each test
+void setUp(void) {
+  touch = FakeTouch();
+} // reset the double before each test
 void tearDown(void) {}
 
 void test_starts_at_zero(void) {
@@ -46,7 +48,7 @@ void test_release_then_press_counts_again(void) {
   TEST_ASSERT_EQUAL_INT(2, c.count());
 }
 
-int main(int, char**) {
+int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_starts_at_zero);
   RUN_TEST(test_counts_one_press_and_records_coords);

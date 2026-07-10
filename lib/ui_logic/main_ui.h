@@ -10,11 +10,11 @@
 
 // Handles into the created UI, so callers/tests can inspect or update widgets.
 struct MainUi {
-  lv_obj_t* title;      // "Hello CYD!"
-  lv_obj_t* button;     // "Tap me"
-  lv_obj_t* btn_label;  // shows "Tap me" / "Touched N"
+  lv_obj_t *title;     // "Hello CYD!"
+  lv_obj_t *button;    // "Tap me"
+  lv_obj_t *btn_label; // shows "Tap me" / "Touched N"
 };
 
 // Build the demo UI under `parent` (e.g. lv_screen_active()). The button's click handler
 // increments a counter and rewrites btn_label to "Touched N".
-MainUi create_main_ui(lv_obj_t* parent);
+MainUi create_main_ui(lv_obj_t *parent);

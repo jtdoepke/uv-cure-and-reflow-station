@@ -35,7 +35,7 @@ void test_button_click_increments_label(void) {
   TEST_ASSERT_EQUAL_STRING("Touched 2", lv_label_get_text(ui.btn_label));
 }
 
-int main(int, char**) {
+int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_button_click_increments_label);
   return UNITY_END();

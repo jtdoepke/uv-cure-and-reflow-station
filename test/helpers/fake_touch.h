@@ -11,7 +11,7 @@ struct FakeTouch : ITouch {
   bool nextTouch = false;
   int tx = 0;
   int ty = 0;
-  bool getTouch(int* x, int* y) override {
+  bool getTouch(int *x, int *y) override {
     if (nextTouch) {
       *x = tx;
       *y = ty;
