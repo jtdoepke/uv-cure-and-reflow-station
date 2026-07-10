@@ -53,3 +53,17 @@ jobs:
       # CI can't flash a board, but building the firmware catches compile/link regressions.
       - name: Firmware compile-check
         run: pio run -e esp32dev
+
+      # Headless UI-simulator smoke: build the sim, render the real UI plus one click,
+      # keep the PNG as an inspectable artifact. Pure memory render — no display server.
+      - name: UI simulator smoke screenshot
+        run: |
+          pio run -e native_sim
+          mkdir -p sim-artifacts
+          .pio/build/native_sim/program --out sim-artifacts/ui.png click 160 120 wait 300
+
+      - name: Upload UI screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshot
+          path: sim-artifacts/ui.png

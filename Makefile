@@ -1,5 +1,5 @@
 # Convenience wrappers. PlatformIO remains the source of truth for builds/tests.
-.PHONY: help format format-check lint check hooks compiledb tidy test build
+.PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot
 .DEFAULT_GOAL := help
 
 help:      ## Show this help
@@ -46,3 +46,14 @@ test:      ## Host test suites (no board)
 
 build:     ## Firmware compile-check
 	pio run -e esp32dev
+
+# Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
+# ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".
+SIM_OUT ?= .pio/sim/ui.png
+
+sim:       ## Build the host UI simulator (env native_sim)
+	pio run -e native_sim
+
+sim-shot: sim  ## Render the UI to a PNG: make sim-shot ARGS="click 160 120 wait 300"
+	@mkdir -p $(dir $(SIM_OUT))
+	.pio/build/native_sim/program --out $(SIM_OUT) $(ARGS)

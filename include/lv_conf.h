@@ -978,8 +978,12 @@
     #define LV_FS_FROGFS_LETTER '\0'
 #endif
 
-/** LODEPNG decoder library */
+/** LODEPNG decoder library.
+ * Guarded so the native_sim env can turn it on via `-D LV_USE_LODEPNG=1` (PNG screenshot
+ * encoding); firmware/tests leave it off (default 0). */
+#ifndef LV_USE_LODEPNG
 #define LV_USE_LODEPNG 0
+#endif
 
 /** PNG decoder(libpng) library */
 #define LV_USE_LIBPNG 0
