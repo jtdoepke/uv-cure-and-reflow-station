@@ -78,15 +78,33 @@ On boot you should see the color self-test, then the demo UI; tapping the button
 its counter. If the screen is blank or colors look wrong, see the display/touch tuning notes
 in [`CLAUDE.md`](CLAUDE.md).
 
+### Testing
+
+Tests run in three tiers so most of them need no hardware (details in [`CLAUDE.md`](CLAUDE.md)):
+
+```bash
+pio test -e native_logic   # fast host tests of app logic (no board, no display libs)
+pio test -e native_ui      # LVGL UI tests on a headless host display (no board)
+pio test -e embedded       # on the real CYD: display/touch/heap checks (Micro-USB port)
+```
+
+The two native suites (plus a firmware compile-check) also run in CI on every push
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
 ## Project structure
 
 ```
-platformio.ini            PlatformIO config — single esp32dev env, LovyanGFX + LVGL
+platformio.ini            PlatformIO config — esp32dev firmware + native/embedded test envs
 include/
   LGFX_CYD2USB.hpp        LovyanGFX display + touch configuration for this board
   lv_conf.h               LVGL 9.5 configuration
+lib/                      Testable, hardware-independent modules (compiled by app + tests)
+  display_port/           IDisplay / ITouch ports — the hardware boundary
+  app_logic/              Pure business logic (e.g. TapCounter) behind the ports
+  ui_logic/               LVGL UI construction (no LovyanGFX), host-testable
 src/
-  main.cpp                setup()/loop(): self-test + demo UI
+  main.cpp                setup()/loop(): hardware bring-up, self-test, then create_main_ui()
+test/                     Unity suites: test_logic / test_ui (native), test_embedded_hw
 CLAUDE.md                 Detailed build notes, board gotchas, and design decisions
 ```
 

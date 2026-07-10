@@ -1241,8 +1241,12 @@
 
 #endif
 
-/** Enable emulated input devices, time emulation, and screenshot compares. */
+/** Enable emulated input devices, time emulation, and screenshot compares.
+ * Guarded so the native_ui test env can turn it on via `-D LV_USE_TEST=1` without a
+ * redefinition clash; firmware/embedded leave it off (default 0). */
+#ifndef LV_USE_TEST
 #define LV_USE_TEST 0
+#endif
 #if LV_USE_TEST
 
 /** Enable `lv_test_screenshot_compare`.

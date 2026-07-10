@@ -1,0 +1,42 @@
+name: CI
+
+# Runs the host test suites and a firmware compile-check on every push / PR.
+# On-target tests (pio test -e embedded) need the physical board, so they're not run here —
+# run them locally, or wire up a self-hosted runner / `pio remote` later.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # Cache PlatformIO's core + tool/library downloads (platforms, LVGL, ArduinoFake, ...).
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # Fast host tests: pure logic behind the ports + LVGL headless UI. `native` uses the
+      # runner's system GCC (no toolchain download needed).
+      - name: Native tests
+        run: pio test -e native_logic -e native_ui
+
+      # CI can't flash a board, but building the firmware catches compile/link regressions.
+      - name: Firmware compile-check
+        run: pio run -e esp32dev

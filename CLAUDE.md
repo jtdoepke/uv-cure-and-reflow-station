@@ -28,7 +28,8 @@ is sufficient (WROOM-32, 4 MB flash, no PSRAM).
 ## Commands
 
 PlatformIO is the build system. If `pio` is not on PATH, use `~/.platformio/penv/bin/pio` or
-`python get-platformio.py` to install it. Single env: `esp32dev`. **Always run `pio` from the
+`python get-platformio.py` to install it. The firmware env is `esp32dev` (the `pio run`
+default); there are also three test envs (see **Testing** below). **Always run `pio` from the
 project root** (a stray `cd` into `.pio/libdeps/...` makes it read a library's own
 `platformio.ini`).
 
@@ -38,14 +39,41 @@ project root** (a stray `cd` into `.pio/libdeps/...` makes it read a library's o
 - Serial monitor: `pio device monitor` (115200 baud). Note: `pio device monitor` needs an
   interactive TTY; for scripted capture, read `/dev/ttyUSB0` with pyserial instead.
 - Clean (needed if an `lv_conf.h` edit seems ignored): `pio run -t clean`
-- Unit tests: `pio test` (the `test/` dir is currently an empty scaffold)
+
+## Testing
+
+A three-tier pyramid (strategy: `~/Downloads/cyd_lovyangfx_testing_strategy.md`). Nothing
+under `.pio/` is ever edited; all config is env-scoped in `platformio.ini`.
+
+- `pio test -e native_logic` — fast host tests of pure C++ logic (`lib/app_logic`) behind
+  the `IDisplay`/`ITouch` ports (`lib/display_port`). LovyanGFX **and** LVGL are excluded
+  via `lib_ignore`; tests inject fakes from `test/helpers/fake_touch.h`.
+- `pio test -e native_ui` — LVGL 9.5 on the host with `LV_USE_TEST=1`, driving the real UI
+  (`lib/ui_logic`) through LVGL's in-memory dummy display + simulated input. No board.
+- `pio test -e embedded` — on the real board (needs the Micro-USB port). Asserts
+  `gfx.init()`, rotated 320×240 dimensions, brightness, heap headroom, and a
+  human-in-the-loop touch target.
+
+**Architecture rule that makes this work:** testable code lives in `lib/` (compiled by both
+firmware and tests). Anything that `#include`s `LovyanGFX.hpp` cannot compile for the native
+target, so it stays behind the ports — only the firmware/production adapter touches LGFX.
+Put new business logic in `lib/app_logic` (test in `test_logic`), new UI in `lib/ui_logic`
+(test in `test_ui`). The native envs are the fast feedback loop; GitHub Actions
+(`.github/workflows/ci.yml`) runs both plus a firmware compile-check on every push.
+
+Gotchas: PlatformIO only collects `test/` subfolders named `test_*`, each built as its own
+runner. `LV_USE_TEST` is `#ifndef`-guarded in `lv_conf.h` so `native_ui` flips it on with
+`-D LV_USE_TEST=1` while firmware keeps it off. On-target tests need `delay(2000)` before
+`UNITY_BEGIN()` (serial reconnect after the post-upload reset).
 
 ## Architecture & key gotchas
 
-- **Single translation unit.** All logic lives in `src/main.cpp` (`setup()` / `loop()`).
-  `loop()` must call `lv_tick_inc(elapsed_ms)` then `lv_timer_handler()` every iteration.
-  Display init is `gfx.init()`; the LVGL flush and touch-read callbacks call the `LGFX`
-  object (`gfx.pushPixels` / `gfx.getTouch`) directly.
+- **`src/main.cpp` is thin glue** (`setup()` / `loop()`): it owns the `LGFX` object and the
+  LVGL flush/touch callbacks (which call `gfx.pushPixels` / `gfx.getTouch` directly), runs
+  the color self-test, then hands off to `create_main_ui()`. `loop()` must call
+  `lv_tick_inc(elapsed_ms)` then `lv_timer_handler()` every iteration. **Testable logic and
+  UI belong in `lib/`, not `main.cpp`** — see the architecture rule under **Testing**. UI
+  construction already lives in `lib/ui_logic/main_ui.cpp`.
 
 - **Display config is `include/LGFX_CYD2USB.hpp`** (an `LGFX` subclass): ST7789 panel on
   HSPI/SPI2 (SCLK14/MOSI13/MISO12/DC2/CS15/RST-1, BL21), XPT2046 touch on software SPI
