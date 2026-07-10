@@ -25,11 +25,12 @@ screen RED → GREEN → BLUE → WHITE; use it to diagnose. All knobs are in
 
 | Symptom | Fix |
 |---|---|
-| Screen stays blank/garbled | `cfg.spi_mode` 0 → 3 (some units need mode 3) |
+| Screen stays blank/solid-white/garbled | `cfg.spi_mode` 0 → 3 (some units need mode 3; solid white = backlight on, panel uninitialized) |
 | Colors photo-negative | flip `cfg.invert` |
 | RED renders blue / BLUE renders red | flip `cfg.rgb_order` |
 | Touch mapping off near edges | tune touch `x_min/x_max/y_min/y_max`; `getTouch()` returns already-mapped screen coords |
 | Touch Y axis mirrored | `y_min > y_max` (3700 > 200) is the **intentional** axis flip — do not "fix" it to be ascending |
+| Touch x/y transposed or rotated vs display | touch `cfg.offset_rotation` (currently 2) — tune this, not the calibration min/max |
 | `getTouch()` always false while pressing | `cfg.pin_int` must be `-1` — see below |
 
 ## The pin_int rule (hardware-diagnosed)
@@ -45,7 +46,8 @@ hardware; the symptom of getting this wrong is `getTouch` always returning false
 - **Display** — ST7789 on HSPI/SPI2 (`HSPI_HOST`): SCLK 14, MOSI 13, MISO 12, DC 2, CS 15,
   RST -1; backlight PWM on GPIO 21 (`Light_PWM`, channel 7).
 - **Touch** — XPT2046 on its own **software SPI** bus (`spi_host = -1`, bit-banged, so it
-  coexists with the display bus): SCLK 25, MOSI 32, MISO 39, CS 33.
+  coexists with the display bus): SCLK 25, MOSI 32, MISO 39, CS 33; `offset_rotation = 2`
+  aligns the touch axes with the rotated display.
 
 ## LVGL glue rules (src/main.cpp)
 

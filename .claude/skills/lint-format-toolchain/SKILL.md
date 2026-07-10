@@ -27,7 +27,7 @@ directly.
 |---|---|
 | `make format` | clang-format in place (tracked C/C++, minus `include/lv_conf.h`) |
 | `make format-check` | dry-run with `--Werror` |
-| `make lint` (alias `make check`) | `pre-commit run --all-files` — clang-format + whitespace/EOF + `yamllint` + `markdownlint` |
+| `make lint` (alias `make check`) | `pre-commit run --all-files` — clang-format + whitespace/EOF + `yamllint` + `markdownlint`. Fixer hooks rewrite files in place: a failing run often leaves the fix already applied — re-run to confirm green |
 | `make tidy` | clang-tidy over `lib/**/*.cpp` (advisory, local only) |
 
 ## Version-sync rule (checkable)
@@ -61,12 +61,17 @@ compile DB into `.pio/tidy/`, runs `clang-tidy -p .pio/tidy`, then restores the 
 DB at root (for clangd) via `make compiledb`. Requirements and known patterns:
 
 - The ESP32 toolchain must be installed (`pio run` once) or the final `compiledb` step fails.
-- The firmware glue (`src/main.cpp`, `include/LGFX_CYD2USB.hpp`) is linted by clangd in
-  the editor instead — see the **clangd-xtensa-setup** skill.
-- Known fix pattern: narrowing-conversion warnings in LVGL flush code → use `int32_t` for
-  area width/height (matches LVGL's `lv_area_t` coords and LovyanGFX's
-  `setAddrWindow`/`pushPixels` signatures), and `nullptr` over `NULL`.
+- The firmware glue (`src/main.cpp`, `include/LGFX_CYD2USB.hpp`) is **not** in tidy's scope;
+  it is linted by clangd in the editor (which embeds the same clang-tidy checks) — see the
+  **clangd-xtensa-setup** skill.
 - Config: `.clang-tidy` (Arduino/ESP32/LVGL headers filtered out via `HeaderFilterRegex`).
+
+## Known C++ fix patterns (from past findings)
+
+- Narrowing-conversion warnings in LVGL flush code (surfaced by clangd's embedded
+  clang-tidy in `src/main.cpp`, not `make tidy`): use `int32_t` for area width/height —
+  matches LVGL's `lv_area_t` coords and LovyanGFX's `setAddrWindow`/`pushPixels`
+  signatures — and `nullptr` over `NULL`.
 
 ## Pre-commit checklist
 

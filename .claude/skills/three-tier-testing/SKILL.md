@@ -27,7 +27,7 @@ still scans `#include`s).
 Run from the project root (a stray `cd` into `.pio/libdeps/...` makes `pio` read a
 library's own `platformio.ini`).
 
-| Command | What runs | Excluded |
+| Command | What runs | Env notes |
 |---|---|---|
 | `pio test -e native_logic` | pure logic vs fakes, host GCC | `lib_ignore = LovyanGFX lvgl`; ArduinoFake available (`lib_compat_mode = off`, `gnu++17`) |
 | `pio test -e native_ui` | LVGL 9.5 headless (`LV_USE_TEST=1`), real `lib/ui_logic` widgets, simulated input | `lib_ignore = LovyanGFX` |
@@ -39,6 +39,10 @@ all config is env-scoped in `platformio.ini`.
 
 ## PlatformIO/Unity mechanics (each one has bitten before)
 
+- **Never set `test_build_src = yes` in the native envs.** `src/` is deliberately not
+  compiled into test binaries — `src/main.cpp` includes `LovyanGFX.hpp`, so enabling it
+  breaks both native tiers with the ESP-IDF header errors described above. Code that needs
+  testing must move to `lib/`, not be pulled in via `test_build_src`.
 - Only `test/` subfolders named `test_*` are collected; each builds as its own runner
   binary with its own `main()` (native) or `setup()/loop()` (embedded). Duplicated
   `main()`s across suites are expected, not an error.

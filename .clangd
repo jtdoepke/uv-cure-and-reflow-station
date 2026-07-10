@@ -5,8 +5,10 @@
 #   2. mis-detects the target as the host (64-bit) -> pointer-size / static_assert errors in
 #      ESP-IDF headers, and falls into the RISC-V branch (riscv/rv_utils.h not found)
 #   3. can't find the toolchain's own system headers -> "machine/endian.h file not found"
-# This file fixes (1) and (2); `.vscode/settings.json`'s --query-driver fixes (3) by letting
-# clangd ask xtensa-esp32-elf-g++ for its builtin include paths.
+# This file fixes (1) and (2); (3) is fixed by `make compiledb`, which runs
+# tools/clangd-inject-sysincludes.py to bake the toolchain's builtin include paths into
+# compile_commands.json as -isystem flags (clangd's --query-driver is not used — probing the
+# GCC driver fails because of the clang-only flags added below).
 CompileFlags:
   # (1) Strip Xtensa-only GCC flags mainline clang doesn't accept.
   Remove:
@@ -27,6 +29,6 @@ CompileFlags:
     - -D__XTENSA__=1
     # (3b) Drop clang's default *system* include dirs (host /usr/include) so it doesn't pull in
     # host glibc (features.h -> gnu/stubs.h -> missing gnu/stubs-32.h, a fatal error that would
-    # truncate the LovyanGFX headers). clang's own builtins and the --query-driver newlib
-    # headers (.vscode/settings.json) are kept.
+    # truncate the LovyanGFX headers). clang's own builtins and the newlib headers injected
+    # into compile_commands.json by `make compiledb` are kept.
     - -nostdlibinc
