@@ -15,21 +15,50 @@
 static const uint16_t SCR_W = 320, SCR_H = 240; // landscape
 static LGFX gfx;
 
+// Double-buffered async DMA flush. Set to 0 to reclaim ~15 KB DRAM: that drops the
+// second draw buffer and reverts to the original single-buffer, CPU-blocking flush.
+// Turn this off FIRST if the WiFi dev build (esp32dev_uidev) starts failing the
+// draw-buffer malloc — the 2nd buffer is the easiest ~15 KB to give back, at the
+// cost of display responsiveness.
+#define DISP_DOUBLE_BUFFER 1
+
 // 1/10-screen partial draw buffer, RGB565 (2 bytes/pixel). This board has no PSRAM,
 // so never allocate a full-frame buffer. Heap-allocated in setup() rather than static:
 // the WiFi stack in the esp32dev_uidev env overflows the static DRAM segment otherwise.
 static constexpr size_t DRAW_BUF_BYTES = SCR_W * SCR_H / 10 * 2;
 static uint8_t *draw_buf = nullptr;
+#if DISP_DOUBLE_BUFFER
+static uint8_t *draw_buf2 = nullptr; // second buffer: render next chunk while this one DMAs out
+#endif
 static uint32_t last_tick = 0;
 
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   int32_t w = area->x2 - area->x1 + 1;
   int32_t h = area->y2 - area->y1 + 1;
+#if DISP_DOUBLE_BUFFER
+  // Async DMA: hold one write session open across the frame's chunks and push via
+  // DMA without waiting. With two buffers LVGL renders the next chunk while this one
+  // DMAs out. LVGL renders RGB565_SWAPPED (set in setup), so feeding swap565_t hits
+  // LovyanGFX's zero-copy DMA path instead of a CPU byte-swap. Buffer reuse is safe
+  // because the next push (or this endWrite) blocks on the prior DMA before touching
+  // the buffer again.
+  if (gfx.getStartCount() == 0) {
+    gfx.startWrite();
+  }
+  gfx.pushImageDMA(area->x1, area->y1, w, h, reinterpret_cast<lgfx::swap565_t *>(px_map));
+  if (lv_display_flush_is_last(disp)) {
+    gfx.endWrite(); // waits out the final DMA, closes the session
+  }
+  lv_display_flush_ready(disp);
+#else
+  // Original single-buffer synchronous path: CPU-driven SPI with a runtime RGB565
+  // byte-swap (the `true`). Blocks until the whole area is pushed.
   gfx.startWrite();
   gfx.setAddrWindow(area->x1, area->y1, w, h);
   gfx.pushPixels((uint16_t *)px_map, w * h, true);
   gfx.endWrite();
   lv_display_flush_ready(disp);
+#endif
 }
 
 static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -85,14 +114,27 @@ void setup() {
   lv_init();
 
   draw_buf = static_cast<uint8_t *>(malloc(DRAW_BUF_BYTES)); // internal DRAM (no PSRAM)
+#if DISP_DOUBLE_BUFFER
+  draw_buf2 = static_cast<uint8_t *>(malloc(DRAW_BUF_BYTES));
+  if (draw_buf == nullptr || draw_buf2 == nullptr) {
+#else
   if (draw_buf == nullptr) {
+#endif
     Serial.println("FATAL: LVGL draw buffer allocation failed");
     abort();
   }
 
   lv_display_t *disp = lv_display_create(SCR_W, SCR_H);
   lv_display_set_flush_cb(disp, my_disp_flush);
+#if DISP_DOUBLE_BUFFER
+  // RGB565_SWAPPED makes LVGL render in the panel's byte order, so the flush can feed
+  // swap565_t straight to DMA with no conversion (see my_disp_flush). Revert this and
+  // the buffer line below together if DISP_DOUBLE_BUFFER is turned off.
+  lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
+  lv_display_set_buffers(disp, draw_buf, draw_buf2, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
+#else
   lv_display_set_buffers(disp, draw_buf, nullptr, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
+#endif
 
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
