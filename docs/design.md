@@ -19,7 +19,8 @@
 **Non-goals (for now)**
 - No food use (fumes/residue cross-contamination).
 - Not a certified/UL appliance; single-user bench tool.
-- No cloud/app; WiFi (if any) is local convenience, not required for operation.
+- No cloud/app; WiFi is **local-only** convenience (data download + OTA both boards,
+  §21) — never required for a run.
 - Reusing the microwave magnetron/HV section — removed, never driven.
 
 ## 2. Two-MCU split (the load-bearing decision)
@@ -59,6 +60,11 @@ The CYD does **not** have enough free GPIO to run the oven's sensors and loads
   left unconnected. Common ground is established through P5, so the CN1 comms cable
   only carries the two signal wires. **Heavy loads (UV array, SSR/relay coils,
   motor) get their own PSU rails — never routed through the CYD.**
+- **Firmware-update control lines (for OTA, §21):** two extra wires from the CYD to
+  the controller's **BOOT0 + NRST** (STM32) / **GPIO0 + EN** (bench ESP32) let the CYD
+  drop the controller into its ROM bootloader and reflash it over the UART. Budget
+  them into the interconnect connector + controller PCB — without them, controller OTA
+  needs a manual BOOT jumper.
 - **Build caveat:** with the PSU on VIN, don't dual-source 5 V (PSU + USB) while
   flashing the CYD — disconnect the PSU or rely on the board's USB diode.
 
@@ -119,15 +125,33 @@ Defense-in-depth, mains outward. The firmware is **never** the last line.
   to heater/UV **OFF** (pull-downs on every SSR/MOSFET gate).
 - **L3 clamps:** setpoint clamped to a hard max; independent high-limit sensor on
   its **own** channel (not the control sensor); bounded total runtime.
-- **Mode-dependent temp cap:** each run declares a `mode` (§9); the controller has a
-  **compiled-in per-mode cap table** — **cure = 100 °C**, reflow = absolute hard-max.
-  Effective cap = `min(absolute_hard_max, modeCap[mode])`; a recipe can only
-  *tighten* it, never loosen. So even a buggy/wrong CYD can't push a cure run past
-  100 °C (cap lives in the controller's constants — CYD is untrusted). **Software-
-  enforced, not hardware-backed:** the L0 cutoff sits at the reflow level, so it
-  won't catch a cure-mode runaway to ~150 °C — the firmware clamp + independent
-  high-limit hold the cure line. Acceptable (100 °C isn't a fire hazard) but noted.
-  The cap is a **firmware constant**, not a user setting.
+- **Mode-dependent temp cap (two layers — DECIDED):** every run declares a `mode`
+  (§9), and each mode is temperature-capped by **two** limits; the lower always wins:
+  1. **Absolute per-mode hard-max — firmware constant in the *controller*.** The
+     untrusted-proof backstop: it lives in the controller's compiled-in constants, so
+     even a buggy/malicious CYD can't push a run past it. Reflow's sits near the
+     element/SSR/thermal-fuse limit; cure/UV's is a conservative fixed ceiling.
+     (Exact values TBD, §10.)
+  2. **User per-mode max-temp *setting* — device settings, editable on the CYD.**
+     Defaults **UV = 100 °C, reflow = 500 °C**. A profile in that mode **cannot be
+     authored above its mode's setting** (editor stepper ceiling, §12) and the CYD
+     validates before upload. The setting is adjustable only **within** the firmware
+     absolute hard-max (layer 1 bounds its range) — never above it.
+
+  Effective cap = `min(absolute_hard_max[mode], userMax[mode], recipe values)`; a
+  recipe can only *tighten*. This **supersedes the old fixed 100 °C cure constant** —
+  100 °C is now merely the *default* of the UV setting, not a hard-coded value.
+  - **Safety weakening (flagged):** making the UV cap a user setting removes the old
+    "UV can never exceed 100 °C" guarantee — a user can now raise it. What remains is
+    the **UV absolute hard-max** (layer 1) bounding how high the setting goes, plus the
+    independent high-limit. Keep the UV absolute hard-max conservative. As before, the
+    L0 hardware cutoff sits at the *reflow* level, so a cure/UV over-temp is held by
+    **firmware clamp + high-limit, not hardware** — acceptable at these temps but noted.
+  - **Enforcement (DECIDED):** the user setting is enforced **CYD-side** (editor +
+    pre-send validation); the controller enforces its **absolute hard-max** (clamp +
+    NAK, §9). The user cap is a convenience/policy tightening, **not** the untrusted-
+    proof limit — that stays layer 1. *Open (§10):* optionally also send the user cap to
+    the controller for defense-in-depth.
 - **Enclosure over-temp (electronics protection):** on-PCB case sensor (§6),
   two-threshold **warn → auto-abort** to safe state. Protects the SSR/PSU/caps —
   distinct from L0's chamber high-limit, which prevents *fire*; this protects the
@@ -149,17 +173,18 @@ interpolation (ramp-linear / hold / step). Channels:
 | Channel | Reflow use | UV-cure use |
 |---------|-----------|-------------|
 | `heater_setpoint_C` | the solder curve (peak ~245 °C) | gentle hold ~80 °C |
-| `conv_fan` (on/off or duty) | convection during heat (uniformity) | optional |
-| `cool_fan` (on/off) | cooldown boost (donor's magnetron cooling fan) | optional |
+| `conv_fan` (seg: on/off or duty; phase: Auto/On/Off) | convection during heat (uniformity) | optional |
+| `cool_fan` (seg: on/off; phase: Auto/On/Off) | cooldown boost (donor's magnetron cooling fan) | optional |
 | `uv` (on/off or duty) | off | on for the cure |
-| `motor` (on/off) | unused | turntable (optional) |
+| `motor` (on/off) | unused | turntable — even-exposure under directional UV (§6) |
 
 The controller sequences segments, PID-tracks `heater_setpoint_C` via the
 zero-cross SSR, sets UV/fans/motor directly, and streams telemetry + progress
 (current segment, elapsed, measured temp). Both modes ride the same executor;
 "reflow vs cure" is just which channels a profile populates. The recipe also carries
 a `mode` tag used *only* by the safety supervisor to pick the per-mode temp cap
-(cure = 100 °C; §4) — the executor itself stays mode-agnostic.
+(the controller's absolute per-mode hard-max; the user-set per-mode max lives on the
+CYD — §4) — the executor itself stays mode-agnostic.
 
 CYD engines are profile *producers*: the reflow engine edits/loads a solder curve,
 the cure engine edits/loads a resin recipe (temp + UV + timer).
@@ -172,10 +197,53 @@ phase compiles to two generic segments via the `interp` field:
   clamped to achievable, §12).
 - **`RAMP_ASAP`** (`x = 0`): drive max heat, **target-gated** — the segment ends when
   the target is reached (duration *estimated* from `oven_cal.h` for the projected
-  curve/ETA, but *executed* to target). 
+  curve/ETA, but *executed* to target).
 - **`HOLD`**: keep target for `y` s.
-Per-phase channel toggles (`conv_fan`/`cool_fan`/`uv`/`motor`) ride along. This is
+Per-phase channel settings (`conv_fan`/`cool_fan`/`uv`/`motor`) ride along. This is
 why the whole projected timeline + ETA are computable up front (§15).
+
+**Fan `Auto` mode (DECIDED — default for both fans).** Per phase, `conv_fan` and
+`cool_fan` are **tri-state {`Auto` (default), `On`, `Off`}** (not plain on/off); `uv` and
+`motor` stay explicit on/off. **`Auto` is resolved on the CYD at recipe-compile time**
+from `oven_cal.h`: for each segment the CYD picks the fan state **needed to hit the
+phase's ramp rate and hold the target** — turn `conv_fan` on when the requested heat ramp
+(or hold uniformity) can't be met without it; turn `cool_fan` on when the requested cool
+ramp is faster than passive cooling (§6 heat/cool-rate envelopes). This keeps the
+architecture intact: the **stored profile carries the `Auto` intent** (so it re-resolves
+if calibration changes), the **compiled `Recipe` carries the resolved on/off** (§9), and
+the **controller stays a generic executor** — no fan policy in the safety MCU.
+
+- **Fan-conditioned calibration (DECIDED):** the calibration fit **always produces** rate
+  envelopes modelled **with each fan on vs off** (`heatRate(T, conv_fan)` /
+  `coolRate(T, cool_fan)`) — a standard part of `oven_cal.h`, so `Auto` decides against
+  real fan-on-vs-off rates. The characterization runs supply the data by randomizing
+  per-phase fan state (below). See §6.
+- **Pre-first-calibration fallback only:** before any calibration exists, `Auto` uses a
+  simple heuristic — `conv_fan` on while heating, `cool_fan` on while cooling — flagged
+  like the idealized preview (§12). Once calibrated, the fan-conditioned envelopes govern.
+- **Reactivity:** resolution is compile-time-static (matches the up-front timeline/ETA,
+  §15). A live/reactive controller-side variant is a parked enhancement — it would move
+  fan policy into the controller, which we're deliberately avoiding for now (§10).
+
+**Cure hold as "UV exposure per surface" (DECIDED).** In **cure** mode a phase's **hold**
+is authored not as raw seconds but as the quantity the user actually cares about — **UV
+exposure time per surface** — and the hold seconds `y` are **computed** from it. Because
+the UV is a directional side beam and the part rotates on the turntable (§6), a surface
+sits in the beam only a fraction of each rotation, so:
+`y = exposure_per_surface / beamCoverage`, where **`beamCoverage`** (effective fraction of
+a rotation a surface spends in the beam) is a **calibrated constant in `oven_cal.h`** (§6).
+This mirrors the `RAMP_ASAP`→estimated-time pattern: the CYD computes `y` at compile time,
+the segment still carries plain seconds, and the controller stays generic.
+- **RPM-independent total:** over many rotations per-surface exposure is `y × beamCoverage`
+  regardless of RPM — so `beamCoverage` is the conversion factor. RPM only needs to be
+  **high enough that the hold spans many whole rotations** for evenness (§6).
+- **Applies when UV + turntable are on.** With the turntable **off** (or pre-calibration,
+  no `beamCoverage`) the cure hold falls back to **plain seconds** — the facing surface
+  just gets the full time. **Reflow** is unaffected (its hold stays raw seconds).
+- **Caveat:** "per surface" means the **azimuthal** side surfaces that rotate through the
+  beam; top/bottom faces see the vertical beam differently — flip the part for those.
+  `beamCoverage` is an *effective, empirically-characterized* factor (part size/position
+  dependent), not a clean geometric constant (§10).
 
 ### Characterization / random-profile runs (DECIDED)
 For ML data collection, the CYD has a **random-profile generator**: it produces *n*
@@ -266,17 +334,27 @@ Loads/sensors hang off the controller ESP32 (GPIO-rich); the CYD only does UI.
   - **Calibration workflow (DECIDED — offline fit, compiled into both):** log
     wall-TCs + reference-TC + the random characterization runs to SD (§7); do the
     fit / ML **on a PC**; emit a **generated, committed calibration file**
-    (`lib/calibration/oven_cal.h` — `{a,b,τ}` + heat/cool-rate envelopes + hard-max)
+    (`lib/calibration/oven_cal.h` — `{a,b,τ}` + fan-conditioned heat/cool-rate envelopes
+    + hard-max + turntable RPM + UV `beamCoverage`)
     that is **compiled into *both* firmwares.** One source → both binaries identical
     by construction (same single-source pattern as the shared `.proto`); fits the
     matched-pair invariant (§9). Supersedes the earlier "controller NVS" idea.
-    - Tradeoff: **recalibration = rebuild + reflash both boards** (no live update).
-      Fine for a single bespoke unit. An optional NVS override (firmware defaults,
-      NVS supersedes) could be added later if re-tuning gets frequent — not now.
+    - Tradeoff: **recalibration = rebuild + re-flash both boards** — now an **OTA
+      bundle pushed over WiFi via the CYD** (§21), not a USB reflash, but still no
+      *live* on-device recompute. Fine for a single bespoke unit. An optional NVS
+      override (firmware defaults, NVS supersedes) could be added later if re-tuning
+      gets frequent — not now.
     - Calibration also yields **max heat/cool-rate envelopes** (temperature-
       dependent — heating faster when cold, cooling passive/one-sided), used by the
       feasibility-aware curve preview (§12). Rate-limit + lag math is **shared
       `lib/` logic** reused by the CYD preview and the controller feedforward.
+    - **Fan-conditioned envelopes (DECIDED — for fan `Auto`, §5):** the calibration fit
+      **always produces** rate envelopes modelled **with each fan on vs off** —
+      `heatRate(T, conv_fan)` and `coolRate(T, cool_fan)` — so the CYD can decide whether
+      a fan is *needed* to hit a phase's rate. They're a standard part of the `oven_cal.h`
+      deliverable, not optional. The characterization runs already supply the data by
+      randomizing per-phase fan state (§5). The heuristic (§5) is only the pre-first-
+      calibration fallback, never the steady state.
   - **Known limitation:** the model is fit for one calibration board's thermal
     mass; very different boards lag differently and will be mis-estimated. Mitigate
     with a representative calibration board (optionally light/heavy sets selectable
@@ -297,7 +375,11 @@ Loads/sensors hang off the controller ESP32 (GPIO-rich); the CYD only does UI.
   cooling** — passive venting + component placement only. Threshold values TBD.
   Not a thermocouple (electronics range, not reflow range); MCU-internal sensor is a
   poor fallback.
-- **UV LED array:** 405 nm via MOSFET (separate from heater).
+- **UV LED array (directional, side-mounted):** 405 nm via MOSFET (separate from
+  heater), mounted in the **side of the chamber** — at the old microwave
+  antenna/waveguide port. It's a **directional beam from one side**, *not* an
+  all-around source, so a stationary part cures unevenly. The **turntable** is what
+  gives even all-around exposure (see below) — the two are a functional pair for cure.
 - **Convection fan (part of *heating*):** LEDC PWM. Runs during reflow heat phases
   for convective uniformity (top-mounted element would otherwise cause top/bottom
   board ΔT + hot spots).
@@ -310,8 +392,24 @@ Loads/sensors hang off the controller ESP32 (GPIO-rich); the CYD only does UI.
   interface + read via controller ADC, no datasheet), and **heat-limited (~≤125 °C)
   → not usable during reflow** (would be cooked). Populate `humidity` telemetry only
   in cure mode. (§10)
-- **Turntable motor (cure, optional):** the donor's relay-switched low-RPM
-  synchronous AC turntable motor — reuse for a cure turntable.
+- **Turntable motor (cure — even-exposure mechanism, on/off DECIDED):** the donor's
+  relay-switched low-RPM **synchronous AC** turntable motor — reuse as-is. It's
+  **on/off only** (fixed native RPM; a synchronous AC motor's speed is locked to line
+  frequency + gearbox, so it can't be varied by voltage/PWM — variable rate would mean
+  swapping the motor, rejected as marginal for cure). Because the UV is a **directional
+  side beam** (above), rotation is how every surface of the part passes through the
+  beam — so the turntable is the primary **even-exposure** mechanism, not decoration.
+  - **Exposure model (→ cure hold abstraction, §5/§12):** the meaningful cure quantity is
+    **per-surface UV exposure time**. Over a hold `y` with UV + turntable on, per-surface
+    exposure ≈ `y × beamCoverage`, where **`beamCoverage`** = effective fraction of a
+    rotation a surface spends in the directional beam. So a cure phase is authored as
+    *exposure per surface* and the CYD computes `y = exposure / beamCoverage`.
+    - `beamCoverage` and the **turntable RPM** are **calibrated constants in `oven_cal.h`**.
+      `beamCoverage` sets the dose↔time conversion (and the total is **RPM-independent**);
+      **RPM** must merely be high enough that a hold spans many whole rotations for
+      evenness — measured in bring-up/calibration.
+    - `beamCoverage` is an **effective, empirically-characterized** factor (part
+      size/position dependent), not a clean geometric constant — characterize it (§10).
 - **Door interlock:** reuse the donor's existing switch chain (see reuse inventory).
 - **Noise:** flyback diodes on inductive DC loads, RC snubbers on switched AC,
   decoupling, star ground, adequately-sized shared PSU.
@@ -346,13 +444,19 @@ profile library; the controller only ever holds the single active run's recipe
 profiles; see below. Profiles stay in flash so a run never depends on a card being
 inserted.)
 
+**Separate per-mode libraries (DECIDED):** cure and reflow profiles live in
+**independent stores** — separate LittleFS directories (e.g. `/profiles/cure/`,
+`/profiles/reflow/`) each with its own stock seed set — and are **never mixed**. A run
+can therefore only ever load a same-mode profile, so the §4 mode cap and §12 template
+always match. Browsing/CRUD is in §23.
+
 **Authoring (DECIDED): on-device editing + PC authoring.** Profiles can be
 created/edited on the CYD touchscreen and saved to LittleFS directly. PC authoring
 stays useful for seeding versioned defaults and bulk edits. This makes the CYD UI
 own a profile editor (§ editing UI below).
 
-**Transfer path (for PC-authored profiles):** with no SD, two mechanisms, not
-mutually exclusive:
+**Transfer path (for PC-authored profiles):** profiles live in flash, not on the SD
+card (so a run never depends on a card), so two mechanisms, not mutually exclusive:
 - **Baseline:** keep default profile JSON in a repo `data/` dir; `pio run -t
   uploadfs` packs it into the LittleFS image. Versioned, simple, needs a USB
   reflash.
@@ -367,6 +471,13 @@ recipe (§5). Layout designed in §12.
 Calibration correction factors (from the reference-TC workflow, §6) live in a
 **generated `lib/calibration/oven_cal.h` compiled into both firmwares** (offline PC
 fit → committed file → both binaries identical), *not* NVS. See §6.
+
+**Device settings (DECIDED):** user preferences — units, per-mode **max-temp caps**
+(UV/reflow, §4), sleep/brightness constants, WiFi — persist on the CYD (LittleFS or
+NVS), separate from the profile library. Firmware ships the **defaults** (UV max
+100 °C, reflow max 500 °C, §4); the Settings screen (§24) edits them, always within the
+firmware absolute hard-max bounds. These are CYD-side policy — the controller's absolute
+per-mode hard-max still governs independently (§4).
 
 ### Data logging to SD (DECIDED)
 Every run is logged to the **CYD's microSD** to build a dataset for offline
@@ -386,6 +497,9 @@ board-temp estimator arc (§6).
   characterization runs** (§5 — *n*×*m* random profiles within safety bounds).
   Calibration runs additionally populate `refTemp`.
 - **One file per run**, named by run-id + profile.
+- **Retrieval (DECIDED):** the **SD stays permanently inserted**; logged files are
+  pulled **over WiFi from the CYD's HTTP server** (§21), not by removing the card.
+  Physically pulling the card is only an offline fallback.
 - ⚠️ **CYD gotcha:** some boards have an **SD ↔ touch SPI conflict** (shared VSPI) —
   verify on this unit. If it bites, options: careful CS/bus arbitration, or buffer
   in RAM and flush between touches.
@@ -411,6 +525,10 @@ heat), but it rides on the safety/link foundation, so:
 5. **Port to the deployment MCU + custom PCB:** implement the controller HAL
    adapter for the chosen chip, spin the board, re-verify safety on the real
    hardware. (Bench ESP32 stays as the reference/dev target.)
+6. **Connectivity services (§21):** WiFi data-download server + OTA (CYD self-update
+   and controller-through-CYD reflash). Last, because it needs the link + calibration
+   pipeline to exist first (data to serve, a matched pair to keep in sync) and the
+   deployment board's BOOT/reset control lines wired.
 
 ## 9. UART protocol contract (`lib/protocol`) — the "single API"
 
@@ -454,9 +572,11 @@ CYD → controller:
 - `Hello{ protoVer, schemaHash }` → handshake at boot (schemaHash gates the link,
   see below).
 - `Recipe{ id, mode, repeated Segment{ durMs, heatC, convFan, coolFan, uv, motor, interp } }`
+  — `convFan`/`coolFan` are **resolved on/off** (the phase-level fan `Auto` is already
+  applied CYD-side at compile time, §5); no `Auto` value crosses the wire.
   → upload the whole generic multi-channel recipe in one message (§5). `mode`
-  (CURE/REFLOW) selects the controller's per-mode temp cap (§4) — the executor
-  stays generic; `mode` is used only by the safety supervisor.
+  (CURE/REFLOW) selects the controller's per-mode **absolute hard-max** (§4) — the
+  executor stays generic; `mode` is used only by the safety supervisor.
 - `Start{ session, recipeId }` → begin a run for this session.
 - `Heartbeat{ session, seq, enable, millis }` every **200 ms** → liveness + run
   authorization. Absence/`enable=false` → controller safes.
@@ -518,6 +638,14 @@ mis-decoded. Two mechanisms guard against that:
 (Full MAVLink-style per-frame *schema* seeding was considered and dropped as
 redundant on a point-to-point link once the handshake gate passes.)
 
+### Firmware transport is out-of-band (note)
+OTA (§21) does **not** ride this protocol. To reflash the controller the CYD tears the
+TinyFrame link down and speaks the controller's **native ROM bootloader** protocol over
+the same UART (STM32 system-memory loader / ESP32 serial loader), then re-establishes
+the link and re-runs the `Hello` schema-hash handshake. That handshake gate is exactly
+what catches a partially-applied bundle (stale ↔ new) and holds the system in safe
+state until both boards match (§21).
+
 ### Code shape
 `lib/protocol` = pure C++ (no Arduino/LGFX): frame encode/decode, CRC, recipe
 (de)serialize + range-validate, and the run state machine. Host-tested in
@@ -542,7 +670,8 @@ tests). Linked into **both** firmwares so the contract can't drift.
   drivers, connectors, on-board vs off-board safety chain, flashing/debug header
   (SWD + UART-bootloader access).
 - **Profile editor UI:** structure/layout now designed (§12); remaining detail —
-  advanced-mode reorder UX, per-field keypad ranges, and building it in the sim.
+  advanced-mode reorder UX, and building it in the sim. (Numeric entry designed: shared
+  value-stepper §24 + keypad §26.)
 - **Profile transfer:** `data/` + `uploadfs` baseline, and/or a serial/WiFi
   on-demand push? (§7)
 - **Thermocouples:** exact fixed-channel count; **front-end IC** (MAX31855 vs
@@ -551,22 +680,62 @@ tests). Linked into **both** firmwares so the contract can't drift.
 - **`.proto` + deps:** finalize the schema fields; add `nanopb` + `TinyFrame` to
   both PlatformIO envs and wire up the protobuf codegen step. (§9 — contract is
   designed; this is the mechanical follow-through.)
-- **Controller USB access once enclosed:** the *other* linked doc covers flashing a
-  2nd MCU through the CYD — only needed if the controller's own USB isn't reachable.
+- **Controller field-update = OTA-through-CYD (DECIDED, §21):** the enclosed STM32 has
+  no WiFi and no reachable USB, so CYD-driven bootloader reflash over the UART is the
+  *primary* update path, not a fallback. Open: the CYD's embedded STM32/ESP32
+  **bootloader-client** implementation, and verifying the **BOOT0/NRST control-line**
+  wiring (§2) on the PCB.
+- **Connectivity / OTA (§21, §25, §27):** WiFi provisioning path — **on-device join**
+  (§27 setup flow) vs compile-time **`include/secrets.h`** (view goes status-only); OTA
+  image **signing/authentication** on a mains appliance (local-net single-user — how much
+  is enough?); CYD **partition layout** — does the app fit **twice** (A/B slots) alongside
+  LittleFS in 4 MB? (measure once built; the controller image stages on **SD**, off the
+  internal-flash budget, §25; fallback = 8/16 MB module or single-slot+recovery) + rollback
+  behavior; the HTTP data-download endpoint — **auth** (open server on the LAN?), **mDNS
+  `oven.local`**, **QR**, and on-device **delete-logs granularity** (§27); confirm the
+  controller-first **flash sequencing + rollback** keeps the pair matched under any
+  half-applied failure.
+- **OTA bundle (§25):** the bundle **format** (both images + manifest) and **source** —
+  fetched from a configured URL vs uploaded to the CYD's HTTP endpoint; the native
+  **bootloader-client** implementation (STM32 system loader / ESP32 serial loader) and the
+  BOOT/reset drive (§2); the recovery-UX for a failed controller flash.
 - **Controller test lane** in the three-tier native/embedded setup.
-- **UV cure specifics:** is a turntable in scope for MVP; UV as on/off or PWM duty;
-  door-interlock wiring for the UV enclosure.
-- **Temp-cap constants:** cure = 100 °C (set); reflow absolute hard-max value (near
-  the element/SSR/thermal-fuse limit) TBD; both firmware constants (§4).
+- **UV cure specifics:** **characterize `beamCoverage`** (effective beam fraction) +
+  **measure turntable RPM** for the exposure→hold-time conversion (§5/§6); UV as on/off or
+  PWM duty; door-interlock wiring for the UV enclosure. (Decided: turntable on/off
+  even-exposure under the directional side UV; cure hold authored as UV-exposure-per-
+  surface → computed hold time, §5/§6/§12.)
+- **Temp-cap limits (§4):** per-mode **user max-temp settings** now exist (defaults
+  **UV 100 °C / reflow 500 °C**, editable in device settings). Still TBD: the per-mode
+  **firmware absolute hard-max** constants (the untrusted-proof backstop) — reflow near
+  the element/SSR/thermal-fuse limit (likely *below* the 500 °C default, so it governs
+  in practice) and a conservative UV ceiling that bounds how high the UV setting may be
+  raised. Open: whether to also enforce the user cap **controller-side** for defense-
+  in-depth.
 - **Deviation/drift thresholds:** live-cue band (§15) and end-of-run
   calibration-drift trigger (§16) — sustained-time N + RMSE/max thresholds; firmware
   constants, tune against real runs.
+- **Fault overlay (§22):** finalize the `faultCode` enum in the shared `.proto` + the
+  CYD's code→plain-language table; the buzzer pattern + RGB-LED behavior for
+  annunciation (and whether ack silences vs waits for condition-clear).
+- **Settings (§24):** which thresholds are user-exposed vs firmware constants (confirm
+  the split); whether raising a temp cap needs more than the amber caution; manual
+  brightness-bias range; global "restore defaults" scope.
+- **Touch-target sizing:** the shared value-stepper editor (§24) now backs every numeric
+  field incl. the §12 phase editor (resolved). Remaining check: all Settings **toggle
+  rows** (units, auto-brightness, WiFi) render as full-width ≥56–67 px rows, and every
+  `‹ Back`/prev-next chevron has a ≥56 px hit area despite being drawn small.
+- **Profile library (§23):** ▲/▼ selection-highlight + auto-scroll (vs optional
+  flick-scroll); rows-visible count; per-mode **restore-stock-profiles** action in
+  Settings; default sort order;
+  duplicate-naming scheme; where the Home **mode chooser** (Cure/Reflow) sits before the
+  library. Also: `Save as…` in Setup persisting a tweaked working copy (§19).
 - **Sleep constants (§17):** idle timeout (~1–2 min) and the safe-touch temperature
   below which sleep is allowed while cooling.
 - **Auto-brightness tuning (§18):** LDR→backlight curve/LUT, min-floor/max-ceiling,
   filter/ramp time-constants — tune on real glass.
-- **Cure resume (§15):** paused-state timeout before the CYD discards the remainder;
-  whether Resume needs the full press-and-hold (§19) or a plain tap suffices.
+- **Cure resume (§15):** paused-state timeout before the CYD discards the remainder.
+  (Resume gesture decided: press-and-hold, §15/§19.)
 - **Calibration presets (§20):** the Quick/Standard/Thorough scope definitions
   (`n`/`m`/coverage/time).
 - **Donor reuse (Toshiba ML2-STC13SAIT):** characterize the **humidity sensor's**
@@ -576,11 +745,17 @@ tests). Linked into **both** firmwares so the contract can't drift.
   donor **NTC** as a bonus input. (§6)
 - **Data logging + calibration pipeline:** the PC-side protobuf→CSV/Parquet decoder
   tool; the analysis that emits the generated `lib/calibration/oven_cal.h`
-  (`{a,b,τ}` + heat/cool-rate envelopes) compiled into both firmwares (§6);
+  (`{a,b,τ}` + fan-conditioned heat/cool-rate envelopes + turntable RPM + UV
+  `beamCoverage`) compiled into both firmwares (§6);
   wall-clock timestamps without an RTC/WiFi (run-relative + run-id may suffice);
   SD-write buffering; verify the CYD's SD↔touch SPI coexistence on this unit. (§7)
 - **Random-profile generator:** ranges/`n`/`m` defaults; pure-random vs structured
   sampling (e.g. Latin-hypercube) for better coverage. (§5)
+- **Fan `Auto` resolution (§5/§6):** the exact decision rule (rate/target margins for
+  turning each fan on). (Fan-conditioned envelopes are now a committed calibration
+  deliverable — §6; the pre-first-calibration heuristic is the only fallback.) Whether a
+  live/reactive controller-side variant is ever worth moving fan policy into the
+  controller stays parked.
 
 ## 11. Controller firmware structure (HAL)
 
@@ -677,6 +852,11 @@ window; assert `0.0`→always off, `1.0`→always on, `0.01`→off (below `minOn
 Designed against the **ui-development** skill's rules (320×240 resistive, gloves,
 hazardous machine). Screens live in `lib/ui_logic/`, host-testable.
 
+The editor edits **any profile buffer** — a **saved library profile** (Profiles → Edit,
+§23) or a **run's ephemeral working copy** (Setup → Edit, §19). Same UI; only the save
+target differs (a library file vs discarded when the run ends). Editing a **stock**
+(read-only) profile becomes a **Save-as** so the factory reference survives (§23).
+
 ### Key insight: edit parameters, not the curve
 The design rules forbid gestures/drag and mandate constrained numeric input — so you
 **don't drag points on a graph**. Instead you edit named phase **parameters** via
@@ -710,25 +890,44 @@ editor" = parameter editor + non-interactive preview.
 │ ‹ Back                     Save ✓     │
 └──────────────────────────────────────┘
 ```
-**Phase editor** — one phase, prev/next in the header:
+**Phase editor** — one phase as a **field list** (highlight + `Open`, like §23/§24). No
+cramped inline steppers and no three-toggles-on-a-line: each numeric field opens the
+shared **value-stepper editor** (~96 px −/+, §24), and each channel is a **full-width
+toggle row**.
 ```
 ┌──────────────────────────────────────┐
-│ ‹ Soak  (2/4)                    ›    │
-│  Target      [ − ]  165 °C  [ + ]     │  stepper (~60 px); tap the
-│  Ramp        [ − ]   MAX    [ + ]     │  number → constrained keypad
-│  Hold        [ − ]   90 s   [ + ]     │  (Ramp at min = MAX / ASAP)
-│  Conv fan[ON]  Cool fan[OFF]  UV[OFF] │  per-phase channel toggles
-│  Cancel                     Done      │
-└──────────────────────────────────────┘
+│ ‹ Back            Soak (2/4)          │  header: back + which phase
+├──────────────────────────────────────┤
+│  Target                    165 °C   › │  ← selected; Open → value-stepper (§24)
+│  Ramp                       MAX     › │  (Ramp at min = MAX / ASAP)
+│  Hold                        90 s   › │
+│  Conv fan               [ AUTO ] (on) │  fans: tri-state Auto/On/Off; (…) = what
+│  Cool fan               [ AUTO ] (off)│  Auto resolved from calibration (§5/§6)
+│  UV                          [ OFF ]  │  UV/motor stay On/Off
+├───────────────┬───────────┬──────────┤
+│      ▲        │     ▼     │  Open ›   │  move highlight · edit/flip selected
+└───────────────┴───────────┴──────────┘
 ```
+- **▲/▼** move the field highlight (auto-scroll — 6 fields, ~4–5 visible); **`Open`**
+  acts on it: a numeric field → the value-stepper editor (§24); `uv` → flips on/off; a
+  **fan** → cycles **Auto → On → Off**. On `Auto`, the row shows the resolved state in
+  parentheses (e.g. `(on)`) so you see what calibration chose (§5). Default = `Auto`.
+  All real touch targets are the three ~78 px footer buttons.
+- Edits apply to the **working buffer** immediately; the **Overview's `Save ✓`** commits
+  the whole profile, and leaving the editor without Save discards — so no per-phase
+  Cancel/Done control is needed.
+- **Move between phases** from the Overview tiles (tap another tile), keeping this screen
+  a single-job field editor.
 
 ### Design-rule compliance
-- **Numeric:** steppers (min/max, disabled at limit) + tap-value→**constrained
-  keypad** for wide ranges. No free text (except the profile **name** via an
-  on-screen keyboard, used rarely on save-as).
-- **Safety-limit clamp:** stepper ceilings = the **mode cap** — **100 °C in cure**,
-  the reflow hard-max in reflow (§4). UI prevents entering an over-limit value; the
-  controller still clamps/NAKs as backstop (§9).
+- **Numeric:** each field opens the shared **value-stepper editor** (~96 px −/+,
+  min/max disabled-at-limit, tap-value→**constrained keypad** §26, §24) — never inline
+  mini-steppers. Channel settings are **full-width toggle rows**. No free text except
+  the profile **name** (on-screen keyboard, large keys, rare — on save-as).
+- **Safety-limit clamp:** stepper ceilings = the **mode's max-temp *setting*** (device
+  settings — default **UV 100 °C / reflow 500 °C**, itself bounded by the mode's
+  firmware absolute hard-max, §4). UI prevents authoring an over-limit value; the
+  controller still clamps/NAKs against its absolute hard-max as backstop (§9).
 - **Validation, two tiers:**
   - *Hard-invalid* (over hard-max temp; peak ≤ soak ≤ preheat; non-monotonic times)
     → **red + word**, **blocks Save**.
@@ -737,7 +936,10 @@ editor" = parameter editor + non-interactive preview.
     does its best; the user should see it but isn't blocked). (DECIDED.)
 - **Idle-only:** the editor is unreachable during a run → no STOP button here (STOP
   lives on the run/monitor screens per the rules).
-- Cure mode reuses this exact structure (phases warm / cure / cool).
+- Cure mode reuses this structure with one change: a phase's **Hold** field is authored
+  as **UV exposure / surface** (not raw seconds), and the derived hold time is shown
+  read-only — computed `= exposure / beamCoverage` from calibration (§5/§6). Falls back to
+  plain seconds if the turntable is off or the oven is uncalibrated.
 
 ### Feasibility-aware curve preview (DECIDED)
 The preview is **not** a naive plot of the entered setpoints — it incorporates the
@@ -745,8 +947,10 @@ oven's **calibrated capability**:
 - **Requested** trajectory drawn as a ghost/dashed line (what you entered).
 - **Achievable** trajectory drawn solid — the requested line **rate-limited** by the
   calibrated **heat/cool-rate envelopes** (temperature-dependent; cooling is the
-  binding constraint since the heater is one-sided). Where they diverge, the phase
-  is flagged (amber, see validation).
+  binding constraint since the heater is one-sided). For a phase on fan **`Auto`** the
+  preview uses the **fan-resolved** envelope (§5) — i.e. the rate Auto's chosen fan state
+  delivers — and if even that can't meet the request the phase is flagged amber. Where
+  they diverge, the phase is flagged (amber, see validation).
 - Calibration constants come from the **compiled-in `oven_cal.h`** (§6) — no runtime
   message; the CYD computes the preview locally so it stays instant as steppers
   change. The rate-limit/lag math is **shared `lib/` logic**.
@@ -768,14 +972,21 @@ turntable, humidity) are gated by the controller's reported capabilities.
 Home / Status  (idle hub — machine state + chamber temp)
 ├─ UV Cure  ─► Cure Setup   ─► Confirm ─► Cure Run/Monitor ─► Summary
 ├─ Reflow   ─► Reflow Setup ─► Confirm ─► Reflow Run/Monitor ─► Summary
-├─ Profiles ─► Profile library ─► Profile Editor (§12)   [New / Edit / Delete]
+├─ Profiles ─► (Cure | Reflow) ─► that mode's Profile library (§23) ─► Editor (§12)
 ├─ Calibrate ─► Calibration workflow ─► characterization run
-└─ Settings ─► units / thresholds / WiFi / about / advanced toggle
+└─ Settings (§24) ─► display & units / temp limits (§4) / sleep / WiFi
+                / data & firmware (download · OTA, §21) / profiles / about / advanced
 ```
+
+Setup (§19) starts **empty** and **Load**s a profile as an editable per-run template —
+opening the mode's Profile library in **pick mode** (§23), then the editor on the
+**working copy** (§12). Cure and reflow have **separate** libraries (§23).
 
 ### Global chrome (every screen)
 - **Header:** screen title + **machine-state badge** (IDLE / HEATING / HOT / CURING
-  / FAULT) + **link indicator** (controller connected & schema OK?).
+  / FAULT) + **link indicator**. The indicator pairs a **glyph + word** — `✓ Link` /
+  `✗ No link` (schema mismatch = `✗ Schema`) — **never a bare colour dot** (a green/red
+  dot alone fails the CVD rule; ~8% of males can't distinguish it).
 - **Footer:** Back (left) + **STOP** (large red, right) — present + armed on every
   *running* screen; never blocked by UI work (machine work is off the LVGL loop).
 - **Always visible:** machine state + link status (operator must never be unsure
@@ -783,7 +994,7 @@ Home / Status  (idle hub — machine state + chamber temp)
 
 ### Cross-cutting overlays / states
 - **Fault / alarm:** modal red overlay on controller `Fault` (§9); outputs already
-  safe; shows code + plain-language cause; [Acknowledge].
+  safe; shows code + plain-language cause; [Acknowledge]. **Designed in §22.**
 - **Link lost / schema mismatch:** persistent header warning; **Start disabled** —
   no run may begin without a healthy link (safety). Mirrors the §9 gate.
 - **Hazardous start confirmation** sits between Setup and Run (arm-then-start /
@@ -796,7 +1007,7 @@ Primary job: pick what to do, while making the machine's safety state unmissable
 
 ```
 ┌──────────────────────────────────────┐
-│ Oven Controller               ⬤ Link  │  header: name + link indicator
+│ Oven Controller               ✓ Link  │  header: name + link (glyph+word, not dot)
 ├──────────────────────────────────────┤
 │   ● IDLE            Chamber  24 °C     │  status band (state + chamber temp)
 ├───────────────────┬──────────────────┤
@@ -812,12 +1023,12 @@ Primary job: pick what to do, while making the machine's safety state unmissable
 - **Hot after a run:** band → `⚠ HOT — Chamber 118 °C (cooling)`, **amber/red + the
   word HOT** (never colour alone). Mode buttons stay enabled (set up next run while
   it cools).
-- **Link lost / schema mismatch:** red header indicator + body banner `⚠ Controller
-  not responding`; **mode buttons disabled** — no run flow without a healthy link
-  (mirrors §9).
+- **Link lost / schema mismatch:** header indicator flips to `✗ No link` / `✗ Schema`
+  (glyph+word + red, not colour alone) + body banner `⚠ Controller not responding`;
+  **mode buttons disabled** — no run flow without a healthy link (mirrors §9).
 
 ### Visual language established for all screens
-- Header = title + machine-state badge + link dot. **The root hub is the sole
+- Header = title + machine-state badge + link glyph+word. **The root hub is the sole
   exception to the footer rule:** no Back (it's root), no STOP (idle) — secondary
   actions live in the bottom row instead.
 - Grayscale base; **colour only for state** (green idle · amber heating/hot · red
@@ -837,7 +1048,7 @@ the **projected-vs-actual curve** as the centerpiece.
 
 ```
 ┌──────────────────────────────────────┐
-│ Reflow: LF-245        ⚠ HEATING   ⬤   │  profile + state badge + link
+│ Reflow: LF-245        ⚠ HEATING   ✓   │  profile + state badge + link
 ├───────────────────────┬──────────────┤
 │  212 °C   ▲set 210     │ Soak  2/4    │  big actual temp + setpoint · phase
 │                        │ ETA  4:32    │  · ETA
@@ -887,10 +1098,11 @@ compiles to two generic segments (ramp + hold, §5).
   state (heater/UV off, contactor open). Never blocked (machine work is off the LVGL
   loop).
 - UV / fan / turntable state indicators.
-- Fault → the modal alarm overlay (§13).
+- Fault → the modal alarm overlay (§22).
 
 ### Cure variant
-Same skeleton, but: the curve is gentle (→ 80 °C hold, capped 100 °C §4), the
+Same skeleton, but: the curve is gentle (→ 80 °C hold, capped by the UV max-temp
+setting — default 100 °C, §4), the
 **`UV ON`** indicator is prominent red (eye-safety), and the **countdown/ETA is the
 star** (cure is mostly a timer); turntable indicator if present.
 
@@ -906,9 +1118,9 @@ profile executor). All resume intelligence lives on the CYD:
   (phase, elapsed, UV-dose), shows a Paused overlay:
   ```
   ⏸ PAUSED — Door open · UV OFF
-  Close the door, then Resume.        [ Abort ]   [ Resume ▶ ]
+  Close the door, then hold Resume.   [ Abort ]   [ ██ HOLD Resume ██ ]
   ```
-  On **Resume** (explicit tap, enabled only when the door is closed) the CYD
+  On **Resume** (**press-and-hold**, §19; enabled only when the door is closed) the CYD
   **generates a remainder profile** — an `RAMP_ASAP` re-heat to the current target +
   the remaining hold/phases + remaining UV dose — and **`Start`s it as a fresh run.**
   To the controller it's just a new profile.
@@ -916,8 +1128,8 @@ profile executor). All resume intelligence lives on the CYD:
     mid-pause loses nothing; the CYD re-sends). Reuses the phase/segment model + the
     profile generator; the board's cool-down is handled for free by the ASAP re-heat
     ramp at the front of the remainder.
-  - **Resume re-energizes UV** → explicit + door-closed-gated (no auto-resume, eye
-    safety). Whether it needs the full press-and-hold (§19) is a minor open.
+  - **Resume re-energizes UV** → **press-and-hold** (§19) + door-closed-gated (no
+    auto-resume, eye safety) — same friction as any UV/heat start (DECIDED).
   - The **remainder-profile generator** is CYD logic (host-testable).
   - **Paused-state timeout:** the CYD discards the paused state (and the remainder)
     after a timeout (constant, §10); a lost heartbeat also ends it (the controller is
@@ -973,12 +1185,12 @@ honest (so state is current on wake and door-wake is a simple event).
 - **Suppress sleep while HOT (DECIDED):** stay awake until the chamber cools below a
   safe-touch threshold, so the `HOT` warning (§14) stays visible to anyone
   approaching. Sleep only when **idle AND cool**.
-- **Inactivity timeout:** ~1–2 min default, configurable (Settings / constant, §10).
+- **Inactivity timeout:** ~1–2 min default, configurable (Settings, §24).
 - **Wake sources:**
   - **Any touch** — the wake-tap is **consumed** (lights the screen without also
     actuating the control beneath it).
   - **Door-open event** from the controller.
-  - **Incoming fault/alarm** — never hide a fault behind a dark screen.
+  - **Incoming fault/alarm** — never hide a fault behind a dark screen (§22).
 - **Requires door state on the CYD:** the door interlock is on the controller/mains
   side (§6), so the controller **reports door state over UART** — a `doorOpen` bit in
   telemetry **plus an immediate unsolicited telemetry on change** for low-latency
@@ -1005,8 +1217,8 @@ controller/protocol involvement).
   device loop (`dev-shot`).
 - **Interaction with sleep (§17):** independent — auto-brightness governs the
   *awake* backlight; sleep turns it off; on wake it resumes.
-- **Optional Settings:** auto on/off + a manual brightness bias (detailed with the
-  Settings screen); the safety min-floor always applies.
+- **Optional Settings:** auto on/off + a manual brightness bias (in Settings → Display,
+  §24); the safety min-floor always applies.
 - **Code:** ports `IAmbientLight` (read) + `IBacklight` (set); a pure, host-testable
   `AutoBrightness` class (filter + curve + hysteresis + clamp) in `lib/` — mirrors the
   HAL/MVVM pattern.
@@ -1015,32 +1227,63 @@ controller/protocol involvement).
 
 ## 19. Setup & hazardous-confirm screens
 
-The safety gate: **Setup** (choose + review, with readiness checks) → **Confirm**
-(deliberate, specific, hard to trigger accidentally). Strictest application of the
-ui-development rules.
+The safety gate: **Setup** (load a template + review, with readiness checks) →
+**Confirm** (deliberate, specific, hard to trigger accidentally). Strictest application
+of the ui-development rules.
 
-### Setup
+### Setup — start empty, Load a profile as a template (DECIDED)
+A run begins with an **empty working profile** (no phases). You **Load** a saved
+profile (§23) to seed it, then optionally **modify it for this run** — edits apply to an
+**ephemeral working copy**, never to the saved profile. This makes every run a potential
+one-off (realizing the earlier "custom profiles on demand" decision) without polluting
+the library.
+
+**Empty (nothing loaded yet)** — Load is the one primary action, a large central button:
 ```
 ┌──────────────────────────────────────┐
-│ ‹ Reflow Setup            ● IDLE  ⬤   │  mode + machine state + link
-├───────────────────────┬──────────────┤
-│ Profile: LF-245        │ Peak 245 °C  │  selected profile + key facts
-│ [ Change ]  [ Edit ]   │ Est  6:10    │  (est total from calibration §15)
-├───────────────────────┴──────────────┤
+│ ‹ Reflow Setup            ● IDLE  ✓   │  mode + machine state + link
+├──────────────────────────────────────┤
+│        No phases yet.                 │
+│      ┌────────────────────┐           │
+│      │   Load a profile   │           │  large central primary (~200×64 px)
+│      └────────────────────┘           │
+├──────────────────────────────────────┤
+│ ‹ Back              (Start ▶ — off)   │  Start disabled until loaded + valid
+└──────────────────────────────────────┘
+```
+**Loaded (working copy seeded from a profile)** — provenance is an info line; the actions
+get a **full-width button row** (three ~106×56 px buttons), not a cramped half-cell:
+```
+┌──────────────────────────────────────┐
+│ ‹ Reflow Setup            ● IDLE  ✓   │  mode + machine state + link
+├──────────────────────────────────────┤
+│ From: LF-245 *      Peak 245° · 6:10  │  provenance + key facts (info, * = edited)
 │ °C 250│      __                       │  feasibility-aware preview (§12)
 │    25 │_ /  _/  \_ ___                │
-│       └──────────────── t             │
-├──────────────────────────────────────┤
+├───────────┬───────────┬──────────────┤
+│   Load    │   Edit    │   Save as     │  full-width action buttons (~106×56 px)
+├───────────┴───────────┴──────────────┤
 │ ⚠ Door open — close to start          │  readiness line (conditional)
 ├──────────────────────────────────────┤
 │ ‹ Back                  Start ▶       │  → Confirm (disabled if not ready)
 └──────────────────────────────────────┘
 ```
-- `[Change]` → Profile library; `[Edit]` → editor (§12). Est total is free from
-  calibration (§15).
-- **Readiness gating:** `Start` enabled only when the **link is healthy** (§13) *and*
-  the **door is closed** (`doorOpen` telemetry, §9/§17) — the hardware interlock
-  enforces it regardless, but the UI shouldn't offer an un-runnable Start; it says
+- **`Load`** → opens the Profile library in **pick mode** (§23); choosing a profile
+  **copies** it into the working buffer (a template, *not* a live reference to the saved
+  file). Re-Loading replaces the buffer — confirm first if it has unsaved edits.
+- **`Edit`** → opens the profile editor (§12) bound to the **working copy** — per-run
+  tweaks (nudge the peak, stretch a soak) that live only for this run. Provenance shows
+  as `From: LF-245` with a **`*` dirty marker** once edited.
+- **`Save as…`** (optional) → persist the tweaked working copy to the library as a
+  **new** profile (§12 name entry → §7 LittleFS) — how a good one-off becomes reusable.
+  Never silently overwrites the source.
+- **Manual build** (advanced): the §12 advanced add-phase path can populate an empty
+  working profile with **no Load**, for a fully hand-built one-off. Load is the common
+  path.
+- **Readiness gating:** `Start` enabled only when the working profile is **non-empty and
+  valid** (≥1 phase, passes §12 hard-validation) **and** the **link is healthy** (§13)
+  **and** the **door is closed** (`doorOpen` telemetry, §9/§17). The hardware interlock
+  enforces the door regardless; the UI just shouldn't offer an un-runnable Start and says
   why when blocked. `Start` always routes to **Confirm**, never straight to heat.
 
 ### Confirm (hazardous)
@@ -1095,8 +1338,8 @@ A step-wizard:
 5. **Done — the honest handoff:**
    ```
    ✓ Characterization complete · N runs logged to SD.
-   Next: copy the SD card to your PC, run the analysis to
-   generate oven_cal.h, then reflash both boards.   [ Done ]
+   Next: download the logs over WiFi (Settings → data), run the
+   analysis to generate oven_cal.h, then OTA both boards.  [ Done ]
    ```
 
 Reached from Home → Calibrate, or from the drift advisory on the Run Summary (§16).
@@ -1111,3 +1354,656 @@ views only build widget trees and bind. Domain logic (template seeding, validati
 compile-to-segments) lives in `lib/app_logic/` with **no `lv_` calls** → host-tested
 in `native_ui`/`native_logic`. Screens create-on-demand, state in subjects, delete
 on leave (no PSRAM to hoard screens).
+
+## 21. Connectivity — WiFi services (data download + OTA)
+
+The CYD's ESP32 WiFi (dead weight for control) provides two **local-network
+convenience services**, both **idle-only** and never required for a run (§1).
+
+### SD stays resident; data served over WiFi (DECIDED)
+- The **microSD stays permanently inserted** as the run/characterization datastore
+  (§7) **and the OTA bundle staging area** (§25) — no card-shuffling to a PC.
+- The CYD runs a small **HTTP server** exposing the logged length-delimited-protobuf
+  files (list + fetch) so the offline analysis/ML pipeline (§7, §10) pulls data over
+  the LAN. Read-only, local network, served **only from idle** (so the SD↔touch SPI
+  contention noted in §7 is a non-issue). The physical SD-pull path is kept as an
+  offline fallback. The **on-device Connectivity & data view** (§27) shows the URL/QR to
+  reach it.
+
+### OTA firmware update — both boards, one bundle, via the CYD (DECIDED)
+Both firmwares update **together, over WiFi, through the CYD** — reinforcing the
+**matched-pair invariant** (§9): they can't drift because they ship and apply as one
+bundle.
+
+- **Why through the CYD:** the deployment controller (STM32) has **no WiFi** and, once
+  enclosed, **no reachable USB** (§10) — so the CYD is its *only* practical field-update
+  path. The CYD OTAs itself over WiFi **and** acts as an **in-system programmer** for
+  the controller over the existing UART link.
+- **Two flashing mechanisms:**
+  - **CYD self-update:** standard ESP32 OTA — A/B (`ota_0`/`ota_1`) partitions +
+    rollback; the new image is applied on reboot, a bad/mismatched one rolls back.
+  - **Controller update (through the UART):** the CYD drops the controller into its
+    **native ROM bootloader** and writes flash over the same wires — **not** via the
+    TinyFrame/protobuf protocol (§9), which is torn down for the duration (see §9 "out-
+    of-band" note). STM32: system-memory UART bootloader (`0x7F` sync + XOR-checksummed
+    commands); bench ESP32: the ROM serial loader (esptool/SLIP). The CYD firmware
+    embeds the matching bootloader client.
+- **Extra interconnect (HARDWARE IMPACT, §2):** bootloader entry needs the CYD to drive
+  the controller's **BOOT0 + NRST** (STM32) / **GPIO0 + EN** (bench ESP32) — **two
+  control lines beyond the two UART signals.** The controller PCB + interconnect
+  connector must budget for them; without them, controller OTA falls back to a manual
+  BOOT jumper.
+- **Sequencing + fail-closed:** flash the **controller first** — the riskier, over-UART
+  leg, done while the CYD is still on its known-good image — then re-handshake and
+  **verify `Hello.schemaHash`** (§9); only then apply the **CYD self-update** and
+  reboot. Any half-applied outcome is caught by the **schema-hash gate**: a stale ↔ new
+  pair makes the controller refuse to leave safe state and the CYD shows the mismatch
+  error (§9). OTA and the gate compose — a botched update fails **safe, not hot**.
+- **Safety gating (mandatory):** OTA is a deliberate, confirmed action allowed **only
+  from idle AND cool** — never during a run, never while HOT (§17). During the
+  controller-flash window the controller sits in its bootloader, **not** running the
+  safety supervisor, so the fail-safe **pull-downs keep heater/UV OFF** (§4 L2) and
+  mains should be de-energized — this is exactly why outputs default OFF on reset.
+
+### Build / topology impact
+- These services live in the **production firmware**, gated by a runtime **Settings →
+  WiFi** toggle — **distinct** from the compile-time `UI_DEV_TOOLS` dev-server
+  (screenshot/touch injection, ui-development skill), which stays dev-only. WiFi
+  credentials still come from git-ignored `include/secrets.h`; on-device provisioning
+  is an open (§10).
+- **Flash budget:** the CYD partition table must fit **LittleFS profiles + A/B OTA
+  slots** within 4 MB — verify (§10).
+- WiFi remains a **non-goal for operation** (§1): a run needs no network; these are
+  convenience/maintenance services only.
+
+## 22. Fault / alarm overlay
+
+The one screen that appears **unbidden**, over any other screen (including a sleeping
+one, §17). Primary job: tell the operator, unmissably, that the machine **has already
+been forced to a safe state** and get a deliberate acknowledgment. **It is an alarm +
+acknowledgment, not a control:** by the time it draws, the controller has *already*
+cut heater + UV (§4 L1–L3, §9 `Fault`) — there is nothing left to "stop," which is why
+it can safely be a plain modal with no STOP button.
+
+### Trigger sources (two origins)
+1. **Controller `Fault{ session, code }`** (§9) — the controller safed itself and
+   reported why: over-temp, sensor fault, electronics over-temp abort (§6), watchdog
+   event, etc.
+2. **CYD-detected link loss *during a run*** — if the UART goes silent mid-run the CYD
+   can't *receive* a `Fault`, so it self-raises the overlay from its own
+   heartbeat-timeout. The safety invariant still holds: the controller safes on its
+   own command-timeout (§9) even though it can't tell us — the overlay says so rather
+   than pretending to confirm live state.
+
+**Not this overlay:** an **door-open during a run** is an *expected* event (§15), not a
+red alarm — reflow shows "Run aborted — door opened," cure shows the Paused overlay.
+Soft warnings (enclosure first-threshold, §4; calibration drift, §16) use **inline
+amber banners**, never this modal. Keeping the red fault overlay rare is what preserves
+its force (design rule).
+
+### Layout (modal, red — the danger screen)
+```
+┌──────────────────────────────────────┐
+│  ⛔  F A U L T                        │  red banner: icon + the word FAULT
+├──────────────────────────────────────┤
+│  Chamber over-temperature             │  plain-language cause (largest text)
+│                                       │
+│  Heater & UV are OFF · run aborted    │  what the system already did (reassure)
+│  Chamber  268 °C                      │  the relevant live reading (if any)
+│                                       │
+│  Code: OVERTEMP_CHAMBER               │  small — for logs/support
+├───────────────────┬──────────────────┤
+│    Details        │   Acknowledge     │  Details (optional) · big ack (right)
+└───────────────────┴──────────────────┘
+```
+- **Red is used in full here** — this is *the* hazard screen, the one place the design
+  rules reserve it for — always paired with the word **FAULT** + icon (never colour
+  alone).
+- **Acknowledge is a plain single tap**, not press-and-hold: dismissing an alarm is a
+  *safe* action (the hazard is already mitigated), and the design rules reserve
+  press-and-hold for *energizing* actions. Large (≥67 px), on the right.
+- **Details** (optional, secondary) expands the raw `faultCode`, `ctrlMillis`, and the
+  last telemetry vector — for the SD log / troubleshooting, not the primary path.
+
+### Fault taxonomy (plain-language mapping)
+The controller owns the `faultCode` enum in the shared `.proto` (§9); the CYD maps each
+code to a title + guidance via a table in `lib/app_logic` (host-testable). Initial set:
+
+| Code | Title (CYD) | Typical cause |
+|------|-------------|---------------|
+| `OVERTEMP_CHAMBER` | Chamber over-temperature | high-limit / setpoint clamp tripped (§4 L3) |
+| `OVERTEMP_CASE` | Electronics over-temperature | on-PCB case sensor abort (§6) |
+| `SENSOR_FAULT` | Temperature-sensor fault | thermocouple open/short (MAX31855 fault bit) |
+| `LINK_LOST` | Lost communication | heartbeat timeout (CYD- or controller-detected) |
+| `WATCHDOG` | Controller reset (watchdog) | supervisor/loop hang → reset (§4 L2, §11) |
+| `INTERNAL` | Controller fault | catch-all / assertion |
+
+- **Unknown code → still informative:** a code the CYD's table doesn't recognize shows
+  `Fault <code> — oven safed to a safe state` rather than a blank — defensive even
+  though the matched-pair invariant (§9) should keep the tables in sync.
+- `LINK_LOST` wording is special (can't confirm live state): *"Lost communication with
+  the controller. If a run was active it safes itself automatically (heartbeat
+  timeout)."* — reassurance via the invariant, not a live readback.
+
+### Behavior (DECIDED)
+- **Latching — never auto-dismiss.** The overlay stays until an explicit Acknowledge,
+  **even if the condition clears** (e.g. the link returns). A fault is a human-in-the-
+  loop event; it must not vanish on its own.
+- **Wakes the display** (§17): a fault arriving during sleep lights the screen *then*
+  draws the overlay — never hide a fault behind a dark backlight.
+- **Multi-modal annunciation** (operator may not be looking): pulse the CYD's on-board
+  **RGB LED red** and sound the **buzzer** while the fault is unacknowledged; both stop
+  on Acknowledge. (Pattern/volume TBD, §10.) These *reinforce* the screen, never
+  replace it.
+- **Higher-priority fault while shown:** update the overlay to the new cause and keep a
+  `+N` count; don't stack modals.
+- **On Acknowledge:** route to the **Run Summary (Fault outcome, §16)** if a run was
+  active (so the aborted run still gets its record + drift/cause context), else to
+  **Home**. If the fault was over-temp, the **HOT** state (§14) persists on Home and
+  keeps suppressing sleep (§17) until the chamber cools.
+- **Acknowledge is always allowed** — it dismisses the *alarm*, not the *hazard* (which
+  is already handled). We deliberately do **not** gate it on the condition clearing;
+  the persistent HOT / link-lost indicators carry any residual state forward.
+
+### Design-rule compliance
+- Modal blocks everything beneath — acceptable here because nothing beneath is
+  actionable once safed (no STOP to preserve; the abort already happened).
+- Big-text cause first; ≥67 px ack target; visible pressed-state < 100 ms; contrast
+  ≥7:1 on the red (critical readout).
+- Red reserved for exactly this class of event; warnings stay amber and inline.
+
+### Code architecture (per the ui-development skill)
+- A top-layer LVGL object (`lv_layer_top`) so it draws over *any* screen incl.
+  sleep-wake, decoupled from the current screen's lifecycle.
+- **MVVM:** a `FaultViewModel` owns `lv_subject_t` state (active flag, current code,
+  count); the controller gateway (the loop-side marshal, per the skill) sets it from
+  `Fault`/link-timeout — **no `lv_` calls off the UI task.** The `faultCode → {title,
+  guidance, severity}` table lives in `lib/app_logic` with no `lv_` deps → unit-tested
+  in `native_logic`; the view only binds + renders. Latching + ack-routing logic is
+  host-testable state, not view code.
+
+## 23. Profile library
+
+Browse/manage saved profiles and **Load** one into a run. **Two independent, mode-scoped
+libraries** (cure, reflow) — never mixed (§7): a reflow curve is meaningless in cure and
+vice-versa, so separation both keeps each list short on the small screen and guarantees a
+run can only ever load a **same-mode** profile (the §4 cap + §12 template always match).
+
+### Two contexts, one screen pair
+- **Manage** — from **Home → Profiles → (Cure | Reflow)** (§13): full CRUD.
+- **Pick** — from **Setup → `Load`** (§19): choose a profile → it's **copied** into the
+  run's working buffer (a template, not a live reference); returns to Setup. Locked to
+  the run's mode.
+
+### Screen 1 — library list (mode-scoped)
+```
+┌──────────────────────────────────────┐
+│ ‹ Reflow profiles                 ⧉   │  header: fixed mode (no cross-mode tab)
+├──────────────────────────────────────┤
+│  LF-245        peak 245° · ~6:10      │  ← selected (highlighted) row
+│  SAC305        peak 249° · ~6:30      │  single-line text rows (compact)
+│  LF-lowpk 🔒   peak 230° · ~5:40      │  🔒 = stock (read-only)
+│  MyBoard       peak 240° · ~6:00      │
+├───────┬────────┬────────┬────────────┤
+│ + New │   ▲    │   ▼    │   Open ›    │  create · move sel ▲/▼ · open selected
+└───────┴────────┴────────┴────────────┘
+```
+- **Rows stay single-line text** (compact → ~4–5 visible); you don't press them
+  directly. The real gloved touch targets are the **four footer buttons (~78 px each,
+  ≥67 px)**.
+- **`▲` / `▼`** move the **selection highlight** one row (auto-scrolling the list at the
+  edges — no separate paging, no drag; mirrors the §12 advanced-list up/down). **`Open ›`**
+  acts on the highlighted profile → the detail/actions screen. (A direct row tap may
+  also select, a bare-finger convenience, but the buttons are the guaranteed path.)
+- Header reads **"Reflow profiles"** (manage) or **"Load reflow profile"** (pick); the
+  mode is **fixed** either way — you never see the other mode's profiles here.
+- **`+ New`** → a fresh profile seeded from this mode's **default template** (§12) →
+  editor. (Distinct from Setup's empty-then-Load flow, §19.)
+- Row facts (peak, est duration) are computed from the compiled-in calibration (§15/§6).
+
+### Screen 2 — profile detail / actions
+```
+┌──────────────────────────────────────┐
+│ ‹ LF-245                     ⧉ Reflow │  back + name + mode badge
+│ °C 250│      __                       │  read-only derived curve (§12 preview)
+│    25 │_ /  _/  \_ ___                │
+│       └──────────────── t             │
+│ peak 245 °C · ~6:10 · 4 phases        │  key facts
+├───────┬───────┬───────┬──────────────┤
+│  Load │ Edit  │  Dup  │   Delete      │  actions (Delete/Edit gated for stock)
+└───────┴───────┴───────┴──────────────┘
+```
+- **`Load`** (primary in pick context): copies this profile into Setup's working buffer
+  and returns to Setup (§19). In manage context it's a shortcut — enters this mode's
+  Setup with it pre-loaded.
+- **`Edit`** → editor (§12) on the **saved** profile (a persistent edit — unlike
+  Setup→Edit, which edits the ephemeral working copy). On a **stock** profile, Edit
+  becomes **Save-as** (source preserved).
+- **`Dup`** → copy within the same library as "`LF-245 copy`" — a user (editable,
+  deletable) profile.
+- **`Delete`** → **user profiles only**; stock 🔒 disables it. Simple **confirm dialog**
+  (not press-and-hold — deleting a file isn't an *energizing* hazard; press-and-hold
+  stays reserved for heat/UV, §19/§22).
+
+### Stock vs. user profiles (DECIDED)
+Seeded defaults (`data/` → `uploadfs`, §7) are **stock / read-only** per mode — Edit
+Save-as's, Delete is disabled — so the factory references can't be lost. **Restore stock
+profiles** lives in Settings (per mode, §24).
+
+### Behavior & tie-ins
+- **Reflects LittleFS live:** the list *is* the mode's store — profiles pushed over
+  serial/WiFi (§7/§21) land in the right mode dir and appear automatically.
+- **Empty state:** "No profiles — New to create one" (shouldn't happen with stock seeds).
+- **Sort:** recently-used first, then alphabetical (default, §10).
+- **Rename** is via the editor (§12 name entry), not a separate library action.
+
+### Design-rule compliance
+Rows are compact single-line text (not pressed directly); the interactive controls are
+the **four footer buttons ≥67 px** (New · ▲ · ▼ · Open) that drive selection + actions —
+glove-safe without shrinking the list. Mode badge is category colour paired with a
+word/icon (never colour alone); pressed-state < 100 ms; Delete behind a confirm. One
+primary job: choose a profile.
+
+### Code architecture (per the ui-development skill)
+- A per-mode **`ProfileStore`** in `lib/app_logic` over a **storage port** (LittleFS
+  adapter on device, in-memory fake on host) — list/load/save/delete/duplicate, no `lv_`
+  deps → host-tested in `native_logic`.
+- A **`ProfileLibraryViewModel`** scoped to one mode owns `lv_subject_t` list/selection
+  state; views bind + render. The detail screen reuses the **shared curve-preview logic**
+  (§12) for its read-only chart. Create-on-demand, delete on leave (no PSRAM, §skill).
+
+## 24. Settings
+
+The rarely-visited hub for preferences + maintenance. Reached from Home → Settings (§14),
+**idle-only** (never during or with a staged run — some settings, e.g. temp caps, must not
+change under a live profile). A **categorized hub → sub-panels**, using the same
+glove-safe **▲/▼-highlight + `Open`** list pattern as the profile library (§23) so no
+screen relies on precise small-target taps.
+
+### Settings hub
+```
+┌──────────────────────────────────────┐
+│ ‹ Settings                        ✓   │  back + link indicator
+├──────────────────────────────────────┤
+│  Display & units                      │  ← selected (highlighted)
+│  Temperature limits                   │
+│  Sleep & wake                         │
+│  Network (WiFi)                       │
+│  Data & firmware                      │
+│  Profiles                             │
+│  About                                │
+│  Advanced ▢                           │  master toggle (shows state)
+├───────────────────┬──────────┬───────┤
+│        ▲          │    ▼     │ Open ›│  move highlight · open panel
+└───────────────────┴──────────┴───────┘
+```
+
+### Panels (controls per category)
+Every control obeys the sizing rules: **numbers** → the shared value-stepper editor
+(~96 px −/+); **booleans** → **full-width toggle rows** (≥56–67 px, the whole row is the
+target, not an inline `[ON]`); **choices** → the ▲/▼-highlight + `Open` list. No inline
+mini-controls.
+- **Display & units** — temperature **units** (°C/°F toggle; applies everywhere: editor,
+  run, about); **auto-brightness** on/off + a manual **brightness bias** (→ the shared
+  value-stepper editor, below) (§18). The **min-brightness floor always applies** even at
+  lowest bias (HOT/UV/fault must stay legible, §18) — not user-defeatable.
+- **Temperature limits** — the per-mode **user max-temp caps** (§4): UV and reflow, each a
+  stepper (below). The one safety-relevant panel.
+- **Sleep & wake** — **idle timeout** (~1–2 min default, §17; → the shared value-stepper
+  editor). The **never-sleep-during-a-run** and **stay-awake-while-HOT** rules are **not**
+  user-disableable (§17) — shown as fixed, not toggles.
+- **Network (WiFi)** — enable toggle; join / status + IP → the **Connectivity & data view**
+  (§27). All WiFi services are **idle-only** (§21). SSID/password use a **large-key
+  on-screen keyboard** (the necessary free-text exception, like the profile name §12 — not
+  a numeric field). Provisioning UX is open (§10).
+- **Data & firmware** — the **Connectivity & data view** (§27, log download over WiFi) and
+  **Check for / apply firmware update** → launches the **OTA flow** (§25), which is gated
+  **idle AND cool** and updates **both boards as a matched pair**.
+- **Profiles** — **Restore stock profiles**, per mode (cure / reflow): re-seeds the
+  read-only stock set from firmware defaults (§23), behind a confirm.
+- **About** — read-only: CYD `fwVer`, controller `fwVer` + caps, the `schemaHash`
+  matched-pair fingerprint (§9), active **calibration** params + date (§6), board id.
+  The place to verify a matched-pair after an OTA.
+- **Advanced ▢** — a **master toggle** (off by default, progressive disclosure per the
+  skill) that unlocks advanced **profile editing** (add/remove/reorder segments, §12) and
+  any diagnostic options. Distinct from the compile-time `UI_DEV_TOOLS` dev-server (§21) —
+  this is a *runtime user* toggle, not that.
+
+### Temperature-limits panel (safety-relevant — DECIDED)
+Two caps, each edited on its **own** value-stepper screen (below) — **not** two cramped
+inline steppers on one panel (the +/− wouldn't meet the touch-target floor at 320×240).
+The panel is a 2-row list; `Open` edits the highlighted cap.
+```
+┌──────────────────────────────────────┐
+│ ‹ Temperature limits              ✓   │
+├──────────────────────────────────────┤
+│  UV cure max              100 °C      │  ← selected (highlighted)
+│  Reflow max               500 °C      │
+├───────────────────┬──────────┬───────┤
+│        ▲          │    ▼     │ Open ›│  move highlight · edit selected cap
+└───────────────────┴──────────┴───────┘
+```
+
+### Value-stepper editor (shared, glove-sized — DECIDED)
+Every single numeric setting (a temp cap, idle timeout, brightness bias) opens **this
+one-value-per-screen editor** with **large −/+ buttons (~96 px ≈ 17 mm, in the design
+guide's 15–20 mm gloved-industrial band)**. Rationale straight from the panel math
+(5.6 px/mm): +/− are **primary controls → 67–84 px minimum**, and two side-by-side
+steppers can't hit that on a 240 px-tall panel — so each value gets its own screen
+(progressive disclosure, as the guide intends). This one editor is reused everywhere a
+number is set.
+```
+┌──────────────────────────────────────┐
+│ ‹ UV cure max                     ✓   │  header (what you're editing)
+├──────────────────────────────────────┤
+│ ┌────────┐              ┌────────┐   │
+│ │        │    100 °C    │        │   │  big − · large value · big +
+│ │   −    │ (tap value → │   +    │   │  (−/+ ≈ 96×96 px)
+│ │        │    keypad)   │        │   │
+│ └────────┘              └────────┘   │
+│  Range 60–120 · default 100 °C        │  min/max + default (context)
+│  ⚠ Above default — higher burn/fire   │  amber note, conditional (caps only)
+│     risk; hardware fuse still governs │
+├──────────────────────────────────────┤
+│ ‹ Cancel                    Save ✓    │
+└──────────────────────────────────────┘
+```
+- **Large −/+ (~96 px), disabled at min/max** (guide: disable, don't hide); value large +
+  centered; **tap the value → constrained numeric keypad** (large keys, §26) for big jumps;
+  **press-and-hold −/+ accelerates** (the guide's stepper pattern).
+- For a **temp cap**, the −/+ ceiling is the mode's **firmware absolute hard-max** (§4
+  layer 1): the value moves only *within* it, **never loosens past it**; the controller
+  enforces the hard-max regardless (untrusted-CYD-proof, §4/§9).
+- **Save is a plain button, not press-and-hold** — editing a cap starts no heat/UV (the
+  §19 Confirm is the real energizing gate). But **raising a cap above default** shows the
+  **amber caution** — a visible nudge without confirmation friction.
+- On **Save**, any profile loaded in Setup is **re-validated** against the new cap (§12
+  hard-validation) — lowering below a loaded profile's peak flags it.
+
+### Persistence & behavior
+- All settings persist on the CYD (LittleFS/NVS, §7), separate from the profile stores;
+  firmware ships the **defaults** (units °C, UV cap 100 °C, reflow cap 500 °C, idle ~1–2
+  min, auto-brightness on). "Restore defaults" (global) lives here too.
+- Changes apply on the panel's **Save** (or immediately for toggles); idle-only entry means
+  none of this races a run.
+
+### Code architecture (per the ui-development skill)
+- A typed **`SettingsStore`** in `lib/app_logic` over the storage port (LittleFS adapter /
+  in-memory fake), with **validation baked in** — e.g. the shared value-stepper editor
+  clamps a cap to the firmware hard-max — host-tested in `native_logic`. The value-stepper
+  editor is a **reusable widget** (min/max/step/units/keypad), used by settings and the
+  profile editor (§12) alike.
+- Per-panel **view models** expose `lv_subject_t` settings; views bind + render. The temp
+  caps publish to the subjects the profile editor (§12) reads for its stepper ceilings, so
+  a changed cap tightens the editor with no extra wiring. Hub + panels create-on-demand,
+  delete on leave (no PSRAM, §skill).
+
+## 25. OTA firmware-update flow
+
+A wizard that updates **both boards as one matched pair** over WiFi, launched from
+**Settings → Data & firmware → Update firmware** (§24). Its defining property is the
+**fail-closed staging** (§21): the controller is flashed **first**, while the CYD is still
+on its known-good image, and the **schema-hash gate** (§9) catches any half-applied pair —
+so a botched update ends **safe, not hot**. This is a maintenance flow, not a machine
+process: it runs **only idle AND cool** and there is no heat/UV anywhere in it.
+
+### Preconditions (the gate — all must hold to start)
+- **Idle AND cool** — no run staged/active, chamber below the safe-touch threshold (§17).
+  Blocked with the reason otherwise (`⚠ Let the oven cool before updating`).
+- **Link healthy + schema OK now** (§9) and **WiFi connected** (§21).
+- **A valid bundle is available** (below). Any failure → the flow won't arm; it says why.
+
+### Update bundle
+One artifact carrying **both images + a manifest**: `{ cydImage, ctrlImage, cydVer,
+ctrlVer, schemaHash, hardwareId, per-image checksums }`. The `schemaHash` is the pair's
+fingerprint (§9) — the two images are built together, so the bundle *is* the matched pair.
+The CYD **validates before flashing anything**: checksums, `hardwareId` matches this unit,
+and the manifest is well-formed. Bundle **source/signing** is an open (§10) — fetched from
+a configured URL or uploaded to the CYD's HTTP endpoint (§21); signing/auth still TBD.
+
+### Memory & staging (no image is ever held in RAM)
+OTA is **stream-to-storage, never buffer-in-RAM** — the CYD's ESP32-WROOM has **no PSRAM**
+and only ~300 KB SRAM (far less free with WiFi + LVGL up), nowhere near a firmware image,
+so neither image is ever fully resident.
+- **The bundle stages on the SD card** (always inserted — SD is the OTA staging area too,
+  §7/§21). Gigabytes free, and it keeps **both images off the 4 MB internal flash**.
+- **CYD self-update** streams SD → the inactive A/B slot (`ota_1`) in ~KB chunks while
+  running from `ota_0`; the **controller image** streams SD → UART chunk-by-chunk, hashed
+  on the fly — neither is fully buffered.
+- So the **4 MB internal flash** only carries the **CYD app twice** (`ota_0`/`ota_1`) +
+  bootloader/NVS/otadata + LittleFS (profiles + settings). Whether the app fits **twice**
+  in 4 MB is the binding question (§10) — measure once built (~1.5 MB/slot ceiling with
+  LittleFS alongside). Fallbacks if not: an **8/16 MB flash CYD variant**, or
+  **single-slot + recovery** (giving up seamless A/B rollback).
+
+### Staged sequence (fail-closed)
+```
+Preflight ─► Review/Confirm ─► [1] Flash controller (UART) ─► [2] Verify controller
+          ─► [3] Flash CYD (self, A/B) ─► reboot ─► [4] Post-reboot result
+```
+1. **Flash controller (over UART).** The CYD drives **BOOT0+NRST / GPIO0+EN** (§2) to drop
+   the controller into its **ROM bootloader** and writes + verifies flash via the native
+   loader (§21) — *not* the TinyFrame protocol. The riskiest leg, done **while the CYD is
+   still on its good image** so a failure here is fully recoverable.
+2. **Verify controller.** Re-establish the TinyFrame link, exchange `Hello`, and **check
+   `schemaHash` == the bundle's** (§9). Mismatch / no response → **abort before touching
+   the CYD** (keep a working CYD; offer retry).
+3. **Flash CYD (self).** Write the new image to the **inactive A/B slot** (`ota_1`), mark
+   it to boot, then **reboot**. The old slot is untouched.
+4. **Post-reboot result.** The new CYD boots, re-handshakes, and confirms the pair's
+   `schemaHash`. Match → **commit** the new slot + show success. If the new image is bad
+   (won't boot) → ESP32 **rolls back** to the old slot → old-CYD + new-controller =
+   **schema mismatch** → the §9 gate **holds safe state** and shows the mismatch, prompting
+   a re-run. Every partial outcome converges to *safe*.
+
+### Screens
+**Review / Confirm** — plain confirm (reflashing starts no heat/UV, so **not**
+press-and-hold, §19/§22; the risk is interruption, not energy):
+```
+┌──────────────────────────────────────┐
+│ ‹ Firmware update                 ✓   │
+├──────────────────────────────────────┤
+│  Display (CYD)   v1.3  →  v1.4        │  old → new, both boards
+│  Controller      v0.8  →  v0.9        │
+│  Schema  ✓ matched pair               │  bundle is a matched set (§9)
+│                                       │
+│  ~3 min · both boards restart.        │
+│  ⚠ Keep powered — do NOT switch off.  │  interruption caution (not energy)
+├───────────────────┬──────────────────┤
+│     Cancel        │     Update        │  plain confirm; Cancel is the easy one
+└───────────────────┴──────────────────┘
+```
+**Flashing** — long op → progress + percent + persistent "do not power off" (guide's
+>10 s rule). **No Cancel once a write begins** (interrupting risks a bad image); Cancel is
+offered only *before* stage 1:
+```
+┌──────────────────────────────────────┐
+│  Updating firmware                    │
+│                                       │
+│  [1/2] Controller                     │  which stage
+│  ▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░  57%            │  progress bar + percent
+│                                       │
+│  ⚠ Keep powered — do NOT switch off.  │  persistent, whole flow
+│  Outputs are OFF.                     │  reassurance (pull-downs, §4 L2)
+└──────────────────────────────────────┘
+```
+**Result** — success or a recovery state (below). Success is really the *next* normal boot
+confirming the pair; the flow ends on a `✓ Updated — CYD v1.4 · controller v0.9 · schema OK`
+card with **[ Done ]**.
+
+### Failure & recovery (every partial state is recoverable)
+| Failure point | State | Recovery |
+|---|---|---|
+| Bad/mismatched bundle | nothing flashed | reject up front; fix the bundle |
+| Controller flash fails | CYD good, controller partial | **Retry** — the controller's **ROM bootloader is always reachable** via BOOT0 (§2), so it's **not bricked** |
+| Post-flash verify mismatch | controller new-but-wrong, CYD untouched | abort before CYD; retry controller |
+| CYD self-update / rollback | old CYD + new controller | §9 schema gate **holds safe** + shows mismatch → re-run OTA |
+| Power loss mid-flash | controller partial and/or CYD on old A/B slot | on repower: ROM bootloader + A/B good-slot make it recoverable; CYD detects no-valid-controller / mismatch → offers re-flash |
+
+The reassurance to surface throughout: **the controller ROM bootloader is immutable and
+the CYD keeps a known-good A/B slot**, so there is no single step that bricks the unit.
+
+### Safety & design-rule compliance
+- **Idle+cool gate**, no heat/UV in the flow; during the controller-bootloader window the
+  supervisor isn't running, so **fail-safe pull-downs keep heater/UV OFF** (§4 L2) — the
+  flow shows "Outputs are OFF."
+- **No STOP** (nothing is running; not a heat process) — the one screen class exempt from
+  the persistent-STOP rule, like the root hub (§14).
+- **Plain confirm, not press-and-hold** — reflashing isn't an energizing action; the
+  "do not power off" warning addresses the real (interruption) risk. Press-and-hold stays
+  reserved for heat/UV (§19/§22).
+- Progress + percent + "keep powered" for the multi-minute op (>10 s rule); big-text
+  stage/percent; buttons ≥67 px.
+
+### Code architecture (per the ui-development skill)
+- An **`OtaController`** in `lib/app_logic` drives the state machine (preflight → stages →
+  verify → result) over ports: a **`BundleSource`** (validate/read images), a
+  **`ControllerProgrammer`** (BOOT/reset + native-loader client — the STM32/ESP32
+  bootloader protocol, host-fakeable), the **`ISerialTransport`** (§11) for the verify
+  handshake, and the ESP32 **self-OTA** API. Staging + fail-closed logic is **host-tested**
+  in `native_logic` with fakes (simulate flash-fail, verify-mismatch, rollback).
+- An **`OtaViewModel`** exposes `lv_subject_t` progress/stage/result; the flashing work
+  runs off the LVGL loop (gateway pattern, §skill) so the UI stays responsive. Screens
+  create-on-demand.
+
+## 26. On-screen numeric keypad
+
+The **type-from-scratch / big-jump** partner to the value-stepper editor (§24). Reached by
+**tapping the value** in the value-stepper editor (so it backs every numeric field — temp
+caps, phase target/ramp/hold, exposure, timeouts, brightness bias, §12/§24). Steppers are
+for nudging; the keypad is for large changes and fresh entry. It's a **shared modal**
+configured per field with `{min, max, units}`.
+
+### Layout math (why 5×2, not a phone 3×4)
+A phone-style **3-column × 4-row** pad **doesn't fit** at 320×240: four key rows at the
+56 px floor = 224 px, leaving nothing for a header + value display. So digits go in a
+**wide 5-column × 2-row** block instead — that keeps keys **≥56 px on both axes** and still
+leaves room for the value line and a control row.
+```
+┌──────────────────────────────────────┐
+│ Target temp                        ✕  │  field name + Cancel (✕, ≥56 px hit area)
+├──────────────────────────────────────┤
+│   245 °C            min 60 · max 500   │  live value + units + range (always shown)
+├──────┬──────┬──────┬──────┬───────────┤
+│  1   │  2   │  3   │  4   │     5      │  digit row 1  (~64×60 px keys)
+├──────┼──────┼──────┼──────┼───────────┤
+│  6   │  7   │  8   │  9   │     0      │  digit row 2
+├──────────┬──────────┬─────────────────┤
+│    ⌫     │  Clear   │      OK ✓        │  ~106×54 px controls; OK widest (primary)
+└──────────┴──────────┴─────────────────┘
+```
+- Digit keys ≈ **64×60 px** (320/5 wide, two rows in the remaining height); controls
+  ≈ **106×54 px**. All clear the 56 px floor; OK is the widest/primary.
+- **Integer-only (DECIDED — no `.` key).** Every user-entered numeric field is a whole
+  number — temps (°C), times (s), timeout (min), brightness bias (%). The only fractional
+  values in the design (ramp *rate* `−2.0/s`, live temps, calibration constants) are
+  **derived/displayed, never typed** (§5/§6/§12). Dropping decimals removes the `.` key,
+  decimal-position logic, and float-rounding entirely. **Escape hatch:** if a rate-based
+  entry field is ever added, decimals become a small per-field extension — not built now.
+- **No `+/−` key** — no field takes a negative (cool rates aren't entered directly, §5).
+  Values shown as plain integers.
+
+### Behavior (constrained, not validated-after — the guide's rule)
+- **Range is enforced, not just checked.** Digits that would push the value **over `max`
+  are blocked** (can't type an out-of-range number); **`OK` is disabled until the value is
+  in `[min,max]`** (covers the incomplete-low case, e.g. still below `min`). The value goes
+  **amber with the range reminder** while `OK` is disabled — you always see why.
+- **`⌫`** deletes the last digit; **`Clear`** empties; both give instant (<100 ms) value
+  feedback. Every key shows a pressed state immediately.
+- **`✕` / Cancel** discards and returns to the stepper editor with the **old** value;
+  **`OK`** commits the new value back to the field. The keypad never talks to the
+  controller — it just edits a number.
+- Opens **pre-loaded with the current value** and the field's units/range; sensible.
+
+### Relationship to the value-stepper editor (§24)
+Together they are the guide's "coarse + fine" numeric pattern: the **stepper** (±, ~96 px)
+for small deliberate changes at a limit, the **keypad** for wide-range entry — sharing one
+per-field config so `min/max/units` are identical whichever you use, and both
+clamp to the same firmware bound (e.g. a temp cap's hard-max, §4).
+
+### Code architecture (per the ui-development skill)
+- A pure **`NumericEntry`** logic class in `lib/app_logic` (append-digit, backspace, clear,
+  in-range test, over-max block) — **no `lv_`**, host-tested in `native_logic` (the
+  range/clamp/edge rules are exactly the kind of logic to unit-test off-device).
+- A reusable **keypad view** binds to it via `lv_subject_t` (typed value, valid flag);
+  opened as a modal over the value-stepper editor, returning the committed value through a
+  subject. One widget, configured per field — no per-screen keypads.
+
+## 27. Connectivity & data view
+
+Where you go to **get logged data onto a PC** and manage WiFi. Reached from Settings →
+**Data & firmware** (the data half; the firmware half is OTA, §25) and Settings →
+**Network** (§24). **Idle-only** — all WiFi services are (§21).
+
+**Key framing:** the actual file browsing/downloading happens in a **PC (or phone)
+browser** against the CYD's HTTP server (§21) — so this screen's job is to get you *to*
+that server (**URL + QR**) and summarize what's on the SD, **not** to list every file with
+download buttons (a poor use of 320×240 when the PC does it better). The header keeps the
+global **controller-link** glyph (§13); WiFi status is a separate, clearly-labelled body
+line so the two links aren't confused.
+
+### Connected state (the primary view)
+```
+┌──────────────────────────────────────┐
+│ ‹ Connectivity & data             ✓  │  back + controller-link glyph (§13)
+├──────────────────────────────────────┤
+│ WiFi ✓ MyShopNet        192.168.1.42  │  WiFi status: SSID + IP (own line)
+├───────────────────────┬──────────────┤
+│ Get your data — on a  │  ┌─────────┐  │  the one primary job
+│ PC/phone browse to:   │  │ ░▓░▓ QR │  │  QR of the URL (scan to open)
+│  oven.local           │  │ ▓░▓░    │  │  mDNS hostname (stable)
+│  (192.168.1.42)       │  └─────────┘  │  IP fallback
+├───────────────────────┴──────────────┤
+│ Logs  37 runs · 12.4 MB · SD 61% free │  storage summary
+├───────────┬──────────────────────────┤
+│ WiFi setup│        Delete logs        │  join/change · delete (→ confirm)
+└───────────┴──────────────────────────┘
+```
+- **Reach it two ways:** a stable **mDNS hostname `oven.local`** (survives DHCP address
+  changes) with the raw **IP** as fallback, plus a **QR of the URL** (scan with a phone to
+  open the file listing, or point a laptop camera). Big, legible URL — it's meant to be
+  read and typed.
+- **Storage summary**, not a file list: run count, total size, SD free. The per-file list +
+  download live in the PC browser (server serves the length-delimited protobuf logs §7 →
+  PC decoder → DuckDB/CSV/Parquet).
+
+### Other states
+- **WiFi off:** body shows `WiFi off` + a single **[ Turn on WiFi ]**; no URL/QR.
+- **Connecting / no network:** `WiFi — connecting…` or `not connected`; **[ WiFi setup ]**
+  prominent; no server URL until associated.
+- **Connected but idle-gated:** the server is available **only while idle** (§21) — if a
+  run were active the view isn't reachable anyway (idle-only entry).
+
+### WiFi setup (join) sub-flow
+`WiFi setup` → scan/list networks (the §23 ▲/▼-highlight + `Open` list) → pick SSID → enter
+password on the **on-screen keyboard** (text entry — the one remaining minor UI piece, §10)
+→ associate. **Provisioning path is still open (§10):** if on-device provisioning is
+implemented this is the flow; if creds stay **compile-time in `include/secrets.h`** (§21),
+this view is **status-only** and `WiFi setup` is hidden/greyed. The view is built to work
+either way.
+
+### Storage management
+**Delete logs** frees SD space (the SD is permanent, §21, so on-device cleanup is useful).
+It's **data loss, not a machine hazard** → a **plain confirm dialog** (not press-and-hold,
+which stays reserved for heat/UV, §19/§22), and it sits visibly apart from the benign
+actions. Per-file deletion stays on the PC; on-device is **delete-all** (granularity is a
+minor open, §10).
+
+### Design-rule compliance
+- **Idle-only**; **no STOP** (nothing runs here — the maintenance-screen exemption, like
+  the hub §14 and OTA §25). Buttons ≥67 px; **Delete** behind a confirm and isolated from
+  benign controls. The **URL is a primary, large, high-contrast readout** (it's the datum
+  the screen exists to convey). Colour only for state (WiFi ✓/✗ glyph+word, never a bare
+  dot — §13).
+- **Read-only + local:** the server only *serves* logs on the LAN; **auth is an open**
+  (§10) — worth a one-line "anyone on your network can read the logs" note in the UI.
+
+### Code architecture (per the ui-development skill)
+- A **`ConnectivityViewModel`** exposes `lv_subject_t` state: WiFi phase
+  (off/connecting/connected), SSID, IP + `oven.local`, the server URL, and the **log
+  summary** (run count, bytes, SD-free). WiFi + HTTP server run **off the LVGL loop**
+  (gateway pattern, §skill) and marshal events into the subjects.
+- The **log summary** comes from scanning the SD log dir behind the storage port
+  (`lib/app_logic`), host-testable (counting/sizing logic, no board). The **QR** is
+  generated locally from the URL string (small encoder → canvas). The join flow reuses the
+  §23 list + the on-screen keyboard.
