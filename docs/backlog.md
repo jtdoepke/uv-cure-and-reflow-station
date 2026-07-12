@@ -11,13 +11,14 @@ each before starting that step's items. The step-1 blockers are Milestone 0.
 
 ## Milestone 0 — Plumbing (do first; everything depends on it)
 
-- [ ] **M0.1 — Controller env + skeleton + test lane.** New PlatformIO env for
+- [x] **M0.1 — Controller env + skeleton + test lane.** New PlatformIO env for
   the controller; `lib/control_port/` + `lib/control_logic/` skeleton; a
   controller lane in the three-tier native test setup. Empty-but-compiling
   structure with one trivial test per lane. (§3, §10, §11)
 - [ ] **M0.2 — nanopb + TinyFrame deps + protobuf codegen step** wired into
-  both envs, proven with a dummy message. (§9, §10)
-- [ ] **M0.3 — `.proto` v1 + schema-hash build step.** `Hello` (frozen
+  both envs, proven with a dummy message. (§9, §10) *(nanopb + codegen done;
+  TinyFrame submodule + framing glue outstanding)*
+- [x] **M0.3 — `.proto` v1 + schema-hash build step.** `Hello` (frozen
   append-only bootstrap contract), `Recipe`/`Segment`, `Start`, `Heartbeat`,
   `Abort`, `Telemetry`, `Ack`/`Nak`, `Done`, `Fault` + the `faultCode` enum.
   Most other items code against this; land it early even if fields churn
