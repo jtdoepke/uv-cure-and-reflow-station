@@ -8,6 +8,7 @@
 
 #include "IClock.h"
 #include "heartbeat_monitor.h"
+#include "smoke.h" // lib/protocol nanopb-codegen canary (M0.2; replaced in M0.3)
 
 namespace {
 
@@ -25,6 +26,7 @@ HeartbeatMonitor heartbeat(clk);
 void setup() {
   Serial.begin(115200);
   Serial.println("[control] boot");
+  Serial.printf("[protocol] dummy=%u bytes\n", (unsigned)protocol::dummyEncodedSize());
 }
 
 void loop() {

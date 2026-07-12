@@ -1,0 +1,13 @@
+// Shared CYD<->controller message schema (design.md §9). Compiled by nanopb into
+// both firmwares via the custom_nanopb_protos step in platformio.ini — this file
+// is the single wire contract.
+//
+// M0.2 placeholder: proves the codegen plumbing with a dummy message. The real
+// v1 message set (Hello, Recipe, Heartbeat, Telemetry, ...) lands with M0.3.
+syntax = "proto3";
+
+package oven;
+
+message Dummy {
+  uint32 value = 1;
+}

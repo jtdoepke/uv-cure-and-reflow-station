@@ -1,0 +1,7 @@
+{
+  "name": "protocol",
+  "description": "Shared CYD<->controller wire contract: nanopb-generated messages + framing glue (design.md 9). Compiled into both firmwares and the native_control test env.",
+  "dependencies": {
+    "nanopb/Nanopb": "^0.4.91"
+  }
+}
