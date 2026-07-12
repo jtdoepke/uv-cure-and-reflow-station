@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Screenshot the physical CYD over WiFi (esp32dev_uidev firmware) as a PNG.
+# Screenshot the physical CYD over WiFi (esp32dev_cyd_uidev firmware) as a PNG.
 # Usage: cyd-shot.sh <device-ip> [output.png]   (default output: .pio/sim/device.png)
 set -euo pipefail
 

@@ -13,7 +13,7 @@ done.
 
 ## The host loop (default — seconds per iteration, no hardware)
 
-1. Edit UI code in `lib/ui_logic/` (never `src/main.cpp`; see three-tier-testing).
+1. Edit UI code in `lib/ui_logic/` (never `src_cyd/main.cpp`; see three-tier-testing).
 2. `make sim-shot ARGS="<actions>"` — builds the `native_sim` env, renders the real
    `create_main_ui()` widgets headlessly, runs the scripted actions, writes a PNG.
 3. Read `.pio/sim/ui.png` (the Read tool renders PNG) and inspect.
@@ -38,7 +38,7 @@ Examples:
 - Before/after pair: `make sim-shot ARGS="shot .pio/sim/before.png click 160 120 wait 300"`
 - Custom output: `make sim-shot SIM_OUT=.pio/sim/settings.png ARGS="click 40 210"`
 
-Coordinates are the same 320×240 landscape space the `native_ui` tests use
+Coordinates are the same 320×240 landscape space the `native_ui_cyd` tests use
 (`lv_test_mouse_click_at`). The sim renders RGB565 exactly as the device does (same
 `lv_conf.h`, same color depth), so colors/dithering match the firmware rasterizer.
 
@@ -52,15 +52,15 @@ color/inversion, real touch calibration, perceived latency. Requires the board o
 Micro-USB and WiFi credentials in `include/secrets.h` (see
 `references/device-api.md`).
 
-1. `make dev-flash` — builds `esp32dev_uidev` (firmware + dev-tools web server), uploads,
+1. `make dev-flash` — builds `esp32dev_cyd_uidev` (firmware + dev-tools web server), uploads,
    prints the device IP, exits.
 2. `make dev-shot IP=<ip>` — fetches `/screenshot.bmp` (live ST7789 GRAM readback),
    converts to `.pio/sim/device.png`. Read it.
 3. `make dev-touch IP=<ip> X=160 Y=120` — injects a 150 ms touch at screen coords.
 4. `make dev-status` — re-query IP/heap/uptime over serial without flashing.
 
-The dev-tools server is compiled only under `-D UI_DEV_TOOLS=1` (the `esp32dev_uidev`
-env); production `pio run -e esp32dev` never links WiFi or the web server. Full endpoint
+The dev-tools server is compiled only under `-D UI_DEV_TOOLS=1` (the `esp32dev_cyd_uidev`
+env); production `pio run -e esp32dev_cyd` never links WiFi or the web server. Full endpoint
 reference: `references/device-api.md`.
 
 ## Rules of engagement
@@ -72,7 +72,7 @@ reference: `references/device-api.md`.
 - New `-D`-overridable LVGL toggles follow the `#ifndef` guard idiom in
   `include/lv_conf.h` (see the `LV_USE_TEST` guard) — never reformat that file.
 - A screenshot proves rendering, not behavior — keep asserting behavior in
-  `test/test_ui` (see three-tier-testing).
+  `test/test_ui_cyd` (see three-tier-testing).
 
 ## Code architecture (how screens are structured)
 
@@ -88,7 +88,7 @@ load-bearing rules:
   subjects instead).
 - **LVGL is not thread-safe.** Arduino `loop()` is the single UI task; future FreeRTOS
   tasks (heater, sensors, WiFi) never call `lv_*` — they marshal data into `loop()` via
-  queue/volatile (gateway pattern, as `src/ui_dev_tools.cpp` does for injected touch).
+  queue/volatile (gateway pattern, as `src_cyd/ui_dev_tools.cpp` does for injected touch).
 - **Shared `static lv_style_t` + design tokens** for theming; styles must outlive every
   widget referencing them; `LV_STYLE_CONST_INIT` keeps fixed styles in flash.
 - **Screens: create-on-demand, state in subjects** (a recreated screen re-reads current

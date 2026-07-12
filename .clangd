@@ -1,6 +1,6 @@
 # clangd config — makes VSCode's clangd linting (and clang-based tools) understand the
 # ESP32 Xtensa GCC build described by compile_commands.json (run `make compiledb` to (re)generate
-# it for the esp32dev firmware env). clangd is clang-based, so out of the box it:
+# it for the esp32dev_cyd firmware env). clangd is clang-based, so out of the box it:
 #   1. rejects Xtensa-only GCC flags  -> "unknown argument '-mlongcalls'" etc.
 #   2. mis-detects the target as the host (64-bit) -> pointer-size / static_assert errors in
 #      ESP-IDF headers, and falls into the RISC-V branch (riscv/rv_utils.h not found)
@@ -10,7 +10,7 @@
 # compile_commands.json as -isystem flags (clangd's --query-driver is not used — probing the
 # GCC driver fails because of the clang-only flags added below).
 # NOTE: tools/tidy-sanitize-compiledb.py mirrors the Remove/Add lists below so `make tidy`
-# can lint src/ with the same fixups (clang-tidy doesn't read this file) — keep them in sync.
+# can lint src_cyd/ with the same fixups (clang-tidy doesn't read this file) — keep them in sync.
 CompileFlags:
   # (1) Strip Xtensa-only GCC flags mainline clang doesn't accept.
   Remove:

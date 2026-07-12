@@ -1,7 +1,7 @@
 // TapCounter — counts touch *presses* (rising edges) via the ITouch port.
 //
 // This is the seed "business logic" unit: pure C++, no Arduino, no LVGL, no LovyanGFX —
-// it only knows the ITouch interface, so it runs under the native_logic test env with a
+// it only knows the ITouch interface, so it runs under the native_logic_cyd test env with a
 // FakeTouch injected. It demonstrates the ports-and-adapters pattern the oven controller
 // will reuse (e.g. a start/stop button, a mode toggle), and the edge-detection here is the
 // same debounce shape those controls will need: hold the panel and it still counts once.

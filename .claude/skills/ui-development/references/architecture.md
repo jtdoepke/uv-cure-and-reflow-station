@@ -9,7 +9,7 @@ the application" — that is the pattern to copy. It is also v9's replacement fo
 removed `lv_msg` pub/sub.
 
 This is the single highest-leverage structural decision: it makes screen logic testable
-on the host (`native_ui`) and decouples screens from each other.
+on the host (`native_ui_cyd`) and decouples screens from each other.
 
 ## Layer map (doc pattern → this repo)
 
@@ -18,7 +18,7 @@ on the host (`native_ui`) and decouples screens from each other.
 | Model / app domain | plain C++, **no `lv_` calls** | `lib/app_logic/` |
 | ViewModel | owns `lv_subject_t` members; exposes intent methods (`onStartPressed()`) that mutate subjects | `lib/ui_logic/` (e.g. `*_viewmodel.h/.cpp`) |
 | View / screen | builds the widget tree, calls `lv_*_bind_*`; **no business logic** | `lib/ui_logic/` (e.g. `*_screen.cpp`) |
-| HAL / adapter | display+touch drivers, LVGL glue | `src/main.cpp`, `include/LGFX_CYD2USB.hpp` (device); `sim/` (host) |
+| HAL / adapter | display+touch drivers, LVGL glue | `src_cyd/main.cpp`, `include/LGFX_CYD2USB.hpp` (device); `sim/` (host) |
 
 Only the first two layers carry logic, and both compile for the native test envs — the
 same host-testability rule three-tier-testing already enforces.
@@ -105,7 +105,7 @@ and everything currently runs there, so it's safe by construction. Keep it that 
 
 - Future FreeRTOS tasks (heater PID, sensor sampling, WiFi) must **never call `lv_*`**.
   Use the **gateway pattern**: push data to the UI task (queue or volatile snapshot) and
-  translate to subject writes inside `loop()`. `src/ui_dev_tools.cpp` already does this —
+  translate to subject writes inside `loop()`. `src_cyd/ui_dev_tools.cpp` already does this —
   the web server arms volatile touch state that the LVGL read callback consumes.
 - Only if a shared-mutex design ever becomes unavoidable: set `LV_USE_OS` and wrap calls
   in `lv_lock()`/`lv_unlock()`. Prefer the gateway; it has no lock ordering to get wrong.
@@ -118,7 +118,7 @@ No PSRAM (WROOM-32), so common LVGL advice to put canvases/screens in PSRAM does
 
 - Draw buffers: partial (~1/10 screen) in internal DRAM, period. A
   `region dram0_0_seg overflowed` link error means static data grew too big — the fix
-  here is heap allocation at `setup()` (as `src/main.cpp` does for the draw buffer since
+  here is heap allocation at `setup()` (as `src_cyd/main.cpp` does for the draw buffer since
   WiFi joined the uidev env), not "move to PSRAM".
 - Normal OO C++ (classes, RAII, virtual, templates) is fine in UI code; vtables live in
   flash and UI never runs in an ISR. Keep exceptions and RTTI out of the codebase —

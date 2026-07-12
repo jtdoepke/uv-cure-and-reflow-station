@@ -1,6 +1,6 @@
 ---
 name: clangd-xtensa-setup
-description: This skill should be used when VSCode/clangd shows false errors in the ESP32 firmware code (src/main.cpp, include/LGFX_CYD2USB.hpp) — "unknown argument '-mlongcalls'", "riscv/rv_utils.h file not found", "machine/endian.h file not found", "gnu/stubs-32.h" errors, pointer-size static_assert failures in ESP-IDF headers, or "unknown target 'xtensa'" — or when compile_commands.json is missing/stale, after changing build_flags in platformio.ini, or when running `make compiledb`. Not for real `pio run` build errors (compiler truth, not clangd) and not for `make tidy` findings (see lint-format-toolchain).
+description: This skill should be used when VSCode/clangd shows false errors in the ESP32 firmware code (src_cyd/main.cpp, include/LGFX_CYD2USB.hpp) — "unknown argument '-mlongcalls'", "riscv/rv_utils.h file not found", "machine/endian.h file not found", "gnu/stubs-32.h" errors, pointer-size static_assert failures in ESP-IDF headers, or "unknown target 'xtensa'" — or when compile_commands.json is missing/stale, after changing build_flags in platformio.ini, or when running `make compiledb`. Not for real `pio run` build errors (compiler truth, not clangd) and not for `make tidy` findings (see lint-format-toolchain).
 ---
 
 # clangd + ESP32 Xtensa Editor Setup
@@ -20,7 +20,7 @@ committed mechanisms fix it against the generated `compile_commands.json`:
 
 ```bash
 pio run            # once — the ESP32 toolchain must be installed for the inject script
-make compiledb     # pio run -e esp32dev -t compiledb + tools/clangd-inject-sysincludes.py
+make compiledb     # pio run -e esp32dev_cyd -t compiledb + tools/clangd-inject-sysincludes.py
 ```
 
 Then reload the clangd server: Command Palette → "clangd: Restart language server".
@@ -47,11 +47,11 @@ so the absolute per-machine toolchain paths never get committed.
 
 ## Interaction with make tidy
 
-`make tidy` temporarily regenerates a host (`native_ui`) compile DB, then restores the
-esp32dev DB by re-running `make compiledb`. If editor diagnostics go weird after a tidy
+`make tidy` temporarily regenerates a host (`native_ui_cyd`) compile DB, then restores the
+esp32dev_cyd DB by re-running `make compiledb`. If editor diagnostics go weird after a tidy
 run, re-run `make compiledb` and restart the clangd server.
 
-Tidy's firmware pass consumes a sanitized copy of the esp32dev DB (`.pio/tidy-esp32/`)
+Tidy's firmware pass consumes a sanitized copy of the esp32dev_cyd DB (`.pio/tidy-esp32/`)
 produced by `tools/tidy-sanitize-compiledb.py`, which **mirrors this repo's `.clangd`
 Remove/Add flag lists** (clang-tidy doesn't read `.clangd`). When adding or removing a
 flag in `.clangd`, make the same change in that script.
@@ -60,5 +60,5 @@ flag in `.clangd`, make the same change in that script.
 
 - An error also appears in a real `pio run` build → it's a genuine compile error, fix the code.
 - `make tidy` / standalone clang-tidy findings → see the **lint-format-toolchain** skill
-  (tidy lints `lib/**` via a host DB and `src/*` via a sanitized esp32dev DB).
+  (tidy lints `lib/**` via a host DB and `src_cyd/*` via a sanitized esp32dev_cyd DB).
 - Test failures or native-build header leaks → see the **three-tier-testing** skill.

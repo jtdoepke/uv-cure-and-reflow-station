@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce a clang-tidy-compatible copy of the esp32dev compile_commands.json.
+"""Produce a clang-tidy-compatible copy of the esp32dev_cyd compile_commands.json.
 
 clang-tidy is clang-based, so the Xtensa GCC entries in the firmware DB fail for the same
 reasons documented in .clangd — but unlike clangd, clang-tidy doesn't read .clangd. This

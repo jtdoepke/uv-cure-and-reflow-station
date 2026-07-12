@@ -1,6 +1,6 @@
 // On-device UI dev tools: HTTP screenshot + touch injection + serial STATUS.
 //
-// Dev-only (esp32dev_uidev env, -D UI_DEV_TOOLS=1); production firmware never compiles
+// Dev-only (esp32dev_cyd_uidev env, -D UI_DEV_TOOLS=1); production firmware never compiles
 // this. Uses the Arduino core's synchronous WebServer so handlers run from loop() on
 // the LVGL thread — no locking against lv_timer_handler needed. Screenshots stream the
 // ST7789's GRAM row-by-row (readRectRGB; the panel is configured readable), so no

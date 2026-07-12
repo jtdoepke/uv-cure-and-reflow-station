@@ -1,7 +1,7 @@
-# LVGL 9.5 Test API Notes (native_ui env)
+# LVGL 9.5 Test API Notes (native_ui_cyd env)
 
-Working reference for `test/test_ui/` suites. Everything here is gated by `LV_USE_TEST=1`
-(set by the `native_ui` env; `#ifndef`-guarded in `include/lv_conf.h`).
+Working reference for `test/test_ui_cyd/` suites. Everything here is gated by `LV_USE_TEST=1`
+(set by the `native_ui_cyd` env; `#ifndef`-guarded in `include/lv_conf.h`).
 
 ## Setup / teardown pattern
 
@@ -21,7 +21,7 @@ void tearDown(void) {
 ```
 
 The `lv_test.h` include path is relative to the lvgl library root — copy it verbatim from
-`test/test_ui/test_main_ui.cpp`.
+`test/test_ui_cyd/test_main_ui.cpp`.
 
 ## Driving the UI
 
@@ -63,7 +63,7 @@ Testing implications:
 - **Test view models and app logic, never pixels.** A transition like "start pressed
   while door open → state = FAULT" is a pure function of subject values and fully
   assertable with `lv_subject_get_int()` after calling the intent method.
-- **Don't mock LVGL — link it headless.** Subjects are LVGL types; the `native_ui` env
+- **Don't mock LVGL — link it headless.** Subjects are LVGL types; the `native_ui_cyd` env
   already compiles real LVGL for the host, which is the approach LVGL's own CI uses.
   Reserve input simulation (`lv_test_mouse_*`) for verifying that *bindings* wire a
   widget to its subject; cover the state machine itself through subjects.

@@ -65,7 +65,7 @@ def system_include_dirs(compiler):
 
 def main():
     if not os.path.exists(DB):
-        sys.exit(f"{DB} not found — run `pio run -e esp32dev -t compiledb` first")
+        sys.exit(f"{DB} not found — run `pio run -e esp32dev_cyd -t compiledb` first")
     with open(DB) as f:
         db = json.load(f)
     if not db:

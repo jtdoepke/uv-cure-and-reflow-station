@@ -86,8 +86,8 @@ in [`CLAUDE.md`](CLAUDE.md).
 Tests run in three tiers so most of them need no hardware (details in [`CLAUDE.md`](CLAUDE.md)):
 
 ```bash
-pio test -e native_logic   # fast host tests of app logic (no board, no display libs)
-pio test -e native_ui      # LVGL UI tests on a headless host display (no board)
+pio test -e native_logic_cyd   # fast host tests of app logic (no board, no display libs)
+pio test -e native_ui_cyd      # LVGL UI tests on a headless host display (no board)
 pio test -e embedded       # on the real CYD: display/touch/heap checks (Micro-USB port)
 ```
 
@@ -110,7 +110,7 @@ formatting** section of [`CLAUDE.md`](CLAUDE.md) for details.
 ## Project structure
 
 ```text
-platformio.ini            PlatformIO config — esp32dev firmware + native/embedded test envs
+platformio.ini            PlatformIO config — esp32dev_cyd firmware + native/embedded test envs
 include/
   LGFX_CYD2USB.hpp        LovyanGFX display + touch configuration for this board
   lv_conf.h               LVGL 9.5 configuration
@@ -118,9 +118,9 @@ lib/                      Testable, hardware-independent modules (compiled by ap
   display_port/           IDisplay / ITouch ports — the hardware boundary
   app_logic/              Pure business logic (e.g. TapCounter) behind the ports
   ui_logic/               LVGL UI construction (no LovyanGFX), host-testable
-src/
+src_cyd/
   main.cpp                setup()/loop(): hardware bring-up, self-test, then create_main_ui()
-test/                     Unity suites: test_logic / test_ui (native), test_embedded_hw
+test/                     Unity suites: test_logic_cyd / test_ui_cyd (native), test_embedded_hw
 CLAUDE.md                 Detailed build notes, board gotchas, and design decisions
 ```
 

@@ -1,4 +1,4 @@
-// native_ui suite — LVGL 9.5 headless UI test. LVGL runs on the host with LV_USE_TEST=1;
+// native_ui_cyd suite — LVGL 9.5 headless UI test. LVGL runs on the host with LV_USE_TEST=1;
 // an in-memory dummy display + simulated pointer drive the real create_main_ui() widgets.
 // No board, no pixels on glass. LovyanGFX is not linked (lib_ignore in the env).
 #include <unity.h>

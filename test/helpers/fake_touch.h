@@ -1,4 +1,4 @@
-// Test doubles for the display/touch ports — injected into logic under the native_logic
+// Test doubles for the display/touch ports — injected into logic under the native_logic_cyd
 // env so tests never link LovyanGFX. Header-only (no .cpp to compile); shared across
 // native suites via `#include "helpers/fake_touch.h"` (test/ root is on the include path).
 #pragma once

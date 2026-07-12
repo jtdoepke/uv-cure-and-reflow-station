@@ -1,4 +1,4 @@
-// native_logic suite — pure host tests of TapCounter behind the ITouch port.
+// native_logic_cyd suite — pure host tests of TapCounter behind the ITouch port.
 // No LovyanGFX, no LVGL, no Arduino: a FakeTouch is injected and driven directly.
 #include <unity.h>
 

@@ -1,9 +1,9 @@
-"""PlatformIO extra script for the esp32dev_uidev env.
+"""PlatformIO extra script for the esp32dev_cyd_uidev env.
 
 Adapted from mccahan/esp32-display-claude-base (extra_script.py):
-- after `pio run -e esp32dev_uidev -t upload`, waits for boot and prints the device's
+- after `pio run -e esp32dev_cyd_uidev -t upload`, waits for boot and prints the device's
   STATUS block (including its IP) so the agent never has to ask for it;
-- registers `pio run -e esp32dev_uidev -t status` to re-query without flashing.
+- registers `pio run -e esp32dev_cyd_uidev -t status` to re-query without flashing.
 Both exit cleanly — no hanging monitors.
 """
 

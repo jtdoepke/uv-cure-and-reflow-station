@@ -1,8 +1,8 @@
 // main_ui — builds the demo UI (title + tap-counting button) as a testable unit.
 //
 // LVGL-only: no <Arduino.h>, no LovyanGFX. That lets it compile for both the firmware and
-// the native_ui host test env, where LVGL's headless dummy display + simulated input drive
-// it and assert the label updates (see test/test_ui/). src/main.cpp just calls
+// the native_ui_cyd host test env, where LVGL's headless dummy display + simulated input drive
+// it and assert the label updates (see test/test_ui_cyd/). src_cyd/main.cpp just calls
 // create_main_ui() after the display is up.
 #pragma once
 

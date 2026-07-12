@@ -1,6 +1,6 @@
 ---
 # C++ style for this project: LLVM base, 2-space indent, 100-col, right-aligned pointers,
-# attached braces. Matches the existing hand-written style in src/main.cpp and the headers.
+# attached braces. Matches the existing hand-written style in src_cyd/main.cpp and the headers.
 # include/lv_conf.h is intentionally NOT formatted (see .clang-format-ignore / .pre-commit-config.yaml).
 Language: Cpp
 BasedOnStyle: LLVM

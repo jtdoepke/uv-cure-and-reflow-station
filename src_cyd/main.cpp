@@ -9,7 +9,7 @@
 #include "LGFX_CYD2USB.hpp"
 #include "main_ui.h" // UI construction lives in lib/ui_logic (host-testable)
 #if defined(UI_DEV_TOOLS)
-#include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_uidev env only)
+#include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
 #endif
 
 static const uint16_t SCR_W = 320, SCR_H = 240; // landscape
@@ -17,14 +17,14 @@ static LGFX gfx;
 
 // Double-buffered async DMA flush. Set to 0 to reclaim ~15 KB DRAM: that drops the
 // second draw buffer and reverts to the original single-buffer, CPU-blocking flush.
-// Turn this off FIRST if the WiFi dev build (esp32dev_uidev) starts failing the
+// Turn this off FIRST if the WiFi dev build (esp32dev_cyd_uidev) starts failing the
 // draw-buffer malloc — the 2nd buffer is the easiest ~15 KB to give back, at the
 // cost of display responsiveness.
 #define DISP_DOUBLE_BUFFER 1
 
 // 1/10-screen partial draw buffer, RGB565 (2 bytes/pixel). This board has no PSRAM,
 // so never allocate a full-frame buffer. Heap-allocated in setup() rather than static:
-// the WiFi stack in the esp32dev_uidev env overflows the static DRAM segment otherwise.
+// the WiFi stack in the esp32dev_cyd_uidev env overflows the static DRAM segment otherwise.
 static constexpr size_t DRAW_BUF_BYTES = SCR_W * SCR_H / 10 * 2;
 static uint8_t *draw_buf = nullptr;
 #if DISP_DOUBLE_BUFFER

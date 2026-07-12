@@ -1,5 +1,5 @@
 // UI dev tools (screenshot + touch-injection HTTP API) — compiled only in the
-// esp32dev_uidev env (-D UI_DEV_TOOLS=1). See the ui-development skill.
+// esp32dev_cyd_uidev env (-D UI_DEV_TOOLS=1). See the ui-development skill.
 #pragma once
 
 #if defined(UI_DEV_TOOLS)

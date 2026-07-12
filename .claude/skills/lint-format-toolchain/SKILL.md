@@ -28,7 +28,7 @@ directly.
 | `make format` | clang-format in place (tracked C/C++, minus `include/lv_conf.h`) |
 | `make format-check` | dry-run with `--Werror` |
 | `make lint` (alias `make check`) | `pre-commit run --all-files` — clang-format + whitespace/EOF + `yamllint` + `markdownlint`. Fixer hooks rewrite files in place: a failing run often leaves the fix already applied — re-run to confirm green |
-| `make tidy` | clang-tidy over `lib/**/*.cpp` + `src/*.cpp` (advisory, local only) |
+| `make tidy` | clang-tidy over `lib/**/*.cpp` + `src_cyd/*.cpp` (advisory, local only) |
 
 ## Version-sync rule (checkable)
 
@@ -57,12 +57,12 @@ shows `include/lv_conf.h` changes that weren't an intentional upstream sync, rev
 
 `make tidy` runs two passes:
 
-1. **Library logic** (`lib/**/*.cpp`) — regenerates a `native_ui` host compile DB into
-   `.pio/tidy/`, runs `clang-tidy -p .pio/tidy`, then restores the esp32dev DB at root
+1. **Library logic** (`lib/**/*.cpp`) — regenerates a `native_ui_cyd` host compile DB into
+   `.pio/tidy/`, runs `clang-tidy -p .pio/tidy`, then restores the esp32dev_cyd DB at root
    (for clangd) via `make compiledb`.
-2. **Firmware glue** (`src/*.cpp`, and `include/LGFX_CYD2USB.hpp` through its translation
+2. **Firmware glue** (`src_cyd/*.cpp`, and `include/LGFX_CYD2USB.hpp` through its translation
    unit) — `tools/tidy-sanitize-compiledb.py` writes a clang-tidy-compatible copy of the
-   esp32dev DB into `.pio/tidy-esp32/`, applying the same Xtensa fixups `.clangd` gives
+   esp32dev_cyd DB into `.pio/tidy-esp32/`, applying the same Xtensa fixups `.clangd` gives
    the editor (strip GCC-only flags, add `--target=xtensa`), because clang-tidy doesn't
    read `.clangd`. **If editing `.clangd`'s Remove/Add flag lists, update that script's
    mirror lists in the same commit.**
@@ -76,7 +76,7 @@ Requirements and notes:
 
 ## Known C++ fix patterns (from past findings)
 
-- Narrowing-conversion warnings in LVGL flush code in `src/main.cpp` (covered by
+- Narrowing-conversion warnings in LVGL flush code in `src_cyd/main.cpp` (covered by
   `make tidy`'s firmware pass and clangd's embedded clang-tidy): use `int32_t` for area
   width/height — matches LVGL's `lv_area_t` coords and LovyanGFX's
   `setAddrWindow`/`pushPixels` signatures — and `nullptr` over `NULL`.

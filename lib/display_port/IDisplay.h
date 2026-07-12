@@ -2,7 +2,7 @@
 //
 // This is the hardware boundary: business logic depends on this interface, never on
 // LovyanGFX directly, so it can be compiled and unit-tested on the host (see the
-// native_logic test env). The production implementation is a thin adapter that wraps the
+// native_logic_cyd test env). The production implementation is a thin adapter that wraps the
 // LGFX object (`gfx.init()`, `gfx.width()`, ...); tests inject a FakeDisplay instead.
 //
 // Keep this header free of <Arduino.h> and <LovyanGFX.hpp> so it stays native-compilable.

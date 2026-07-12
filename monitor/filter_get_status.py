@@ -3,7 +3,7 @@
 Adapted from mccahan/esp32-display-claude-base. Makes the serial monitor terminate on
 its own so an agent's command never hangs:
 
-    pio device monitor -e esp32dev_uidev -f get_status
+    pio device monitor -e esp32dev_cyd_uidev -f get_status
 """
 
 import os

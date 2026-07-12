@@ -19,7 +19,7 @@ interactive TTY; for scripted capture, read `/dev/ttyUSB0` with pyserial instead
 
 ## Symptom → knob table
 
-The firmware's startup color self-test (`run_display_test()` in `src/main.cpp`) fills the
+The firmware's startup color self-test (`run_display_test()` in `src_cyd/main.cpp`) fills the
 screen RED → GREEN → BLUE → WHITE; use it to diagnose. All knobs are in
 `include/LGFX_CYD2USB.hpp`:
 
@@ -49,7 +49,7 @@ hardware; the symptom of getting this wrong is `getTouch` always returning false
   coexists with the display bus): SCLK 25, MOSI 32, MISO 39, CS 33; `offset_rotation = 2`
   aligns the touch axes with the rotated display.
 
-## LVGL glue rules (src/main.cpp)
+## LVGL glue rules (src_cyd/main.cpp)
 
 - This is a **PSRAM-less** WROOM-32 board: use a partial draw buffer (~1/10 screen,
   RGB565), never a full-frame buffer.
@@ -68,7 +68,7 @@ hardware; the symptom of getting this wrong is `getTouch` always returning false
 
 LovyanGFX has its own SPI panel/touch driver built on stable Arduino APIs, so it builds
 against the latest arduino-esp32/ESP-IDF with no version pins and no board-definition
-submodule; a generic `esp32dev` profile suffices. The alternative, `esp32_smartdisplay`,
+submodule; a generic `esp32dev_cyd` profile suffices. The alternative, `esp32_smartdisplay`,
 wraps ESP-IDF's internal `esp_lcd` headers (which churn every IDF release), does not build
 on current toolchains without pinning old versions plus header shims, and even then hits a
 runtime DMA-alloc failure on this PSRAM-less board. No separate touch library is needed —
@@ -81,10 +81,10 @@ dimensions, brightness, ≥50 KB heap headroom, and a human-in-the-loop touch ta
 
 To capture what's actually on the glass (`make dev-shot`) or inject touches
 (`make dev-touch`) over WiFi while diagnosing, see the **ui-development** skill's
-device tools (requires the `esp32dev_uidev` firmware via `make dev-flash`).
+device tools (requires the `esp32dev_cyd_uidev` firmware via `make dev-flash`).
 
 ## When NOT to use this skill
 
 - Writing or debugging tests, or deciding where new code lives → **three-tier-testing**.
-- Editor-only false errors in this file or `src/main.cpp` → **clangd-xtensa-setup**.
+- Editor-only false errors in this file or `src_cyd/main.cpp` → **clangd-xtensa-setup**.
 - CI lint failures / formatting → **lint-format-toolchain**.
