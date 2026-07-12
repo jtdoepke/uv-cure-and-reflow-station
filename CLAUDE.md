@@ -4,11 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Firmware for an ESP32 "Cheap Yellow Display" (CYD): ST7789 SPI TFT (320x240) + XPT2046
-resistive touch, driven by **LovyanGFX** with the UI in **LVGL 9.5**. Built with
-PlatformIO + Arduino. `src_cyd/main.cpp` runs a startup color self-test, then shows a demo
-touch-counting UI. Verified working end-to-end on hardware. Display/touch config lives in
-`include/LGFX_CYD2USB.hpp`; LVGL config in `include/lv_conf.h`.
+Firmware for a two-MCU oven/UV-cure station (see `docs/design.md`):
+
+- **CYD (HMI)** — ESP32 "Cheap Yellow Display": ST7789 SPI TFT (320x240) + XPT2046
+  resistive touch, driven by **LovyanGFX** with the UI in **LVGL 9.5**. `src_cyd/main.cpp`
+  runs a startup color self-test, then shows a demo touch-counting UI. Verified working
+  end-to-end on hardware. Display/touch config lives in `include/LGFX_CYD2USB.hpp`; LVGL
+  config in `include/lv_conf.h`.
+- **Controller** — a second ESP32 (WROOM-32E) that will own the oven's safety-critical
+  outputs. `src_control/main.cpp` (env `esp32dev_control`) is thin glue over ports in
+  `lib/control_port/` + logic in `lib/control_logic/`.
+- They share `lib/protocol`: nanopb-generated messages from `proto/oven.proto` (codegen
+  runs in the build; a pre-script bakes a schema hash into both firmwares — see §9 of the
+  design doc). CYD-specific dirs/envs carry a `_cyd` postfix, controller ones `_control`.
+
+Built with PlatformIO + Arduino.
 
 > The board is the "7789" v3 board (both Micro-USB and USB-C ports). NOT the original
 > single-Micro-USB ILI9341 board, nor the USB-C-only v2.
@@ -37,13 +47,14 @@ touch-counting UI. Verified working end-to-end on hardware. Display/touch config
 
 ## Commands
 
-PlatformIO is the build system; `pio` is expected on PATH (mise provides it — see
-`mise.toml`; run `mise install` on a fresh clone). The firmware env is `esp32dev_cyd` (the
-`pio run` default). The `Makefile` wraps common invocations (`make help` lists them).
+PlatformIO is the build system; `pio` and `protoc` are expected on PATH (mise provides
+them — see `mise.toml`; run `mise install` on a fresh clone). The CYD firmware env is
+`esp32dev_cyd` (the `pio run` default); the controller's is `esp32dev_control`. The
+`Makefile` wraps common invocations (`make help` lists them).
 
-- Build: `pio run` (or `make build`)
+- Build: `make build` (both firmwares) or `pio run` (CYD only)
 - Upload + monitor: `pio run -t upload -t monitor` (115200 baud)
-- Host tests: `make test` == `pio test -e native_logic_cyd -e native_ui_cyd`
+- Host tests: `make test` == `pio test -e native_logic_cyd -e native_ui_cyd -e native_control`
 - See the UI / simulate clicks: `make sim-shot ARGS="click 160 120"` → Read
   `.pio/sim/ui.png` (details → ui-development skill)
 - Screenshot/touch the physical board over WiFi: `make dev-flash`, then
@@ -72,8 +83,12 @@ instead of re-deriving:
 
 ## Pointers
 
-- Dependencies are declared in `platformio.ini` `lib_deps` (LovyanGFX + LVGL 9.5, fetched
-  into git-ignored `.pio/libdeps/`). No board submodule, no touch library.
+- Dependencies are declared in `platformio.ini` `lib_deps` (LovyanGFX + LVGL 9.5 + nanopb,
+  fetched into git-ignored `.pio/libdeps/`). No board submodule, no touch library.
+- The wire contract is `proto/oven.proto` (+ `proto/oven.options` nanopb bounds). Generated
+  `.pb.c/.pb.h` and `schema_hash.h` land under `.pio/build/<env>/` — never committed, never
+  edited. `Hello` and its frame-type id are a frozen append-only contract; everything else
+  may churn because the schema hash gates the link (design.md §9).
 - Product domain (oven/UV-curing controller), donor hardware, and safety constraints live
   in `README.md`. Any future heater/UV control must layer software cutoffs on top of the
   hardware thermal fuse, never replace it.

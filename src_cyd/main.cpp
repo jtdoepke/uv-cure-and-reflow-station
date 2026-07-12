@@ -8,7 +8,7 @@
 #include <lvgl.h>
 #include "LGFX_CYD2USB.hpp"
 #include "main_ui.h" // UI construction lives in lib/ui_logic (host-testable)
-#include "smoke.h"   // lib/protocol nanopb-codegen canary (M0.2; replaced in M0.3)
+#include "schema.h"  // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
 #include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
 #endif
@@ -107,7 +107,10 @@ static void run_display_test() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.printf("[protocol] dummy=%u bytes\n", (unsigned)protocol::dummyEncodedSize());
+  // Two %08lx halves: 32-bit printf has no portable 64-bit format here.
+  Serial.printf("[protocol] ver=%u schema=%08lx%08lx\n", (unsigned)protocol::kProtoVer,
+                (unsigned long)(protocol::kSchemaHash >> 32),
+                (unsigned long)(protocol::kSchemaHash & 0xFFFFFFFFu));
 
   gfx.init();
   gfx.setRotation(1); // landscape

@@ -1,0 +1,5 @@
+# nanopb static-allocation bounds for repeated fields in oven.proto (picked up
+# automatically by basename). These cap what fits in one frame; raising them
+# changes struct sizes on both boards but not the wire format.
+oven.Recipe.segments   max_count:32
+oven.Telemetry.wall_temp max_count:4

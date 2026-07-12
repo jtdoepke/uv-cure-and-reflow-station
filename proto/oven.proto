@@ -1,13 +1,156 @@
-// Shared CYD<->controller message schema (design.md §9). Compiled by nanopb into
-// both firmwares via the custom_nanopb_protos step in platformio.ini — this file
-// is the single wire contract.
+// Shared CYD<->controller message schema, v1 (design.md §9; fault codes §22).
 //
-// M0.2 placeholder: proves the codegen plumbing with a dummy message. The real
-// v1 message set (Hello, Recipe, Heartbeat, Telemetry, ...) lands with M0.3.
+// This file is the single wire contract: nanopb compiles it into both firmwares
+// (custom_nanopb_protos in platformio.ini), and tools/schema_hash_extra_script.py
+// bakes a hash of its compiled FileDescriptorSet into both binaries. The hash is
+// exchanged in Hello.schema_hash at boot and any mismatch fails closed, so fields
+// here may churn freely as long as both boards are reflashed together.
+//
+// Repeated-field capacities (nanopb static allocation) live in oven.options.
 syntax = "proto3";
 
 package oven;
 
-message Dummy {
-  uint32 value = 1;
+// ============================================================================
+// Hello — FROZEN, APPEND-ONLY bootstrap contract (design.md §9).
+//
+// Hello (both directions) and its TinyFrame type id (kTfTypeHello in
+// lib/protocol/messages.h) must stay decodable across ANY version skew — it is
+// what carries the schema hash that gates everything else. Never renumber or
+// retype existing fields; only append new ones.
+//
+// CYD -> controller: fills proto_ver + schema_hash.
+// controller -> CYD: fills proto_ver, schema_hash, fw_ver, caps.
+// ============================================================================
+message Hello {
+  uint32 proto_ver = 1;
+  fixed64 schema_hash = 2; // FileDescriptorSet hash; mismatch => fail closed
+  uint32 fw_ver = 3; // controller->CYD only
+  uint32 caps = 4; // controller->CYD only: capability bitmask
+}
+
+// Declared run mode. The controller cross-checks it against recipe content and
+// NAKs a mismatch (mode is a declaration, not a privilege escalation).
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  MODE_CURE = 1;
+  MODE_REFLOW = 2;
+}
+
+// How a segment approaches its target temperature (design.md §5).
+enum Interp {
+  INTERP_UNSPECIFIED = 0;
+  INTERP_RAMP_OVER_TIME = 1; // linear setpoint sweep across dur_ms
+  INTERP_RAMP_ASAP = 2; // full power toward heat_c; dur_ms is the stall watchdog
+  INTERP_HOLD = 3; // hold heat_c for dur_ms
+}
+
+enum RunState {
+  RUN_STATE_IDLE = 0;
+  RUN_STATE_RUNNING = 1;
+  RUN_STATE_DONE = 2;
+  RUN_STATE_FAULT = 3;
+}
+
+// Owned by the controller (design.md §22). The CYD maps codes to operator
+// guidance and must show a generic message for codes it doesn't know yet.
+enum FaultCode {
+  FAULT_NONE = 0;
+  FAULT_OVERTEMP_CHAMBER = 1;
+  FAULT_OVERTEMP_CASE = 2;
+  FAULT_SENSOR_FAULT = 3;
+  FAULT_TC_IMPLAUSIBLE = 4;
+  FAULT_TARGET_UNREACHABLE = 5;
+  FAULT_HEATER_STUCK = 6;
+  FAULT_RUNTIME_EXCEEDED = 7;
+  FAULT_LINK_LOST = 8;
+  FAULT_WATCHDOG = 9;
+  FAULT_INTERNAL = 10;
+}
+
+enum NakReason {
+  NAK_UNSPECIFIED = 0;
+  NAK_OUT_OF_RANGE = 1;
+  NAK_ILLEGAL_TRANSITION = 2;
+  NAK_MODE_CONTENT_MISMATCH = 3;
+  NAK_WORKPIECE_TC_INVALID = 4;
+  NAK_UNKNOWN_RECIPE = 5;
+}
+
+// One executable step. Fans are resolved on/off — the CYD applies any "Auto"
+// policy before upload; no Auto value crosses the wire (design.md §5).
+message Segment {
+  uint32 dur_ms = 1;
+  float heat_c = 2;
+  bool conv_fan = 3;
+  bool cool_fan = 4;
+  bool uv = 5;
+  bool motor = 6;
+  Interp interp = 7;
+}
+
+message Recipe {
+  uint32 id = 1;
+  Mode mode = 2;
+  repeated Segment segments = 3;
+}
+
+// Setup path (seq + Ack/Nak, retried until acknowledged).
+message Start {
+  uint32 session = 1;
+  uint32 recipe_id = 2;
+}
+
+// Hot path, CYD -> controller every 200 ms. enable=false or staleness beyond
+// the 750 ms command-timeout stops everything (design.md §9).
+message Heartbeat {
+  uint32 session = 1;
+  uint32 seq = 2;
+  bool enable = 3;
+  uint32 millis = 4;
+}
+
+// Fire-and-forget immediate safe; also implied by stopping the heartbeat.
+message Abort {}
+
+message Ack {
+  uint32 seq = 1;
+}
+
+message Nak {
+  uint32 seq = 1;
+  NakReason reason = 2;
+}
+
+// Hot path, controller -> CYD at 4 Hz during a run (~1 Hz idle). Carries the
+// full raw state vector — this record doubles as the SD log format (§7).
+message Telemetry {
+  uint32 session = 1;
+  uint32 seq = 2;
+  uint32 ctrl_millis = 3;
+  repeated float wall_temp = 4; // chamber-wall TC array, deg C
+  float work_temp = 5; // workpiece TC, deg C
+  float board_est = 6; // estimated board temp, deg C
+  float case_temp = 7; // electronics-case sensor, deg C
+  float humidity = 8; // %RH
+  bool door_open = 9;
+  float setpoint = 10; // active target, deg C
+  float heater_duty = 11; // 0..1 commanded duty
+  bool conv_fan = 12;
+  bool cool_fan = 13;
+  float uv_duty = 14; // 0..1
+  bool motor = 15;
+  uint32 seg_idx = 16;
+  uint32 elapsed_ms = 17; // into the current run
+  RunState run_state = 18;
+  FaultCode fault_code = 19;
+}
+
+message Done {
+  uint32 session = 1;
+}
+
+message Fault {
+  uint32 session = 1;
+  FaultCode code = 2;
 }

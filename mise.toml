@@ -13,12 +13,18 @@
 # so 20.1.0 is the nearest to clang-format 20.1.8 — the exact patch need not match (they're
 # independent tools).
 #
-# platformio ships the `pio` build CLI; left unpinned to track CI, which installs it with
-# `pip install --upgrade platformio` (.github/workflows/ci.yml). PlatformIO pins its own
+# platformio ships the `pio` build CLI; left unpinned (CI provisions it from this file via
+# jdx/mise-action, so local and CI track together). PlatformIO pins its own
 # toolchains/platforms in platformio.ini, so the Core version here isn't the reproducibility
 # lever the clang pins are.
+#
+# protoc is PINNED: tools/schema_hash_extra_script.py hashes the shared .proto's compiled
+# FileDescriptorSet into both firmwares (design.md §9 schema gate), and descriptor bytes are
+# only guaranteed byte-stable for a fixed protoc release. Bumping it may change the hash,
+# which is safe but means reflashing both boards together (they're always a matched pair).
 [tools]
 uv = "latest"
 "pipx:clang-format" = "20.1.8"
 "pipx:clang-tidy" = "20.1.0"
 "pipx:platformio" = "latest"
+protoc = "35.1"

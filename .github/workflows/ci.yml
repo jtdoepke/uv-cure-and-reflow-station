@@ -28,10 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
       # Cache PlatformIO's core + tool/library downloads (platforms, LVGL, ArduinoFake, ...).
       - name: Cache PlatformIO
         uses: actions/cache@v4
@@ -42,8 +38,11 @@ jobs:
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: pio-${{ runner.os }}-
 
-      - name: Install PlatformIO
-        run: pip install --upgrade platformio
+      # Same toolchain provisioning as a dev clone: mise installs pio + the pinned protoc
+      # (tools/schema_hash_extra_script.py needs protoc; the pin keeps the schema hash
+      # reproducible). mise-action caches the tool installs itself.
+      - name: Install toolchain (mise)
+        uses: jdx/mise-action@v2
 
       # Fast host tests: pure logic behind the ports + LVGL headless UI. `native` uses the
       # runner's system GCC (no toolchain download needed).

@@ -1,6 +1,6 @@
 ---
 name: three-tier-testing
-description: This skill should be used when writing, running, or debugging tests (pio test -e native_logic_cyd / native_ui_cyd / embedded), when adding new business logic or UI code and deciding where it goes (lib/app_logic vs lib/ui_logic vs src_cyd/main.cpp), when a native test build fails on ESP-IDF/Arduino/LovyanGFX headers, when tests aren't discovered, when LVGL won't initialize in a test, or when isolating a single test case. Not for on-hardware display/touch misbehavior (see hardware-bringup) or CI lint failures (see lint-format-toolchain).
+description: This skill should be used when writing, running, or debugging tests (pio test -e native_logic_cyd / native_ui_cyd / native_control / embedded), when adding new business logic or UI code and deciding where it goes (lib/app_logic vs lib/ui_logic vs lib/control_logic vs src_cyd/main.cpp vs src_control/main.cpp), when a native test build fails on ESP-IDF/Arduino/LovyanGFX headers, when tests aren't discovered, when LVGL won't initialize in a test, or when isolating a single test case. Not for on-hardware display/touch misbehavior (see hardware-bringup) or CI lint failures (see lint-format-toolchain).
 ---
 
 # Three-Tier Testing
@@ -17,7 +17,13 @@ Anything that `#include`s `LovyanGFX.hpp` cannot compile for the native target (
   `lib/ui_logic/main_ui.cpp` + `test/test_ui_cyd/test_main_ui.cpp` are the pattern to copy. How
   to structure UI state so it stays testable (view models owning `lv_subject_t`, subjects
   as the UI/app boundary): the **ui-development** skill's `references/architecture.md`.
-- **Only the firmware adapter** (`src_cyd/main.cpp`, `include/LGFX_CYD2USB.hpp`) touches LGFX.
+- **New controller logic** → `lib/control_logic/`, tested in `test/test_control/<suite>/`.
+  Depends only on the `lib/control_port/` interfaces (IClock, IHeaterSwitch, ...); tests
+  inject fakes (`test/helpers/fake_clock.h`). `lib/control_logic/heartbeat_monitor.h` +
+  `test/test_control/test_heartbeat/` are the pattern to copy. Shared wire-contract code
+  goes in `lib/protocol` (pure C++, nanopb; also tested in the `native_control` lane).
+- **Only the firmware adapters** (`src_cyd/main.cpp`, `include/LGFX_CYD2USB.hpp`;
+  `src_control/main.cpp` for the controller) touch LGFX / Arduino peripherals.
 
 If a native build errors on ESP-IDF/Arduino/SPI headers, a LovyanGFX include leaked past
 the ports — find and remove it; do not add stubs. `lib_ignore` in the env is the reliable
@@ -33,11 +39,12 @@ library's own `platformio.ini`).
 |---|---|---|
 | `pio test -e native_logic_cyd` | pure logic vs fakes, host GCC | `lib_ignore = LovyanGFX lvgl`; ArduinoFake available (`lib_compat_mode = off`, `gnu++17`) |
 | `pio test -e native_ui_cyd` | LVGL 9.5 headless (`LV_USE_TEST=1`), real `lib/ui_logic` widgets, simulated input | `lib_ignore = LovyanGFX` |
+| `pio test -e native_control` | controller logic + `lib/protocol` vs fakes, host GCC | nested suites `test/test_control/test_*/`, matched by `test_filter = test_control/*`; nanopb codegen + schema-hash pre-script run in the build (needs `protoc` from `mise install`) |
 | `pio test -e embedded` | on the real board via Micro-USB: `gfx.init()`, geometry, brightness, heap, human-in-the-loop touch | suite: `test/test_embedded_hw/`; needs hardware; not run in CI |
 
-`make test` = the two native envs; CI (`.github/workflows/ci.yml`) runs those plus a
-`pio run -e esp32dev_cyd` compile-check on every push. Nothing under `.pio/` is ever edited —
-all config is env-scoped in `platformio.ini`.
+`make test` = the three native envs; CI (`.github/workflows/ci.yml`) runs those plus a
+`pio run -e esp32dev_cyd -e esp32dev_control` compile-check on every push. Nothing under
+`.pio/` is ever edited — all config is env-scoped in `platformio.ini`.
 
 ## PlatformIO/Unity mechanics (each one has bitten before)
 
@@ -67,7 +74,8 @@ all config is env-scoped in `platformio.ini`.
 ## New-feature checklist ("what good looks like")
 
 1. Logic lives behind a port in `lib/` — no `LovyanGFX.hpp` include outside the adapter.
-2. A native test exists in the matching suite (`test_logic_cyd` or `test_ui_cyd`).
+2. A native test exists in the matching suite (`test_logic_cyd`, `test_ui_cyd`, or
+   `test_control/<suite>`).
 3. `make test` green, `make build` still compiles.
 4. `make lint` clean (see **lint-format-toolchain**).
 
