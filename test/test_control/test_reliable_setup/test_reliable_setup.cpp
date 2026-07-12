@@ -1,0 +1,245 @@
+// native_control suite — the seq/ACK-NAK setup path (design.md §9). Runs a real
+// ReliableSender (CYD) against a real SetupResponder (controller) over a
+// LoopbackPipe, with a FlakyTransport on the CYD's TX to drop frames for the
+// retry cases.
+#include <unity.h>
+
+#include "frame_link.h"
+#include "helpers/fake_clock.h"
+#include "helpers/flaky_transport.h"
+#include "helpers/pipe_transport.h"
+#include "link_params.h"
+#include "message_router.h"
+#include "messages.h"
+#include "oven.pb.h"
+#include "reliable_sender.h"
+#include "setup_responder.h"
+
+using protocol::ReliableSender;
+
+// Forwards decoded acks/naks into the sender; also counts them raw so the
+// duplicate-suppression test can see re-acks the sender itself would ignore.
+struct CydObserver : protocol::IMessageObserver {
+  ReliableSender &s;
+  int acks = 0;
+  int naks = 0;
+  explicit CydObserver(ReliableSender &s_) : s(s_) {}
+  void onAck(const oven_Ack &a) override {
+    ++acks;
+    s.onAck(a);
+  }
+  void onNak(const oven_Nak &n) override {
+    ++naks;
+    s.onNak(n);
+  }
+};
+
+struct CtrlObserver : protocol::IMessageObserver {
+  protocol::SetupResponder &r;
+  explicit CtrlObserver(protocol::SetupResponder &r_) : r(r_) {}
+  void onRecipe(const oven_Recipe &m) override { r.onRecipe(m); }
+  void onStart(const oven_Start &m) override { r.onStart(m); }
+};
+
+struct AcceptCounter : protocol::ISetupSink {
+  int recipes = 0;
+  int starts = 0;
+  uint32_t last_start_seq = 0;
+  uint32_t last_start_session = 0;
+  void onRecipeAccepted(const oven_Recipe &) override { ++recipes; }
+  void onStartAccepted(const oven_Start &s) override {
+    ++starts;
+    last_start_seq = s.seq;
+    last_start_session = s.session;
+  }
+};
+
+// Rejects everything with a fixed reason (stands in for A7's real checks).
+struct RejectValidator : protocol::ISetupValidator {
+  oven_NakReason reason;
+  explicit RejectValidator(oven_NakReason r) : reason(r) {}
+  bool validateRecipe(const oven_Recipe &, oven_NakReason &out) override {
+    out = reason;
+    return false;
+  }
+  bool validateStart(const oven_Start &, oven_NakReason &out) override {
+    out = reason;
+    return false;
+  }
+};
+
+struct Rig {
+  LoopbackPipe pipe;
+  FlakyTransport cyd_tx;
+  FakeClock clk;
+  AcceptCounter sink;
+  protocol::MessageRouter ctrl_router;
+  protocol::FrameLink ctrl_link;
+  protocol::SetupResponder responder;
+  CtrlObserver ctrl_obs;
+  protocol::MessageRouter cyd_router;
+  protocol::FrameLink cyd_link;
+  protocol::ReliableSender sender;
+  CydObserver cyd_obs;
+
+  explicit Rig(protocol::ISetupValidator &v)
+      : cyd_tx(pipe.a()), ctrl_router(), ctrl_link(pipe.b(), TF_SLAVE, ctrl_router),
+        responder(ctrl_link, v), ctrl_obs(responder), cyd_router(),
+        cyd_link(cyd_tx, TF_MASTER, cyd_router), sender(cyd_link, clk), cyd_obs(sender) {
+    responder.setSink(sink);
+    ctrl_router.setObserver(ctrl_obs);
+    cyd_router.setObserver(cyd_obs);
+  }
+
+  void pumpCtrl() { ctrl_link.poll(); }
+  void pumpCyd() { cyd_link.poll(); }
+  void exchange() {
+    ctrl_link.poll();
+    cyd_link.poll();
+  }
+};
+
+static oven_Recipe simpleRecipe(uint32_t id) {
+  oven_Recipe rec = oven_Recipe_init_default;
+  rec.id = id;
+  rec.mode = oven_Mode_MODE_CURE;
+  rec.segments_count = 1;
+  rec.segments[0].dur_ms = 1000;
+  rec.segments[0].heat_c = 80.0F;
+  rec.segments[0].interp = oven_Interp_INTERP_HOLD;
+  return rec;
+}
+
+static int stateInt(ReliableSender::State s) {
+  return static_cast<int>(s);
+}
+
+void setUp(void) {}
+void tearDown(void) {}
+
+// A validated Recipe is Acked exactly once.
+void test_ack_happy_path(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  TEST_ASSERT_TRUE(r.sender.sendRecipe(simpleRecipe(1)));
+  r.pumpCtrl(); // controller receives + acks
+  r.pumpCyd();  // CYD receives ack
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Acked), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_INT(1, r.sink.recipes);
+  TEST_ASSERT_EQUAL_INT(1, r.cyd_obs.acks);
+}
+
+// A rejected Recipe surfaces Nakd with the reason and applies no side effect.
+void test_nak_path(void) {
+  RejectValidator v(oven_NakReason_NAK_OUT_OF_RANGE);
+  Rig r(v);
+
+  TEST_ASSERT_TRUE(r.sender.sendRecipe(simpleRecipe(1)));
+  r.pumpCtrl();
+  r.pumpCyd();
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Nakd), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_OUT_OF_RANGE, r.sender.lastNakReason());
+  TEST_ASSERT_EQUAL_INT(0, r.sink.recipes);
+}
+
+// Dropped sends are retried until one lands and is Acked.
+void test_retry_until_ack(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  r.cyd_tx.drop_tx = true; // swallow the initial send and the first retry
+  TEST_ASSERT_TRUE(r.sender.sendRecipe(simpleRecipe(1)));
+  r.pumpCtrl();
+  TEST_ASSERT_EQUAL_INT(0, r.sink.recipes);
+
+  r.clk.advance(protocol::kSetupAckTimeoutMs);
+  r.sender.service(); // retry #1, still dropped
+  r.pumpCtrl();
+  TEST_ASSERT_EQUAL_INT(0, r.sink.recipes);
+  TEST_ASSERT_EQUAL_INT(1, r.sender.attempts());
+
+  r.cyd_tx.drop_tx = false;
+  r.clk.advance(protocol::kSetupAckTimeoutMs);
+  r.sender.service(); // retry #2 gets through
+  r.exchange();
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Acked), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_INT(1, r.sink.recipes);
+  TEST_ASSERT_EQUAL_INT(2, r.sender.attempts());
+}
+
+// After the initial send plus kSetupMaxRetries resends with no ack, the sender
+// gives up (Failed).
+void test_give_up_after_max_retries(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  r.cyd_tx.drop_tx = true; // everything is lost
+  TEST_ASSERT_TRUE(r.sender.sendRecipe(simpleRecipe(1)));
+
+  for (int i = 0; i < protocol::kSetupMaxRetries; ++i) {
+    r.clk.advance(protocol::kSetupAckTimeoutMs);
+    r.sender.service();
+    TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Pending), stateInt(r.sender.state()));
+  }
+  r.clk.advance(protocol::kSetupAckTimeoutMs);
+  r.sender.service(); // retry budget exhausted
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Failed), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_INT(protocol::kSetupMaxRetries, r.sender.attempts());
+  TEST_ASSERT_EQUAL_INT(0, r.sink.recipes);
+}
+
+// A duplicate Recipe (same seq — what a dropped Ack causes) is acked again but
+// applied only once.
+void test_duplicate_seq_suppressed(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  oven_Recipe rec = simpleRecipe(1);
+  rec.seq = 5;
+  r.responder.onRecipe(rec);
+  r.responder.onRecipe(rec); // retransmit of the same command
+  r.pumpCyd();               // deliver both acks
+
+  TEST_ASSERT_EQUAL_INT(1, r.sink.recipes); // side effect once
+  TEST_ASSERT_EQUAL_INT(2, r.cyd_obs.acks); // re-acked both
+}
+
+// The shared seq counter advances Recipe -> Start; the controller sees Start's
+// seq as the next value.
+void test_start_seq_follows_recipe(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  r.sender.sendRecipe(simpleRecipe(1)); // seq 1
+  r.exchange();
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Acked), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_UINT32(1, r.sender.pendingSeq());
+
+  oven_Start st = oven_Start_init_default;
+  st.session = 7;
+  st.recipe_id = 1;
+  TEST_ASSERT_TRUE(r.sender.sendStart(st)); // seq 2
+  r.exchange();
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Acked), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_UINT32(2, r.sender.pendingSeq());
+  TEST_ASSERT_EQUAL_INT(1, r.sink.starts);
+  TEST_ASSERT_EQUAL_UINT32(2, r.sink.last_start_seq);
+  TEST_ASSERT_EQUAL_UINT32(7, r.sink.last_start_session);
+}
+
+int main(int, char **) {
+  UNITY_BEGIN();
+  RUN_TEST(test_ack_happy_path);
+  RUN_TEST(test_nak_path);
+  RUN_TEST(test_retry_until_ack);
+  RUN_TEST(test_give_up_after_max_retries);
+  RUN_TEST(test_duplicate_seq_suppressed);
+  RUN_TEST(test_start_seq_follows_recipe);
+  return UNITY_END();
+}

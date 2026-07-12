@@ -89,16 +89,21 @@ message Segment {
   Interp interp = 7;
 }
 
+// Setup path (seq + Ack/Nak, retried until acknowledged). seq is the correlation
+// key the controller echoes in Ack/Nak and dedups on (design.md §9).
 message Recipe {
   uint32 id = 1;
   Mode mode = 2;
   repeated Segment segments = 3;
+  uint32 seq = 4;
 }
 
-// Setup path (seq + Ack/Nak, retried until acknowledged).
+// Setup path (seq + Ack/Nak, retried until acknowledged). seq correlates the
+// controller's Ack/Nak back to this command and is the dedup key on resend.
 message Start {
   uint32 session = 1;
   uint32 recipe_id = 2;
+  uint32 seq = 3;
 }
 
 // Hot path, CYD -> controller every 200 ms. enable=false or staleness beyond

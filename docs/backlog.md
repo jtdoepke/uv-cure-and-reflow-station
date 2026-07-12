@@ -27,8 +27,9 @@ each before starting that step's items. The step-1 blockers are Milestone 0.
 
 - [x] **A1 — TinyFrame framing + `ISerialTransport` port + in-memory pipe**,
   with encode/decode round-trip tests. (§9 code shape)
-- [ ] **A2 — Reliability layer:** heartbeat tick, seq/ACK-NAK retry, session
-  semantics, schema-hash handshake gate. (§9)
+- [x] **A2 — Reliability layer:** heartbeat tick, seq/ACK-NAK retry, session
+  semantics, schema-hash handshake gate. (§9) *(host-tested library layer;
+  real UART adapter + loop wiring deferred to A8.)*
 - [ ] **A3 — `HeaterActuator` time-proportioning class.** §11 specs this to
   the point of being a ready-made ticket, including its test plan
   (`FakeClock` + recording `IHeaterSwitch`). (§11)
