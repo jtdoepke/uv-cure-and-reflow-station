@@ -1,0 +1,8 @@
+{
+  "name": "tinyframe",
+  "description": "MightyPork/TinyFrame (git submodule, pinned) + this project's TF_Config.h. Frames the nanopb payloads on the CYD<->controller UART link (design.md 9).",
+  "license": "MIT",
+  "build": {
+    "srcFilter": ["-<*>", "+<TinyFrame/TinyFrame.c>"]
+  }
+}
