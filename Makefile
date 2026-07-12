@@ -43,10 +43,10 @@ tidy: ## Local static analysis of lib logic + firmware glue (advisory; not a CI 
 	clang-tidy -p .pio/tidy-esp32 $$(git ls-files 'src_cyd/*.cpp')
 
 test:      ## Host test suites (no board)
-	pio test -e native_logic_cyd -e native_ui_cyd
+	pio test -e native_logic_cyd -e native_ui_cyd -e native_control
 
-build:     ## Firmware compile-check
-	pio run -e esp32dev_cyd
+build:     ## Firmware compile-check (both MCUs)
+	pio run -e esp32dev_cyd -e esp32dev_control
 
 # Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
 # ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".
