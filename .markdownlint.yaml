@@ -2,3 +2,5 @@ default: true
 MD013: false    # line length — prose/tables run long intentionally
 MD033: false    # inline HTML (emoji callouts / <br>)
 MD041: false    # first line need not be a top-level heading
+MD024:          # duplicate headings OK under different parents (per-section
+  siblings_only: true  # "Code architecture" / "Design-rule compliance" pattern)
