@@ -22,9 +22,15 @@
 # FileDescriptorSet into both firmwares (design.md §9 schema gate), and descriptor bytes are
 # only guaranteed byte-stable for a fixed protoc release. Bumping it may change the hash,
 # which is safe but means reflashing both boards together (they're always a matched pair).
+#
+# platformio carries `--with protobuf/grpcio-tools`: nanopb's PlatformIO codegen
+# (native_control + firmware envs) imports google.protobuf and grpc_tools at build time. It
+# would otherwise try to `pip install` them into pio's interpreter at first build, which fails
+# because mise builds the tool venv with uv (no `pip` inside). `--with` bakes them into that
+# same venv so codegen just works — locally and in CI (both provision from this file).
 [tools]
 uv = "latest"
 "pipx:clang-format" = "20.1.8"
 "pipx:clang-tidy" = "20.1.0"
-"pipx:platformio" = "latest"
+"pipx:platformio" = { version = "latest", uvx_args = "--with protobuf>=3.19.1 --with grpcio-tools>=1.43.0" }
 protoc = "35.1"

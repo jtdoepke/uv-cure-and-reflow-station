@@ -25,7 +25,7 @@ each before starting that step's items. The step-1 blockers are Milestone 0.
 
 ## Track A — Protocol & controller logic (pure software, host-tested)
 
-- [ ] **A1 — TinyFrame framing + `ISerialTransport` port + in-memory pipe**,
+- [x] **A1 — TinyFrame framing + `ISerialTransport` port + in-memory pipe**,
   with encode/decode round-trip tests. (§9 code shape)
 - [ ] **A2 — Reliability layer:** heartbeat tick, seq/ACK-NAK retry, session
   semantics, schema-hash handshake gate. (§9)
