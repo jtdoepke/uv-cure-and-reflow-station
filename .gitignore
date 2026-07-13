@@ -8,5 +8,8 @@
 compile_commands.json
 get-platformio.py
 
+# Python bytecode cache (e.g. monitor/ tooling)
+__pycache__/
+
 # WiFi credentials for the esp32dev_cyd_uidev env (copy include/secrets.h.example)
 include/secrets.h
