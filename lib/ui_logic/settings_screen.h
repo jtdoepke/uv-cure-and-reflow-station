@@ -52,6 +52,15 @@ public:
 
   SettingsPage page() const { return page_; }
 
+  // Live brightness-bias preview (§18): true while the brightness-bias stepper editor is open, so
+  // the firmware loop can drive the backlight from the in-progress value (liveBrightnessBias())
+  // before the user commits — you see the trim as you dial it. Off (falls back to the stored
+  // value) the instant the editor commits or cancels.
+  bool isEditingBrightnessBias() const {
+    return page_ == SettingsPage::Editor && editing_ == EditField::BrightnessBias;
+  }
+  int32_t liveBrightnessBias() { return stepper_vm_.value(); }
+
   // Exit seam: fired when Back is pressed on the hub. Home is the caller's to rebuild.
   void setExitHandler(void (*cb)(void *user_data), void *user_data);
 

@@ -55,8 +55,13 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - [x] **C3** [C] — Home/Status hub. deps: none. *Sets the visual language; do
   early.* (§14) Also laid the reusable MVVM UI foundation — theme tokens, shared
   `lv_subject_t` subjects, view-model/view split — and the Red Hat Mono default font.
-- [ ] **C9** [C] — sleep/wake (§17) + auto-brightness (§18). deps: none. *Both
-  small and self-contained; auto-brightness is the best standalone starter.*
+- [x] **C9** [C] — sleep/wake (§17) + auto-brightness (§18). deps: none. *Ports
+  `IAmbientLight`/`IBacklight` (`lib/display_port`) + host-tested `AutoBrightness`
+  (filter→curve→additive-bias→hysteresis→ramp→floor/ceiling; sole backlight owner) and
+  `SleepController` (idle-only, wake-tap consumed, never sleep non-idle) in `lib/app_logic`;
+  ESP32 adapters + `main.cpp` wiring with live bias preview. Curve calibrated + inverted for
+  this board's LDR (GPIO34 reads ~0 in room light, climbs in the dark). Verified on hardware.
+  Door-open wake deferred until the controller reports door state over telemetry (§9).*
 - [ ] **A7** [A] — controller-side recipe validation: range checks,
   mode-from-content derivation, NAK reasons (plugs into A2's `ISetupValidator`
   seam). deps: A2. (§4, §9)

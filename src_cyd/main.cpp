@@ -7,10 +7,14 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include "LGFX_CYD2USB.hpp"
+#include "auto_brightness.h"      // ambient-light -> backlight logic (lib/app_logic, §18)
+#include "esp32_ambient_light.h"  // LDR IAmbientLight adapter (firmware glue)
 #include "home_screen.h"          // UI construction lives in lib/ui_logic (host-testable)
+#include "lgfx_backlight.h"       // LGFX IBacklight adapter (firmware glue)
 #include "nvs_settings_storage.h" // NVS-backed ISettingsStorage adapter (firmware glue)
 #include "settings_screen.h"      // Settings hub + panels (§24)
 #include "settings_store.h"       // typed device settings (lib/app_logic)
+#include "sleep_controller.h"     // idle sleep/wake policy (lib/app_logic, §17)
 #include "subjects.h"
 #include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
@@ -42,6 +46,14 @@ static NvsSettingsStorage g_settings_storage;
 static SettingsStore g_settings(g_settings_storage);
 static SettingsScreen g_settings_screen;
 
+// Auto-brightness (§18) + idle sleep/wake (§17). AutoBrightness owns the backlight; the
+// SleepController decides awake/asleep and AutoBrightness ramps the backlight off/on to match.
+// Fed from g_settings each loop (auto on/off, brightness bias, idle timeout).
+static Esp32AmbientLight g_ambient;
+static LgfxBacklight g_backlight(gfx);
+static AutoBrightness g_auto_brightness(g_ambient, g_backlight);
+static SleepController g_sleep;
+
 static void build_home();
 
 // Home ‹ Settings navigation. There is no global screen manager yet (C4/C6); Home publishes a
@@ -64,6 +76,17 @@ static void build_home() {
   lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping Settings re-triggers
   lv_obj_clean(lv_screen_active());
   create_home_screen(lv_screen_active());
+}
+
+// Wake the display the instant the machine leaves idle — a HOT chamber, a run start, or a
+// fault must never be hidden behind a dark screen (§17/§22). The loop's sleep tick also keeps
+// us awake while non-idle; this observer just makes the wake immediate on the state change.
+static void on_run_state(lv_observer_t *, lv_subject_t *subject) {
+  if (lv_subject_get_int(subject) != RUN_IDLE) {
+    g_sleep.noteActivity(millis());
+    // TODO(§17): door-open wake once the controller reports door state (subj_door_open) — the
+    // link/telemetry decode that would drive it lands with the controller-link integration.
+  }
 }
 
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -99,6 +122,7 @@ static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
 #if defined(UI_DEV_TOOLS)
   int16_t sx, sy;
   if (ui_dev_touch_get(&sx, &sy)) { // injected touch takes precedence over the panel
+    g_sleep.noteActivity(millis()); // keep the screen awake during WiFi dev-shot/touch sessions
     data->point.x = sx;
     data->point.y = sy;
     data->state = LV_INDEV_STATE_PRESSED;
@@ -107,6 +131,14 @@ static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
 #endif
   uint16_t x, y;
   if (gfx.getTouch(&x, &y)) { // getTouch() returns calibrated screen coords
+    // A touch always counts as activity. If it woke the screen, consume it: the wake tap lights
+    // the display without also actuating the control beneath it (§17).
+    bool wasAsleep = !g_sleep.awake();
+    g_sleep.noteActivity(millis());
+    if (wasAsleep) {
+      data->state = LV_INDEV_STATE_RELEASED;
+      return;
+    }
     data->point.x = x;
     data->point.y = y;
     data->state = LV_INDEV_STATE_PRESSED;
@@ -146,8 +178,9 @@ void setup() {
                 (unsigned long)(protocol::kSchemaHash & 0xFFFFFFFFu));
 
   gfx.init();
-  gfx.setRotation(1); // landscape
-  gfx.setBrightness(255);
+  gfx.setRotation(1);     // landscape
+  gfx.setBrightness(255); // full for the boot color self-test; AutoBrightness takes over in loop()
+  analogSetPinAttenuation(Esp32AmbientLight::kPin, ADC_11db); // full ~0-3.3 V LDR swing (§18)
 
   lv_init();
 
@@ -194,6 +227,8 @@ void setup() {
   create_home_screen(lv_screen_active());
   // Watch for the Home → Settings navigation intent (persists across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);
+  // Wake immediately on any non-idle machine state (HOT / running / fault) — §17/§22.
+  lv_subject_add_observer(&subj_run_state, on_run_state, nullptr);
 
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_begin(gfx);
@@ -205,6 +240,35 @@ void loop() {
   lv_tick_inc(now - last_tick);
   last_tick = now;
   lv_timer_handler();
+
+  // Sleep/wake (§17) + auto-brightness (§18). Sleep only when idle AND cool — the run-state
+  // subject already folds HOT/running/fault into non-idle states, so that is a single predicate.
+  // Never sleep during a run: the Run screen keeps the machine non-idle, and a dark screen would
+  // stop the heartbeat -> controller aborts to safe (§9).
+  bool sleep_allowed = (lv_subject_get_int(&subj_run_state) == RUN_IDLE);
+  g_sleep.setIdleTimeoutMs(static_cast<uint32_t>(g_settings.idleTimeoutMin()) * 60000U);
+  g_sleep.tick(now, sleep_allowed);
+  g_auto_brightness.setAwake(g_sleep.awake());
+  g_auto_brightness.setEnabled(g_settings.autoBrightness());
+  // Brightness bias: normally the stored value, but while the bias stepper is open, preview the
+  // in-progress value live so the screen brightens/dims as you dial it (§18/§24).
+  int32_t bias = g_settings_screen.isEditingBrightnessBias()
+                     ? g_settings_screen.liveBrightnessBias()
+                     : g_settings.brightnessBias();
+  g_auto_brightness.setBias(bias);
+  g_auto_brightness.tick(now);
+
+  // On-glass curve tuning trace (1 Hz): the raw LDR (GPIO34) vs the resulting backlight. On this
+  // board raw is ~0 in room light and climbs into the hundreds/thousands only as it gets dark
+  // (§18). Handy while tuning AutoBrightness::kCurve; safe to drop once the curve is dialed in.
+  static uint32_t last_ldr_log = 0;
+  if (static_cast<uint32_t>(now - last_ldr_log) >= 1000U) {
+    last_ldr_log = now;
+    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n", analogRead(34),
+                  g_auto_brightness.level(), static_cast<int>(g_settings.autoBrightness()),
+                  static_cast<long>(bias), static_cast<int>(g_sleep.awake()));
+  }
+
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_loop();
 #endif
