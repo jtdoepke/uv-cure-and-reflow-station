@@ -18,6 +18,11 @@
 
 #include <lvgl.h>
 
+// Larger JetBrains Mono for big numeric readouts (value-stepper §24). Applied per-widget via
+// lv_obj_set_style_text_font; the global LV_FONT_DEFAULT stays 14 px. Generated + committed
+// under fonts/ (see fonts/README.md). Declared here so any view may use it.
+LV_FONT_DECLARE(jetbrains_mono_28)
+
 namespace theme {
 
 // Palette — neutral grayscale base + three reserved state colours (never used decoratively).
@@ -37,17 +42,19 @@ constexpr uint32_t FAULT = 0xd94f3d;    // red   — danger (reserved)
 constexpr int32_t PAD_S = 6, PAD_M = 10, GAP = 8, RADIUS = 6;
 constexpr int32_t HEADER_H = 30, BAND_H = 42, BANNER_H = 24;
 constexpr int32_t TILE_H = 104, SECONDARY_H = 58, TOUCH_MIN = 56;
-constexpr int32_t DOT = 14; // state indicator dot
+constexpr int32_t DOT = 14;         // state indicator dot
+constexpr int32_t STEPPER_BTN = 96; // value-stepper −/+ (§24: ~17 mm, 15–20 mm gloved band)
 
 inline lv_color_t col(uint32_t hex) {
   return lv_color_hex(hex);
 }
 
 // Per-widget styling helpers (see the file header for why these are inline, not shared styles).
-void apply_screen(lv_obj_t *scr);    // root: background, text colour, no scroll/border
-void apply_panel(lv_obj_t *obj);     // header / status-band surface
-void apply_row(lv_obj_t *obj);       // transparent flex-row layout container
-void apply_mode_tile(lv_obj_t *btn); // big primary-but-non-hazardous mode button
-void apply_secondary(lv_obj_t *btn); // secondary-row button
+void apply_screen(lv_obj_t *scr);         // root: background, text colour, no scroll/border
+void apply_panel(lv_obj_t *obj);          // header / status-band surface
+void apply_row(lv_obj_t *obj);            // transparent flex-row layout container
+void apply_mode_tile(lv_obj_t *btn);      // big primary-but-non-hazardous mode button
+void apply_secondary(lv_obj_t *btn);      // secondary-row button
+void apply_stepper_button(lv_obj_t *btn); // large −/+ button, big glyph (value-stepper, §24)
 
 } // namespace theme

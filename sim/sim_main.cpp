@@ -4,11 +4,13 @@
 // rasterizer as the firmware), optionally injects scripted pointer events, and writes
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
-// Usage: program [--out PATH] [ACTION...]
+// Usage: program [--out PATH] [--screen home|stepper] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
 // machine/link state (the real firmware fills these from telemetry; here we set them by hand).
+// --screen picks which lib/ui_logic screen to render (default: home); `stepper` shows a demo
+// value-stepper editor (§24, C2) so its layout can be reviewed without a hosting Settings panel.
 // A final screenshot is always written to --out (default .pio/sim/ui.png).
 // Exit codes: 0 ok, 1 usage error, 2 PNG write failure.
 
@@ -28,6 +30,7 @@
 
 #include "home_screen.h"
 #include "subjects.h"
+#include "value_stepper.h"
 
 // The env sets LODEPNG_NO_COMPILE_ALLOCATORS: LVGL's copy would otherwise route these
 // through lv_malloc, whose small builtin pool can't hold zlib's compression state.
@@ -105,7 +108,7 @@ static bool parse_i32(const char *s, int32_t *out) {
 
 static int usage(const char *argv0) {
   std::fprintf(stderr,
-               "Usage: %s [--out PATH] [ACTION...]\n"
+               "Usage: %s [--out PATH] [--screen home|stepper] [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
                "         temp N | state idle|hot|running|fault | link ok|none|schema\n",
                argv0);
@@ -114,12 +117,17 @@ static int usage(const char *argv0) {
 
 int main(int argc, char **argv) {
   const char *out_path = ".pio/sim/ui.png";
+  std::string screen = "home";
   std::vector<std::string> tokens;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--out") == 0) {
       if (i + 1 >= argc)
         return usage(argv[0]);
       out_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--screen") == 0) {
+      if (i + 1 >= argc)
+        return usage(argv[0]);
+      screen = argv[++i];
     } else {
       tokens.emplace_back(argv[i]);
     }
@@ -132,7 +140,20 @@ int main(int argc, char **argv) {
   lv_display_set_color_format(sim_disp, LV_COLOR_FORMAT_RGB565);
   lv_test_indev_create_all();
   ui_subjects_init();
-  create_home_screen(lv_screen_active());
+
+  // The stepper demo's view model must outlive the action loop (the widgets bind to its
+  // subject), so it lives at function scope.
+  ValueStepperViewModel stepper_vm;
+  if (screen == "stepper") {
+    // A representative nudge-range field: idle timeout 1–10 min, default 2 (§24).
+    stepper_vm.init(NumericFieldConfig{1, 10, 1, 2, "min", nullptr}, 2);
+    create_value_stepper(lv_screen_active(), stepper_vm, "Idle timeout");
+  } else if (screen == "home") {
+    create_home_screen(lv_screen_active());
+  } else {
+    std::fprintf(stderr, "Unknown screen: %s\n", screen.c_str());
+    return usage(argv[0]);
+  }
   lv_obj_update_layout(lv_screen_active());
   lv_test_wait(50); // let creation-time timers/animations settle
 

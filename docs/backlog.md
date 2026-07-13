@@ -47,7 +47,11 @@ existing `IClock`/`IHeaterSwitch` idiom:
   residual math (§16). deps: none. *One small PR each.*
 - [ ] **C1** [C] — `NumericEntry` logic + keypad widget. deps: none. *Everything
   numeric routes through it.* (§26)
-- [ ] **C2** [C] — value-stepper widget. deps: none. (§24)
+- [x] **C2** [C] — value-stepper widget. deps: none. (§24) *Shared `NumericFieldConfig`
+  (`lib/app_logic`, the >20-step editor-routing rule) + the one-value-per-screen stepper
+  editor (`lib/ui_logic`) with min/max disable, hold-to-accelerate, amber caution, and
+  keypad/commit/cancel seams for C1/C8. Added a per-widget `jetbrains_mono_28` for the big
+  readout; nested `test_ui_cyd`/`test_logic_cyd` into per-suite dirs like `test_control/*`.*
 - [x] **C3** [C] — Home/Status hub. deps: none. *Sets the visual language; do
   early.* (§14) Also laid the reusable MVVM UI foundation — theme tokens, shared
   `lv_subject_t` subjects, view-model/view split — and the JetBrains Mono default font.

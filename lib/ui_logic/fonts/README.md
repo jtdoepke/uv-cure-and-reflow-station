@@ -4,6 +4,12 @@
 (`LV_FONT_DEFAULT` in `include/lv_conf.h`). It is committed (not built in CI) so the firmware
 and host builds need no font toolchain.
 
+`jetbrains_mono_28.c` is a second, larger size used **per-widget** (not the global default) for
+big numeric readouts — currently the value-stepper editor's value + `−/+` glyphs (§24). It is
+declared in `theme.h` (`LV_FONT_DECLARE(jetbrains_mono_28)`) and applied via
+`lv_obj_set_style_text_font`. It carries only ASCII `0x20–0x7F` + `°` (`0xB0`) — no Font Awesome
+glyphs, since large readouts show numbers/units, not symbols.
+
 ## What's in it
 
 A single self-contained font merging two sources so no LVGL fallback font is needed:
@@ -36,7 +42,17 @@ npx -y lv_font_conv \
   -o jetbrains_mono_14.c
 ```
 
-After regenerating, re-apply one edit: `lv_font_conv` emits an
+The larger `jetbrains_mono_28.c` is the same JetBrains-Mono source with no Font Awesome ranges
+and a bigger size:
+
+```sh
+npx -y lv_font_conv \
+  --font JetBrainsMono-Regular.ttf -r '0x20-0x7F,0xB0' \
+  --size 28 --bpp 4 --format lvgl --no-compress \
+  -o jetbrains_mono_28.c
+```
+
+After regenerating (either size), re-apply one edit: `lv_font_conv` emits an
 `#ifdef LV_LVGL_H_INCLUDE_SIMPLE … "lvgl/lvgl.h"` include shim that doesn't resolve in this
 project; replace it with `#include <lvgl.h>` (as the rest of the codebase includes LVGL).
 

@@ -55,4 +55,10 @@ void apply_secondary(lv_obj_t *btn) {
   apply_button_base(btn);
 }
 
+void apply_stepper_button(lv_obj_t *btn) {
+  apply_button_base(btn); // press + disabled (at min/max) treatment come for free
+  lv_obj_set_size(btn, STEPPER_BTN, STEPPER_BTN);
+  lv_obj_set_style_text_font(btn, &jetbrains_mono_28, 0); // big −/+ glyph
+}
+
 } // namespace theme
