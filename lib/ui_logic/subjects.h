@@ -42,6 +42,16 @@ extern lv_subject_t subj_run_state;    // RunState
 extern lv_subject_t subj_link_state;   // LinkState
 extern lv_subject_t subj_nav_request;  // NavRequest
 
+// Device-settings state with cross-screen consumers (§24). The temp caps publish here so the
+// profile editor (§12) can read them as editor ceilings "with no extra wiring"; units applies
+// everywhere (editor/run/about); Advanced gates advanced profile editing. Settings-local
+// preferences (auto-brightness, idle timeout, brightness bias) stay inside the Settings screen.
+// Written by the Settings screen from the SettingsStore; read by whoever needs them.
+extern lv_subject_t subj_units;      // 0 = °C, 1 = °F
+extern lv_subject_t subj_uv_cap;     // int, °C — UV/cure user max-temp cap
+extern lv_subject_t subj_reflow_cap; // int, °C — reflow user max-temp cap
+extern lv_subject_t subj_advanced;   // 0/1 — Advanced options unlocked
+
 // (Re)initialise every subject to a safe boot default. Call once after lv_init() and before
 // building any screen — the firmware setup(), the sim, and each test's setUp() all do this.
 // Idempotent: re-running it resets the shared state to defaults, which is exactly what the

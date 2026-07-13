@@ -30,6 +30,16 @@ void on_state_dot_changed(lv_observer_t *observer, lv_subject_t *subject) {
                             0);
 }
 
+// Chamber temperature, shown in the user's chosen unit (§24). Bound to both subjects so it
+// updates on a new reading and when the units setting changes; the stored temp is always °C.
+void on_chamber_changed(lv_observer_t *observer, lv_subject_t *) {
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int celsius = lv_subject_get_int(&subj_chamber_temp);
+  bool fahrenheit = lv_subject_get_int(&subj_units) != 0;
+  int shown = fahrenheit ? celsius * 9 / 5 + 32 : celsius;
+  lv_label_set_text_fmt(label, "Chamber %d %s", shown, fahrenheit ? "°F" : "°C");
+}
+
 // Build a labelled button and route its click to the view model. `on_click` is a captureless
 // lambda (decays to lv_event_cb_t) — an lv_event_cb_t can't be a member function, so the thunk
 // recovers the view model from user_data and calls the intent. Per-tile lambdas keep it simple
@@ -102,7 +112,8 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   lv_subject_add_observer_obj(&subj_run_state, on_state_label_changed, ui.state_label, nullptr);
 
   ui.chamber_label = lv_label_create(band);
-  lv_label_bind_text(ui.chamber_label, &subj_chamber_temp, "Chamber %d °C");
+  lv_subject_add_observer_obj(&subj_chamber_temp, on_chamber_changed, ui.chamber_label, nullptr);
+  lv_subject_add_observer_obj(&subj_units, on_chamber_changed, ui.chamber_label, nullptr);
 
   // --- Banner: shown only when the link is unhealthy ---
   ui.banner = lv_label_create(parent);

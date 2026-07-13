@@ -121,6 +121,18 @@ void test_state_and_temp_drive_the_band(void) {
   TEST_ASSERT_EQUAL_STRING("Chamber 118 °C", lv_label_get_text(ui.chamber_label));
 }
 
+// The chamber readout follows the units setting (§24): changing subj_units re-renders it in °F,
+// converting the stored °C value. This is the Home half of the "change units in Settings" flow.
+void test_chamber_follows_units_setting(void) {
+  HomeScreen ui = create_home_screen(lv_screen_active());
+  lv_subject_set_int(&subj_chamber_temp, 100);
+  TEST_ASSERT_EQUAL_STRING("Chamber 100 °C", lv_label_get_text(ui.chamber_label));
+  lv_subject_set_int(&subj_units, 1); // °F: 100 °C -> 212 °F
+  TEST_ASSERT_EQUAL_STRING("Chamber 212 °F", lv_label_get_text(ui.chamber_label));
+  lv_subject_set_int(&subj_units, 0); // back to °C
+  TEST_ASSERT_EQUAL_STRING("Chamber 100 °C", lv_label_get_text(ui.chamber_label));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_vm_state_pairs_word_and_colour);
@@ -130,5 +142,6 @@ int main(int, char **) {
   RUN_TEST(test_link_loss_disables_mode_tiles);
   RUN_TEST(test_link_state_updates_banner_and_indicator);
   RUN_TEST(test_state_and_temp_drive_the_band);
+  RUN_TEST(test_chamber_follows_units_setting);
   return UNITY_END();
 }

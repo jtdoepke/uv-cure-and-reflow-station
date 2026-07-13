@@ -1,9 +1,15 @@
 #include "subjects.h"
 
+#include "settings_defaults.h"
+
 lv_subject_t subj_chamber_temp;
 lv_subject_t subj_run_state;
 lv_subject_t subj_link_state;
 lv_subject_t subj_nav_request;
+lv_subject_t subj_units;
+lv_subject_t subj_uv_cap;
+lv_subject_t subj_reflow_cap;
+lv_subject_t subj_advanced;
 
 void ui_subjects_init() {
   lv_subject_init_int(&subj_chamber_temp, 22);
@@ -12,4 +18,10 @@ void ui_subjects_init() {
   // the run flow stays gated until the link is healthy (§9).
   lv_subject_init_int(&subj_link_state, LINK_NONE);
   lv_subject_init_int(&subj_nav_request, NAV_NONE);
+  // Settings mirrors seed to the firmware factory defaults; the Settings screen overwrites them
+  // from the loaded SettingsStore at boot.
+  lv_subject_init_int(&subj_units, 0);
+  lv_subject_init_int(&subj_uv_cap, settings_defaults::UV_CAP_DEFAULT);
+  lv_subject_init_int(&subj_reflow_cap, settings_defaults::REFLOW_CAP_DEFAULT);
+  lv_subject_init_int(&subj_advanced, 0);
 }

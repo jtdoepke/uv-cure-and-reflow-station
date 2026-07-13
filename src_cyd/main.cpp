@@ -7,7 +7,10 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include "LGFX_CYD2USB.hpp"
-#include "home_screen.h" // UI construction lives in lib/ui_logic (host-testable)
+#include "home_screen.h"          // UI construction lives in lib/ui_logic (host-testable)
+#include "nvs_settings_storage.h" // NVS-backed ISettingsStorage adapter (firmware glue)
+#include "settings_screen.h"      // Settings hub + panels (§24)
+#include "settings_store.h"       // typed device settings (lib/app_logic)
 #include "subjects.h"
 #include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
@@ -33,6 +36,35 @@ static uint8_t *draw_buf = nullptr;
 static uint8_t *draw_buf2 = nullptr; // second buffer: render next chunk while this one DMAs out
 #endif
 static uint32_t last_tick = 0;
+
+// Device settings, persisted in NVS. Loaded at boot; the Settings screen (§24) edits them.
+static NvsSettingsStorage g_settings_storage;
+static SettingsStore g_settings(g_settings_storage);
+static SettingsScreen g_settings_screen;
+
+static void build_home();
+
+// Home ‹ Settings navigation. There is no global screen manager yet (C4/C6); Home publishes a
+// NAV_SETTINGS intent on its Settings tile, this observer swaps the active screen to the Settings
+// hub, and the hub's Back returns here. The observer lives on the subject (not a widget), so it
+// survives each screen rebuild.
+static void on_settings_exit(void *) {
+  build_home();
+}
+
+static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
+  if (lv_subject_get_int(subject) == NAV_SETTINGS) {
+    lv_obj_clean(lv_screen_active());
+    g_settings_screen.setExitHandler(on_settings_exit, nullptr);
+    g_settings_screen.begin(lv_screen_active(), g_settings);
+  }
+}
+
+static void build_home() {
+  lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping Settings re-triggers
+  lv_obj_clean(lv_screen_active());
+  create_home_screen(lv_screen_active());
+}
 
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   int32_t w = area->x2 - area->x1 + 1;
@@ -153,7 +185,15 @@ void setup() {
   // The subjects boot to safe defaults (idle, no-link); real telemetry/handshake wiring that
   // drives them lands with the controller-link integration.
   ui_subjects_init();
+
+  // Load persisted settings and clamp caps to the current hard-max (§4/§24), then publish the
+  // cross-screen values so any consumer sees them before Settings is opened.
+  g_settings.load();
+  settings_publish_subjects(g_settings);
+
   create_home_screen(lv_screen_active());
+  // Watch for the Home → Settings navigation intent (persists across screen rebuilds).
+  lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);
 
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_begin(gfx);

@@ -18,9 +18,11 @@ A single self-contained font merging two sources so no LVGL fallback font is nee
 - **JetBrains Mono** (Regular) — ASCII `0x20–0x7F` + the degree sign `0xB0` (for `°C`). A
   monospace typeface chosen for small-size legibility and digit disambiguation on the 320×240
   HMI. License: SIL Open Font License 1.1.
-- **Font Awesome 6 Free (Solid)** — only the three glyphs LVGL's `LV_SYMBOL_*` map to and that
-  the UI uses: `0xF00C` (`LV_SYMBOL_OK` ✓), `0xF00D` (`LV_SYMBOL_CLOSE` ✗), `0xF071`
-  (`LV_SYMBOL_WARNING` ⚠). License: SIL Open Font License 1.1.
+- **Font Awesome 6 Free (Solid)** — only the glyphs LVGL's `LV_SYMBOL_*` map to and that the UI
+  uses: `0xF053` (`LV_SYMBOL_LEFT` ‹ — the Settings ‹ Back button), `0xF00C` (`LV_SYMBOL_OK` ✓),
+  `0xF00D` (`LV_SYMBOL_CLOSE` ✗), `0xF071` (`LV_SYMBOL_WARNING` ⚠), and `0xF077`/`0xF078`
+  (`LV_SYMBOL_UP`/`LV_SYMBOL_DOWN` chevrons — the selectable-list ▲/▼ footer, §23/§24). License:
+  SIL Open Font License 1.1.
 
 Both licenses permit embedding the font in distributed firmware.
 
@@ -38,7 +40,7 @@ curl -sSL -o fa-solid-900.ttf \
 
 npx -y lv_font_conv \
   --font JetBrainsMono-Regular.ttf -r '0x20-0x7F,0xB0' \
-  --font fa-solid-900.ttf -r '0xF00C,0xF00D,0xF071' \
+  --font fa-solid-900.ttf -r '0xF053,0xF00C,0xF00D,0xF071,0xF077,0xF078' \
   --size 14 --bpp 4 --format lvgl --no-compress \
   -o jetbrains_mono_14.c
 ```

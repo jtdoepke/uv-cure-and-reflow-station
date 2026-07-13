@@ -68,4 +68,17 @@ void apply_keypad_key(lv_obj_t *btn) {
   lv_obj_set_style_text_font(btn, &jetbrains_mono_28, 0);
 }
 
+void apply_list_row(lv_obj_t *obj) {
+  lv_obj_set_style_bg_color(obj, col(SURFACE), 0);
+  lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(obj, RADIUS, 0);
+  lv_obj_set_style_border_width(obj, 0, 0);
+  lv_obj_set_style_text_color(obj, col(TEXT), 0);
+  lv_obj_set_style_shadow_width(obj, 0, 0);
+  lv_obj_set_style_pad_hor(obj, PAD_M, 0);
+  lv_obj_set_style_pad_ver(obj, 0, 0);
+  // The selected treatment (bg SELECTED) is toggled by the list's observer, not baked here.
+  lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 } // namespace theme

@@ -4,14 +4,14 @@
 // rasterizer as the firmware), optionally injects scripted pointer events, and writes
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
-// Usage: program [--out PATH] [--screen home|stepper|keypad] [ACTION...]
+// Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
 // machine/link state (the real firmware fills these from telemetry; here we set them by hand).
 // --screen picks which lib/ui_logic screen to render (default: home); `stepper` shows a demo
-// value-stepper editor (§24, C2) and `keypad` a demo numeric keypad (§26, C1) so their layout
-// can be reviewed without a hosting Settings panel.
+// value-stepper editor (§24, C2), `keypad` a demo numeric keypad (§26, C1), and `list` a demo
+// selectable list (§23/§24) so their layout can be reviewed without a hosting Settings panel.
 // A final screenshot is always written to --out (default .pio/sim/ui.png).
 // Exit codes: 0 ok, 1 usage error, 2 PNG write failure.
 
@@ -31,8 +31,17 @@
 
 #include "home_screen.h"
 #include "numeric_keypad.h"
+#include "selectable_list.h"
+#include "settings_screen.h"
 #include "subjects.h"
 #include "value_stepper.h"
+
+// Non-persistent in-memory storage so the sim can build a SettingsStore (layout review only —
+// nothing is saved across runs).
+struct SimSettingsStorage : ISettingsStorage {
+  size_t load(uint8_t *, size_t) override { return 0; }
+  bool save(const uint8_t *, size_t) override { return true; }
+};
 
 // The env sets LODEPNG_NO_COMPILE_ALLOCATORS: LVGL's copy would otherwise route these
 // through lv_malloc, whose small builtin pool can't hold zlib's compression state.
@@ -110,7 +119,7 @@ static bool parse_i32(const char *s, int32_t *out) {
 
 static int usage(const char *argv0) {
   std::fprintf(stderr,
-               "Usage: %s [--out PATH] [--screen home|stepper|keypad] [ACTION...]\n"
+               "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings] [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
                "         temp N | state idle|hot|running|fault | link ok|none|schema\n",
                argv0);
@@ -147,7 +156,25 @@ int main(int argc, char **argv) {
   // subject), so it lives at function scope.
   ValueStepperViewModel stepper_vm;
   NumericKeypadViewModel keypad_vm;
-  if (screen == "stepper") {
+  SelectableListModel list_model;
+  SimSettingsStorage sim_storage;
+  SettingsStore settings_store(sim_storage);
+  SettingsScreen settings;
+  if (screen == "settings") {
+    // The full Settings hub over an in-memory store (defaults). Navigate with click actions.
+    settings_store.load();
+    settings.begin(lv_screen_active(), settings_store);
+  } else if (screen == "list") {
+    // A settings-hub-shaped list (§24) with a disabled "coming soon" row, to review the
+    // ▲/▼-highlight + Open layout without a hosting Settings screen.
+    static const SelectableListItem items[] = {
+        {"Display & units", nullptr, true}, {"Temperature limits", nullptr, true},
+        {"Sleep & wake", nullptr, true},    {"Network (WiFi)", "soon", false},
+        {"About", nullptr, true},
+    };
+    list_model.init(items, 5);
+    create_selectable_list(lv_screen_active(), list_model);
+  } else if (screen == "stepper") {
     // A representative nudge-range field: idle timeout 1–10 min, default 2 (§24).
     stepper_vm.init(NumericFieldConfig{1, 10, 1, 2, "min", nullptr}, 2);
     create_value_stepper(lv_screen_active(), stepper_vm, "Idle timeout");

@@ -31,6 +31,8 @@ constexpr uint32_t SURFACE = 0x1b1f27; // header / status-band surface
 constexpr uint32_t TILE = 0x2a2f3a;    // neutral mode / secondary buttons
 constexpr uint32_t TILE_PRESSED = 0x3a414f;
 constexpr uint32_t TILE_DISABLED = 0x191c22;
+constexpr uint32_t SELECTED = 0x35507a; // highlighted list row (§23/§24 ▲/▼ selection) — a
+                                        // desaturated blue, distinct from the reserved state hues
 constexpr uint32_t TEXT = 0xeceff4;     // primary text
 constexpr uint32_t TEXT_DIM = 0x8a93a3; // secondary / disabled text
 constexpr uint32_t IDLE = 0x3fae6b;     // green — safe / normal
@@ -44,6 +46,9 @@ constexpr int32_t HEADER_H = 30, BAND_H = 42, BANNER_H = 24;
 constexpr int32_t TILE_H = 104, SECONDARY_H = 58, TOUCH_MIN = 56;
 constexpr int32_t DOT = 14;         // state indicator dot
 constexpr int32_t STEPPER_BTN = 96; // value-stepper −/+ (§24: ~17 mm, 15–20 mm gloved band)
+// List rows (§23/§24) are navigated by the big ▲/▼ footer, so they need not be touch targets and
+// can be compact.
+constexpr int32_t LIST_ROW_H = 40;
 
 inline lv_color_t col(uint32_t hex) {
   return lv_color_hex(hex);
@@ -57,5 +62,6 @@ void apply_mode_tile(lv_obj_t *btn);      // big primary-but-non-hazardous mode 
 void apply_secondary(lv_obj_t *btn);      // secondary-row button
 void apply_stepper_button(lv_obj_t *btn); // large −/+ button, big glyph (value-stepper, §24)
 void apply_keypad_key(lv_obj_t *btn);     // keypad digit/control key, big glyph (keypad, §26)
+void apply_list_row(lv_obj_t *obj);       // selectable-list row surface (§23/§24)
 
 } // namespace theme
