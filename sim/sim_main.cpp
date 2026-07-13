@@ -4,13 +4,14 @@
 // rasterizer as the firmware), optionally injects scripted pointer events, and writes
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
-// Usage: program [--out PATH] [--screen home|stepper] [ACTION...]
+// Usage: program [--out PATH] [--screen home|stepper|keypad] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
 // machine/link state (the real firmware fills these from telemetry; here we set them by hand).
 // --screen picks which lib/ui_logic screen to render (default: home); `stepper` shows a demo
-// value-stepper editor (§24, C2) so its layout can be reviewed without a hosting Settings panel.
+// value-stepper editor (§24, C2) and `keypad` a demo numeric keypad (§26, C1) so their layout
+// can be reviewed without a hosting Settings panel.
 // A final screenshot is always written to --out (default .pio/sim/ui.png).
 // Exit codes: 0 ok, 1 usage error, 2 PNG write failure.
 
@@ -29,6 +30,7 @@
 #include <vector>
 
 #include "home_screen.h"
+#include "numeric_keypad.h"
 #include "subjects.h"
 #include "value_stepper.h"
 
@@ -108,7 +110,7 @@ static bool parse_i32(const char *s, int32_t *out) {
 
 static int usage(const char *argv0) {
   std::fprintf(stderr,
-               "Usage: %s [--out PATH] [--screen home|stepper] [ACTION...]\n"
+               "Usage: %s [--out PATH] [--screen home|stepper|keypad] [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
                "         temp N | state idle|hot|running|fault | link ok|none|schema\n",
                argv0);
@@ -144,10 +146,16 @@ int main(int argc, char **argv) {
   // The stepper demo's view model must outlive the action loop (the widgets bind to its
   // subject), so it lives at function scope.
   ValueStepperViewModel stepper_vm;
+  NumericKeypadViewModel keypad_vm;
   if (screen == "stepper") {
     // A representative nudge-range field: idle timeout 1–10 min, default 2 (§24).
     stepper_vm.init(NumericFieldConfig{1, 10, 1, 2, "min", nullptr}, 2);
     create_value_stepper(lv_screen_active(), stepper_vm, "Idle timeout");
+  } else if (screen == "keypad") {
+    // A representative wide-range field (fails the >20-step rule → keypad, §24/§26): the UV
+    // temp cap, 60–250 °C, default 100.
+    keypad_vm.init(NumericFieldConfig{60, 250, 1, 100, "°C", nullptr}, 100);
+    create_numeric_keypad(lv_screen_active(), keypad_vm, "Target temp");
   } else if (screen == "home") {
     create_home_screen(lv_screen_active());
   } else {

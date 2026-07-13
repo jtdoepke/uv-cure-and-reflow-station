@@ -5,10 +5,11 @@
 and host builds need no font toolchain.
 
 `jetbrains_mono_28.c` is a second, larger size used **per-widget** (not the global default) for
-big numeric readouts — currently the value-stepper editor's value + `−/+` glyphs (§24). It is
-declared in `theme.h` (`LV_FONT_DECLARE(jetbrains_mono_28)`) and applied via
-`lv_obj_set_style_text_font`. It carries only ASCII `0x20–0x7F` + `°` (`0xB0`) — no Font Awesome
-glyphs, since large readouts show numbers/units, not symbols.
+big numeric readouts + glove-sized keys — the value-stepper editor's value + `−/+` glyphs (§24)
+and the on-screen keypad's digits + `⌫`/`✓`/`✕` keys (§26). It is declared in `theme.h`
+(`LV_FONT_DECLARE(jetbrains_mono_28)`) and applied via `lv_obj_set_style_text_font`. It carries
+ASCII `0x20–0x7F` + `°` (`0xB0`) plus the three Font Awesome glyphs the keypad keys use:
+`0xF00C` (`LV_SYMBOL_OK` ✓), `0xF00D` (`LV_SYMBOL_CLOSE` ✗), `0xF55A` (`LV_SYMBOL_BACKSPACE` ⌫).
 
 ## What's in it
 
@@ -42,12 +43,13 @@ npx -y lv_font_conv \
   -o jetbrains_mono_14.c
 ```
 
-The larger `jetbrains_mono_28.c` is the same JetBrains-Mono source with no Font Awesome ranges
-and a bigger size:
+The larger `jetbrains_mono_28.c` is the same JetBrains-Mono source at a bigger size, plus the
+three Font Awesome glyphs the keypad keys need (`⌫`/`✓`/`✕`, §26):
 
 ```sh
 npx -y lv_font_conv \
   --font JetBrainsMono-Regular.ttf -r '0x20-0x7F,0xB0' \
+  --font fa-solid-900.ttf -r '0xF00C,0xF00D,0xF55A' \
   --size 28 --bpp 4 --format lvgl --no-compress \
   -o jetbrains_mono_28.c
 ```

@@ -56,5 +56,6 @@ void apply_row(lv_obj_t *obj);            // transparent flex-row layout contain
 void apply_mode_tile(lv_obj_t *btn);      // big primary-but-non-hazardous mode button
 void apply_secondary(lv_obj_t *btn);      // secondary-row button
 void apply_stepper_button(lv_obj_t *btn); // large −/+ button, big glyph (value-stepper, §24)
+void apply_keypad_key(lv_obj_t *btn);     // keypad digit/control key, big glyph (keypad, §26)
 
 } // namespace theme
