@@ -7,8 +7,9 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include "LGFX_CYD2USB.hpp"
-#include "main_ui.h" // UI construction lives in lib/ui_logic (host-testable)
-#include "schema.h"  // shared wire-contract identity (lib/protocol)
+#include "home_screen.h" // UI construction lives in lib/ui_logic (host-testable)
+#include "subjects.h"
+#include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
 #include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
 #endif
@@ -149,7 +150,10 @@ void setup() {
   run_display_test();
 #endif
 
-  create_main_ui(lv_screen_active());
+  // The subjects boot to safe defaults (idle, no-link); real telemetry/handshake wiring that
+  // drives them lands with the controller-link integration.
+  ui_subjects_init();
+  create_home_screen(lv_screen_active());
 
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_begin(gfx);

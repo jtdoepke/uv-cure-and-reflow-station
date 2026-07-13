@@ -6,6 +6,9 @@
 //
 // Usage: program [--out PATH] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH
+//   temp N | state idle|hot|running|fault | link ok|none|schema
+// The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
+// machine/link state (the real firmware fills these from telemetry; here we set them by hand).
 // A final screenshot is always written to --out (default .pio/sim/ui.png).
 // Exit codes: 0 ok, 1 usage error, 2 PNG write failure.
 
@@ -23,7 +26,8 @@
 #include <string>
 #include <vector>
 
-#include "main_ui.h"
+#include "home_screen.h"
+#include "subjects.h"
 
 // The env sets LODEPNG_NO_COMPILE_ALLOCATORS: LVGL's copy would otherwise route these
 // through lv_malloc, whose small builtin pool can't hold zlib's compression state.
@@ -102,7 +106,8 @@ static bool parse_i32(const char *s, int32_t *out) {
 static int usage(const char *argv0) {
   std::fprintf(stderr,
                "Usage: %s [--out PATH] [ACTION...]\n"
-               "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n",
+               "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
+               "         temp N | state idle|hot|running|fault | link ok|none|schema\n",
                argv0);
   return 1;
 }
@@ -126,7 +131,8 @@ int main(int argc, char **argv) {
   // (the display reallocates its full-frame buffer on this event).
   lv_display_set_color_format(sim_disp, LV_COLOR_FORMAT_RGB565);
   lv_test_indev_create_all();
-  create_main_ui(lv_screen_active());
+  ui_subjects_init();
+  create_home_screen(lv_screen_active());
   lv_obj_update_layout(lv_screen_active());
   lv_test_wait(50); // let creation-time timers/animations settle
 
@@ -166,6 +172,34 @@ int main(int argc, char **argv) {
         return usage(argv[0]);
       if (!write_png(tokens[i++].c_str()))
         return 2;
+    } else if (op == "temp") {
+      if (i >= tokens.size() || !parse_i32(tokens[i++].c_str(), &x))
+        return usage(argv[0]);
+      lv_subject_set_int(&subj_chamber_temp, x);
+    } else if (op == "state") {
+      if (i >= tokens.size())
+        return usage(argv[0]);
+      const std::string v = tokens[i++];
+      int s = v == "idle"      ? RUN_IDLE
+              : v == "hot"     ? RUN_HOT
+              : v == "running" ? RUN_RUNNING
+              : v == "fault"   ? RUN_FAULT
+                               : -1;
+      if (s < 0) {
+        std::fprintf(stderr, "Unknown state: %s\n", v.c_str());
+        return usage(argv[0]);
+      }
+      lv_subject_set_int(&subj_run_state, s);
+    } else if (op == "link") {
+      if (i >= tokens.size())
+        return usage(argv[0]);
+      const std::string v = tokens[i++];
+      int s = v == "ok" ? LINK_OK : v == "none" ? LINK_NONE : v == "schema" ? LINK_SCHEMA : -1;
+      if (s < 0) {
+        std::fprintf(stderr, "Unknown link: %s\n", v.c_str());
+        return usage(argv[0]);
+      }
+      lv_subject_set_int(&subj_link_state, s);
     } else {
       std::fprintf(stderr, "Unknown action: %s\n", op.c_str());
       return usage(argv[0]);
