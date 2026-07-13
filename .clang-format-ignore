@@ -3,3 +3,6 @@
 # (The pre-commit `exclude` regex is the authoritative guard; this covers editor-on-save
 # and direct `clang-format` invocations too. Honored by clang-format >= 18.)
 include/lv_conf.h
+
+# Generated LVGL fonts (lv_font_conv output) — keep byte-identical to the generator.
+lib/ui_logic/fonts/*.c

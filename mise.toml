@@ -28,8 +28,12 @@
 # would otherwise try to `pip install` them into pio's interpreter at first build, which fails
 # because mise builds the tool venv with uv (no `pip` inside). `--with` bakes them into that
 # same venv so codegen just works — locally and in CI (both provision from this file).
+# node provides `npx`, used only to regenerate the LVGL UI font via `npx lv_font_conv`
+# (see lib/ui_logic/fonts/README.md). Not needed for a normal build — the generated font .c is
+# committed — so it's left unpinned/latest; nothing here depends on a specific node version.
 [tools]
 uv = "latest"
+node = "latest"
 "pipx:clang-format" = "20.1.8"
 "pipx:clang-tidy" = "20.1.0"
 "pipx:platformio" = { version = "latest", uvx_args = "--with protobuf>=3.19.1 --with grpcio-tools>=1.43.0" }

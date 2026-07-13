@@ -1434,6 +1434,11 @@ Primary job: pick what to do, while making the machine's safety state unmissable
 - Grayscale base; **colour only for state** (green idle · amber heating/hot · red
   fault); mode tiles neutral; danger-red reserved.
 - Big-numbers-first readouts.
+- **Typography (DECIDED):** JetBrains Mono, one weight, as the single UI font
+  (`LV_FONT_DEFAULT`). A monospace face for small-size legibility and digit
+  disambiguation (`l 1 I`, `0 O`) on the 320×240 panel; the degree sign and the
+  state/link symbol glyphs (✓ ✗ ⚠) are merged into it so no fallback font is needed.
+  SIL OFL — embeddable in firmware. Generated + documented under `lib/ui_logic/fonts/`.
 - Mode buttons open a *flow* (→ Setup), not heat directly — not themselves hazardous.
 
 ### Behavior implication (DECIDED)
