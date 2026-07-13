@@ -92,7 +92,7 @@ ValueStepper create_value_stepper(lv_obj_t *parent, ValueStepperViewModel &vm, c
   // Big, centred value+units; tapping it opens the keypad (§26) for direct entry.
   ui.value_label = lv_label_create(row);
   lv_obj_set_flex_grow(ui.value_label, 1);
-  lv_obj_set_style_text_font(ui.value_label, &jetbrains_mono_28, 0);
+  lv_obj_set_style_text_font(ui.value_label, &red_hat_mono_28, 0);
   lv_obj_set_style_text_align(ui.value_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_add_flag(ui.value_label, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(ui.value_label, STEPPER_INTENT(onValueTapped), LV_EVENT_CLICKED, &vm);

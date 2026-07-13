@@ -58,14 +58,14 @@ void apply_secondary(lv_obj_t *btn) {
 void apply_stepper_button(lv_obj_t *btn) {
   apply_button_base(btn); // press + disabled (at min/max) treatment come for free
   lv_obj_set_size(btn, STEPPER_BTN, STEPPER_BTN);
-  lv_obj_set_style_text_font(btn, &jetbrains_mono_28, 0); // big −/+ glyph
+  lv_obj_set_style_text_font(btn, &red_hat_mono_28, 0); // big −/+ glyph
 }
 
 void apply_keypad_key(lv_obj_t *btn) {
   apply_button_base(btn); // press + disabled (OK out-of-range) treatment come for free
   // Size is left to the caller's flex grid (keys ≈ 74×60 px, §26); only the big glyph is fixed —
   // the same 28 px font that carries the digits also carries the ⌫/✓/✕ icons.
-  lv_obj_set_style_text_font(btn, &jetbrains_mono_28, 0);
+  lv_obj_set_style_text_font(btn, &red_hat_mono_28, 0);
 }
 
 void apply_list_row(lv_obj_t *obj) {

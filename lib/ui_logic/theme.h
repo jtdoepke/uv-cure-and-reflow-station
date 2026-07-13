@@ -18,10 +18,10 @@
 
 #include <lvgl.h>
 
-// Larger JetBrains Mono for big numeric readouts (value-stepper §24). Applied per-widget via
+// Larger Red Hat Mono for big numeric readouts (value-stepper §24). Applied per-widget via
 // lv_obj_set_style_text_font; the global LV_FONT_DEFAULT stays 14 px. Generated + committed
 // under fonts/ (see fonts/README.md). Declared here so any view may use it.
-LV_FONT_DECLARE(jetbrains_mono_28)
+LV_FONT_DECLARE(red_hat_mono_28)
 
 namespace theme {
 
