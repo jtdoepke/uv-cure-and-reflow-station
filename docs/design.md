@@ -1887,6 +1887,20 @@ bundle.
   is an open (§10).
 - **Flash budget:** the CYD partition table must fit **LittleFS profiles + A/B OTA
   slots** within 4 MB — verify (§10).
+- **Power (HARDWARE IMPACT, §2):** WiFi/OTA is the **only** time the CYD's radio powers up,
+  and it is a hard current demand — the ESP32 pulls a **~400–500 mA transient** at RF
+  bring-up (plus repeated TX bursts during a transfer). The CYD's **3.3 V logic rail must
+  sustain that peak**, or radio init browns the ESP32 into a **reset loop** — meaning a
+  board that runs the display fine has **no working field-update path** (§25), since OTA is
+  the controller's *only* field reflash route (radio-less, no reachable USB once enclosed).
+  This bit us on a dev board whose stock (likely counterfeit) **AMS1117 LDO** current-limited
+  below the WiFi peak: it held 3.3 V at the display-only idle load but collapsed the instant
+  WiFi initialized — even with a healthy 4.9 V input (after bypassing an input protection
+  diode that was dropping ~0.4 V) and a 470 µF output cap. A stronger external 3.3 V source
+  was the only thing that fixed it. **Requirement for the custom PCB (§2):** power the 3.3 V
+  rail from a **buck regulator** (or an LDO genuinely rated for the transient with thermal
+  margin — *not* a bare AMS1117), with **bulk decoupling at the ESP32 module**. A supply
+  that merely suffices for the always-on display will fail exactly when OTA is needed.
 - WiFi remains a **non-goal for operation** (§1): a run needs no network; these are
   convenience/maintenance services only.
 
