@@ -32,10 +32,13 @@ public:
 
   // Prepare the model for a fresh list. Call after lv_init() and before building the view. Copies
   // up to kMaxItems items (the structs, not the borrowed strings) and selects the first enabled
-  // row. Re-init-safe; clears the Open seam (re-install it after init()).
-  void init(const SelectableListItem *items, int count);
+  // row. `wrap == true` makes Up/Down loop around the ends (last→first, first→last) instead of
+  // saturating, and keeps both footer buttons enabled whenever ≥2 rows are selectable.
+  // Re-init-safe; clears the Open seam (re-install it after init()).
+  void init(const SelectableListItem *items, int count, bool wrap = false);
 
-  // Footer intents: move the highlight to the previous / next *enabled* row (saturating).
+  // Footer intents: move the highlight to the previous / next *enabled* row. Saturating at the ends
+  // unless the model was init()'d with wrap == true, in which case they loop around.
   void moveUp();
   void moveDown();
 
@@ -63,6 +66,7 @@ private:
 
   SelectableListItem items_[kMaxItems]{};
   int count_ = 0;
+  bool wrap_ = false;
   lv_subject_t selected_subject_{};
   void (*on_open_)(int, void *) = nullptr;
   void *open_ud_ = nullptr;

@@ -226,7 +226,7 @@ void SettingsScreen::buildHub() {
       {"Data & firmware", "soon", false},         {"Profiles", "soon", false},
       {"About", nullptr, true, "Open"},           {"Advanced", advanced_value, true, "Toggle"},
   };
-  list_model_.init(items, HUB_COUNT);
+  list_model_.init(items, HUB_COUNT, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::hub_open, this);
   create_selectable_list(parent_, list_model_);
 }
@@ -243,7 +243,7 @@ void SettingsScreen::buildDisplayUnits() {
       {"Auto-brightness", auto_value, true, "Toggle"},
       {"Brightness bias", bias_value_, true, "Edit"},
   };
-  list_model_.init(items, 3);
+  list_model_.init(items, 3, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::display_open, this);
   create_selectable_list(parent_, list_model_);
 }
@@ -258,7 +258,7 @@ void SettingsScreen::buildTempLimits() {
       {"UV cure max", uv_value_, true, "Edit"},
       {"Reflow max", reflow_value_, true, "Edit"},
   };
-  list_model_.init(items, 2);
+  list_model_.init(items, 2, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::temp_open, this);
   create_selectable_list(parent_, list_model_);
 }
@@ -275,7 +275,7 @@ void SettingsScreen::buildSleepWake() {
       {"Never sleeps during a run", "fixed", false},
       {"Stays awake while HOT", "fixed", false},
   };
-  list_model_.init(items, 3);
+  list_model_.init(items, 3, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::sleep_open, this);
   create_selectable_list(parent_, list_model_);
 }

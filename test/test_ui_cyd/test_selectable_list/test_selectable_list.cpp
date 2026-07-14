@@ -78,6 +78,49 @@ void test_move_skips_disabled_and_saturates(void) {
   TEST_ASSERT_EQUAL_INT(1, model.selected());
 }
 
+void test_wrap_loops_at_ends(void) {
+  model.init(kItems, kCount, /*wrap=*/true);
+  // Sitting on the first enabled row (0): with wrap, Up loops to the last enabled (3), skipping the
+  // disabled row 2.
+  TEST_ASSERT_EQUAL_INT(0, model.selected());
+  model.moveUp();
+  TEST_ASSERT_EQUAL_INT(3, model.selected());
+  // From the last enabled row, Down loops back to the first.
+  model.moveDown();
+  TEST_ASSERT_EQUAL_INT(0, model.selected());
+  // Interior moves still behave normally.
+  model.moveDown(); // 0 -> 1
+  TEST_ASSERT_EQUAL_INT(1, model.selected());
+}
+
+void test_wrap_keeps_footer_buttons_enabled(void) {
+  model.init(kItems, kCount, /*wrap=*/true);
+  // Even sitting on the first/last enabled row, neither end reports "at the limit" under wrap.
+  TEST_ASSERT_FALSE(model.atFirstEnabled());
+  TEST_ASSERT_FALSE(model.atLastEnabled());
+
+  SelectableList ui = create_selectable_list(lv_screen_active(), model);
+  lv_obj_update_layout(lv_screen_active());
+  // Saturating lists disable Up at the top; a wrapping list keeps it live so it can loop.
+  TEST_ASSERT_FALSE(lv_obj_has_state(ui.btn_up, LV_STATE_DISABLED));
+  TEST_ASSERT_FALSE(lv_obj_has_state(ui.btn_down, LV_STATE_DISABLED));
+  click_center(ui.btn_up); // wraps from first -> last enabled
+  TEST_ASSERT_EQUAL_INT(3, model.selected());
+}
+
+void test_wrap_single_enabled_disables_buttons(void) {
+  static const SelectableListItem items[] = {
+      {"Only", nullptr, true},
+      {"Soon", "soon", false},
+  };
+  model.init(items, 2, /*wrap=*/true);
+  // Nothing to loop to -> both buttons still report disabled even with wrap on.
+  TEST_ASSERT_TRUE(model.atFirstEnabled());
+  TEST_ASSERT_TRUE(model.atLastEnabled());
+  model.moveDown();
+  TEST_ASSERT_EQUAL_INT(0, model.selected()); // no-op
+}
+
 void test_select_ignores_disabled(void) {
   model.init(kItems, kCount);
   model.select(2); // disabled -> ignored
@@ -151,6 +194,9 @@ int main(int, char **) {
   RUN_TEST(test_init_selects_first_enabled);
   RUN_TEST(test_init_skips_leading_disabled);
   RUN_TEST(test_move_skips_disabled_and_saturates);
+  RUN_TEST(test_wrap_loops_at_ends);
+  RUN_TEST(test_wrap_keeps_footer_buttons_enabled);
+  RUN_TEST(test_wrap_single_enabled_disables_buttons);
   RUN_TEST(test_select_ignores_disabled);
   RUN_TEST(test_open_fires_seam_with_selection);
   RUN_TEST(test_footer_buttons_move_and_open);

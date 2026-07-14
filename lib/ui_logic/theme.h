@@ -41,7 +41,7 @@ constexpr uint32_t FAULT = 0xd94f3d;    // red   — danger (reserved)
 
 // Geometry. The panel is ~5.6 px/mm, so 56 px ≈ 10 mm is the touch-target floor; the mode
 // tiles are far larger, the secondary row clears the floor.
-constexpr int32_t PAD_S = 6, PAD_M = 10, GAP = 8, RADIUS = 6;
+constexpr int32_t PAD_S = 6, PAD_M = 10, GAP = 4, RADIUS = 2;
 constexpr int32_t HEADER_H = 30, BAND_H = 42, BANNER_H = 24;
 constexpr int32_t TILE_H = 104, SECONDARY_H = 58, TOUCH_MIN = 56;
 constexpr int32_t DOT = 14;         // state indicator dot

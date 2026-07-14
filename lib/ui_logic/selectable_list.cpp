@@ -6,11 +6,12 @@
 
 // --- Model ---
 
-void SelectableListModel::init(const SelectableListItem *items, int count) {
+void SelectableListModel::init(const SelectableListItem *items, int count, bool wrap) {
   count_ = count < 0 ? 0 : (count > kMaxItems ? kMaxItems : count);
   for (int i = 0; i < count_; i++) {
     items_[i] = items[i];
   }
+  wrap_ = wrap;
   on_open_ = nullptr;
   open_ud_ = nullptr;
   int first = firstEnabled();
@@ -54,11 +55,25 @@ int SelectableListModel::prevEnabled(int from) const {
 }
 
 void SelectableListModel::moveUp() {
-  lv_subject_set_int(&selected_subject_, prevEnabled(selected()));
+  int prev = prevEnabled(selected());
+  if (wrap_ && prev == selected()) { // already at the first enabled row → wrap to the last
+    int last = lastEnabled();
+    if (last >= 0) {
+      prev = last;
+    }
+  }
+  lv_subject_set_int(&selected_subject_, prev);
 }
 
 void SelectableListModel::moveDown() {
-  lv_subject_set_int(&selected_subject_, nextEnabled(selected()));
+  int next = nextEnabled(selected());
+  if (wrap_ && next == selected()) { // already at the last enabled row → wrap to the first
+    int first = firstEnabled();
+    if (first >= 0) {
+      next = first;
+    }
+  }
+  lv_subject_set_int(&selected_subject_, next);
 }
 
 void SelectableListModel::select(int index) {
@@ -81,11 +96,18 @@ void SelectableListModel::setOpenHandler(void (*cb)(int, void *), void *user_dat
 
 bool SelectableListModel::atFirstEnabled() {
   int first = firstEnabled();
+  // Under wrap, Up always has somewhere to go unless there's ≤1 selectable row (first == last).
+  if (wrap_) {
+    return first < 0 || first == lastEnabled();
+  }
   return first < 0 || selected() <= first;
 }
 
 bool SelectableListModel::atLastEnabled() {
   int last = lastEnabled();
+  if (wrap_) {
+    return last < 0 || last == firstEnabled();
+  }
   return last < 0 || selected() >= last;
 }
 
