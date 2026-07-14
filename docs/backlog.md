@@ -32,7 +32,8 @@ Several waves depend on ports that don't exist yet. Each is one pure interface i
 existing `IClock`/`IHeaterSwitch` idiom:
 
 - **Temp-input** (control-sensor readback; §11 `IThermocouples`) — first needed by **A5/A6**, also **A4b**.
-- **`IContactor`** (energize-to-close; §4) — **A4a**.
+- **`IContactor`** (energize-to-close; §4) — **A4a**. *Landed with A4a: `lib/control_port/IContactor.h`
+  plus `FakeContactor` (`test/helpers`).*
 - **`IWatchdog`** (kick + reset-cause readback; §9/§11) — **A4b**, **A8**.
 - **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **A8** / **D5**.
 - **Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.
@@ -82,8 +83,16 @@ existing `IClock`/`IHeaterSwitch` idiom:
 
 ## Wave 2 — Controller run path + CYD data/store (build on Wave 1 + new ports)
 
-- [ ] **A4a** [A] — `SafetySupervisor`: command-timeout + fail-safe defaults +
+- [x] **A4a** [A] — `SafetySupervisor`: command-timeout + fail-safe defaults +
   contactor policy. deps: A2, A3; new `IContactor`. (§4, §9)
+  *Host-tested `SafetySupervisor` (`lib/control_logic`): sole owner of the heater safety-cutoff
+  and mains contactor; drives fail-safe (heater OFF, contactor open) on construction and cuts on
+  the next tick whenever `ControllerLink::authorized()` drops (pulled TX, reboot, enable-low,
+  schema skew, stale >750 ms). Contactor is energize-to-close, closed only while authorized. New
+  `IContactor` port + `FakeContactor`. A minimal `trip()`/`clearFault()` latch is the seam A4b's
+  L3 clamps and the A6/A7 fault paths hook into (no `FaultCode`/`Fault` emission yet). The
+  command-timeout test is the unit-level form of A8's §8-step-1 fail-safe proof. ESP32 adapters +
+  `main.cpp` wiring deferred to A8.*
 - [ ] **A4b** [A] — `SafetySupervisor` L3: setpoint clamp, per-mode over-temp trip,
   stuck-heater plausibility, bounded total runtime, reset-cause → `Fault{WATCHDOG}`.
   deps: A4a, temp-input port, `IWatchdog`; soft: B2 (runtime bound uses `oven_cal`). (§4)
