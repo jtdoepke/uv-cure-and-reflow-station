@@ -36,17 +36,27 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - **`IWatchdog`** (kick + reset-cause readback; §9/§11) — **A4b**, **A8**.
 - **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **A8** / **D5**.
 - **Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.
+  *Partially landed: **B5** shipped `ISettingsStorage` + a `FakeSettingsStorage` (`lib/storage_port`);
+  **B4** still needs the profile-blob/LittleFS storage port.*
 - **SD/log sink port** (§7) — **B8**.
 
 ## Wave 1 — Ready now (deps satisfied by Wave 0)
 
-- [ ] **B2** [B] — shared rate-limit/lag math + stub `oven_cal.h` with default
-  constants. deps: none. *Foundational — unblocks B1/B3/B9, A5's feedforward, and
-  the ETA/preview (C7). One library, several consumers.* (§6, §12, §15)
+- [x] **B2** [B] — shared rate-limit/lag math + stub `oven_cal.h` with default
+  constants. deps: none. (§6, §12, §15) *New shared `lib/calibration/`: `thermal_math.h`
+  (host-tested `OvenModel` + fan-conditioned rate envelopes, `rampDurationSeconds` ∫dT/rate ETA
+  integral, `rateLimitRamp` feasibility, first-order `{a,b,τ}` lag, exposure↔hold, feedforward
+  `steadyStateDuty`) + hand-authored `oven_cal.h` placeholders with `CALIBRATED=false` → idealized-
+  linear uncalibrated preview (§12). Model threaded by arg (toy-testable; D6·tools regenerates the
+  constants only). Safety constants stay in the controller header, not here (§6). Compiles into
+  both firmwares (proven under `native_control`). Foundational — unblocks B1/B3/B9, A5's
+  feedforward, and the ETA/preview (C7).*
 - [ ] **B7** [B] — fault table + latching/ack-routing logic (§22) and run-summary
   residual math (§16). deps: none. *One small PR each.*
-- [ ] **C1** [C] — `NumericEntry` logic + keypad widget. deps: none. *Everything
-  numeric routes through it.* (§26)
+- [x] **C1** [C] — `NumericEntry` logic + keypad widget. deps: none. (§26)
+  *Host-tested `NumericEntry` state machine (`lib/app_logic`) + on-screen keypad widget &
+  view-model (`lib/ui_logic/numeric_keypad*`) with commit/cancel/clamp seams shared with C2/C8.
+  Everything numeric routes through it.*
 - [x] **C2** [C] — value-stepper widget. deps: none. (§24) *Shared `NumericFieldConfig`
   (`lib/app_logic`, the >20-step editor-routing rule) + the one-value-per-screen stepper
   editor (`lib/ui_logic`) with min/max disable, hold-to-accelerate, amber caution, and
@@ -89,8 +99,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
   heuristic fallback. deps: B2. (§5)
 - [ ] **B4** [B] — `ProfileStore` over a storage port; per-mode dirs;
   stock-vs-user semantics. deps: storage port. (§7, §23)
-- [ ] **B5** [B] — `SettingsStore` + per-field `{min, max, step, units}` config +
+- [x] **B5** [B] — `SettingsStore` + per-field `{min, max, step, units}` config +
   boot-time clamp-to-hard-max. deps: storage port (share B4's). (§4, §24)
+  *`ISettingsStorage` port (`lib/storage_port`) + host-tested `SettingsStore` (`lib/app_logic`):
+  versioned blob, load-time re-clamp to current bounds, `NumericFieldConfig`-driven validation
+  shared with the numeric editors. NVS/Preferences adapter is thin `src_cyd/` glue. Shipped the
+  C8 Settings hub/panels slice (`settings_screen.*`) alongside.*
 - [ ] **B8·1** [B] — SD logging PR1: length-delimited protobuf writer + header
   record. deps: SD port. (§7)
 
@@ -107,7 +121,8 @@ existing `IClock`/`IHeaterSwitch` idiom:
   chart + live ETA; cure paused/resume overlay). deps: C3, B2; soft: B6 (resume
   overlay, 3rd PR). (§15)
 - [ ] **C8** [C] — Run Summary (§16) + Fault overlay (§22) + Settings hub + panels
-  (§24), one each. deps: B7, B5, C1, C2, C3.
+  (§24), one each. deps: B7, B5, C1, C2, C3. *Settings hub + panels slice already shipped
+  with B5 (`settings_screen.*`); Run Summary + Fault overlay remain (Fault overlay needs B7).*
 - [ ] **B6** [B] — remainder-profile generator for cure resume. deps: B1. (§15)
 - [ ] **B9** [B] — random-profile generator within safety bounds. deps: B1, B2. (§5, §20)
 - [ ] **C6** [C] — Setup + Confirm. deps: C4, C5 (loads a library profile as a
