@@ -29,6 +29,17 @@ public:
   static const char *linkText(int link_state);
   static uint32_t linkColor(int link_state);
 
+  // The §9 link, as a LinkState. Takes plain bools rather than protocol types so ui_logic keeps
+  // no dependency on the protocol layer or nanopb; the firmware feeds it
+  // handshake().sawPeer() / .matched() / linkAlive(). Returns int (not LinkState) to match the
+  // subject's type and the other mappers' signatures.
+  //
+  // `alive` (telemetry still arriving) is what makes this decay — `matched` latches, so it would
+  // happily report a healthy link over a cable that came out ten minutes ago. `matched` still
+  // has to be consulted separately, because a schema-skewed peer is a different problem from an
+  // absent one and only one of them is fixed by plugging a cable back in.
+  static int linkStateFrom(bool saw_peer, bool matched, bool alive);
+
   // The run flow may only start with a healthy link (§9); mode tiles disable otherwise.
   static bool modeEnabled(int link_state);
 };

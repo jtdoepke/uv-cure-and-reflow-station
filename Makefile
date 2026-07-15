@@ -45,8 +45,10 @@ tidy: ## Local static analysis of lib logic + firmware glue (advisory; not a CI 
 test:      ## Host test suites (no board)
 	pio test -e native_logic_cyd -e native_ui_cyd -e native_control
 
-build:     ## Firmware compile-check (both MCUs)
-	pio run -e esp32dev_cyd -e esp32dev_control
+build:     ## Firmware compile-check (both MCUs + both bench envs)
+# The bench envs are #if-guarded code paths, so they rot unless something compiles them.
+# Unlike esp32dev_cyd_uidev they need no secrets.h, so there is no reason to leave them out.
+	pio run -e esp32dev_cyd -e esp32dev_control -e esp32dev_cyd_bench -e esp32dev_control_bench
 
 # Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
 # ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".

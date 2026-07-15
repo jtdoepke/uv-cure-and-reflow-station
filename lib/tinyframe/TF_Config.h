@@ -54,7 +54,16 @@ typedef uint8_t TF_COUNT;  // listener-loop counters
 // Single-threaded on both MCUs (one loop() owns the link) — no TX mutex.
 #define TF_USE_MUTEX 0
 
+// The production controller's link OWNS UART0 (design.md §2/§25) and Arduino-ESP32's printf
+// lands there, so a parser error would put "[TF] ..." bytes on the wire — corrupting the very
+// link it is complaining about, and doing it exactly when the link is already unhappy. The
+// esp32dev_control env defines TF_ERROR_QUIET for that reason. Everyone else keeps the
+// diagnostics: the host tests, and the bench build, whose console is a separate UART.
+#if defined(TF_ERROR_QUIET)
+#define TF_Error(format, ...) ((void)0)
+#else
 #define TF_Error(format, ...) printf("[TF] " format "\n", ##__VA_ARGS__)
+#endif
 
 //------------------------- End of user config ------------------------------
 

@@ -50,7 +50,11 @@ Built with PlatformIO + Arduino.
 PlatformIO is the build system; `pio` and `protoc` are expected on PATH (mise provides
 them — see `mise.toml`; run `mise install` on a fresh clone). The CYD firmware env is
 `esp32dev_cyd` (the `pio run` default); the controller's is `esp32dev_control`. The
-`Makefile` wraps common invocations (`make help` lists them).
+`esp32dev_control_bench` / `esp32dev_cyd_bench` pair is the two-devkit bench (backlog A8):
+it moves the **controller's** link to UART2 so UART0 stays free for USB — on a devkit the
+USB bridge's TX fights the CYD's on the controller's RX0, so production's link-on-UART0
+(§2/§25) can't coexist with both boards plugged in. The `Makefile` wraps common
+invocations (`make help` lists them).
 
 - Build: `make build` (both firmwares) or `pio run` (CYD only)
 - Upload + monitor: `pio run -t upload -t monitor` (115200 baud)

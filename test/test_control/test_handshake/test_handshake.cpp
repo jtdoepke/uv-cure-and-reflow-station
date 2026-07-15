@@ -52,11 +52,18 @@ struct HandshakeNode {
 void setUp(void) {}
 void tearDown(void) {}
 
-static oven_Hello makeHello(uint32_t proto_ver, uint64_t schema_hash) {
+static oven_Hello makeHello(uint32_t proto_ver, uint64_t schema_hash, uint32_t boot_nonce = 0) {
   oven_Hello h = oven_Hello_init_default;
   h.proto_ver = proto_ver;
   h.schema_hash = schema_hash;
+  h.boot_nonce = boot_nonce;
   return h;
+}
+
+// A well-formed Hello from a peer on our exact schema, distinguished only by which
+// boot it came from.
+static oven_Hello peerHelloFromBoot(uint32_t boot_nonce) {
+  return makeHello(protocol::kProtoVer, protocol::kSchemaHash, boot_nonce);
 }
 
 // A single Handshake wired to a link, for the pure-gate cases.
@@ -115,8 +122,8 @@ void test_handshake_matches_over_pipe(void) {
   HandshakeNode cyd(pipe.a(), TF_MASTER);
   HandshakeNode ctrl(pipe.b(), TF_SLAVE);
 
-  cyd.hs.sendHello();
-  ctrl.hs.sendHello();
+  cyd.hs.begin(0xC1D00001);
+  ctrl.hs.begin(0xC7100001);
   cyd.link.poll();
   ctrl.link.poll();
 
@@ -124,6 +131,94 @@ void test_handshake_matches_over_pipe(void) {
   TEST_ASSERT_TRUE(ctrl.hs.sawPeer());
   TEST_ASSERT_TRUE(cyd.hs.matched());
   TEST_ASSERT_TRUE(ctrl.hs.matched());
+}
+
+// --- §9 re-sync: hearing a peer is not the same as being heard ----------------
+// service() goes quiet the moment saw_peer_ flips, so whoever hears first must answer
+// or the other side announces into a void forever. Found on the A8 bench twice over:
+// the CYD (~3 s slower to boot) sat at sawPeer=0 while the controller read matched=1,
+// and resetting the controller alone left it matched=0.
+
+// First contact is answered: the peer has no idea we exist, and our own announce loop
+// is about to stop precisely because we just heard it.
+void test_first_contact_is_answered(void) {
+  SoloHandshake s;
+  s.hs.begin(0xA5A5A5A5);
+
+  // Nothing reads this pipe, so pending bytes only ever grow: a Hello we emit shows up
+  // as an increase. Baseline after our own boot Hello.
+  const size_t before = s.pipe.pendingAToB();
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111));
+  TEST_ASSERT_TRUE(s.pipe.pendingAToB() > before);
+}
+
+// A Hello from a *new* boot of an already-known peer is answered immediately, without
+// waiting on the rate limit — a rebooted peer certainly does not know us.
+void test_peer_reboot_is_answered_immediately(void) {
+  SoloHandshake s;
+  s.hs.begin(0xA5A5A5A5);
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111));
+
+  const size_t before = s.pipe.pendingAToB();
+  s.hs.onPeerHello(peerHelloFromBoot(0x2222)); // same peer, new boot
+  TEST_ASSERT_TRUE(s.pipe.pendingAToB() > before);
+}
+
+// A repeated Hello inside the rate-limit window is NOT answered. This is what stops two
+// live boards from answering each other's answers forever at wire speed.
+void test_repeated_hello_is_rate_limited(void) {
+  SoloHandshake s;
+  s.hs.begin(0xA5A5A5A5);
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111)); // answered (first contact)
+
+  const size_t before = s.pipe.pendingAToB();
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111));
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111));
+  TEST_ASSERT_EQUAL_size_t(before, s.pipe.pendingAToB());
+}
+
+// ...but once the window elapses a repeat IS answered again, so a reply that got lost on
+// the wire recovers: the peer keeps announcing and we keep answering until one lands.
+void test_repeated_hello_answered_again_after_window(void) {
+  SoloHandshake s;
+  s.hs.begin(0xA5A5A5A5);
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111));
+
+  const size_t before = s.pipe.pendingAToB();
+  s.clk.advance(protocol::kHelloRetryMs);
+  s.hs.onPeerHello(peerHelloFromBoot(0x1111));
+  TEST_ASSERT_TRUE(s.pipe.pendingAToB() > before);
+}
+
+// End to end, and the case the bench actually hit: two boards match, then ONE reboots
+// (a fresh Handshake with a new nonce, the other left running). Without the answer the
+// rebooted side Hellos into silence and never matches again — which on hardware meant
+// every watchdog reset took the link down permanently.
+void test_one_sided_reboot_rematches_over_pipe(void) {
+  LoopbackPipe pipe;
+  HandshakeNode cyd(pipe.a(), TF_MASTER);
+
+  {
+    HandshakeNode ctrl(pipe.b(), TF_SLAVE);
+    cyd.hs.begin(0xC1D00001);
+    ctrl.hs.begin(0xC7100001);
+    cyd.link.poll();
+    ctrl.link.poll();
+    TEST_ASSERT_TRUE(cyd.hs.matched());
+    TEST_ASSERT_TRUE(ctrl.hs.matched());
+  }
+  // The CYD has now stopped announcing: it has seen a peer.
+  cyd.hs.service();
+  cyd.hs.service();
+
+  // Controller reboots: fresh state, fresh nonce, same wire.
+  HandshakeNode rebooted(pipe.b(), TF_SLAVE);
+  rebooted.hs.begin(0xC7100002);
+  cyd.link.poll();      // CYD sees the new nonce and answers
+  rebooted.link.poll(); // rebooted controller receives that answer
+
+  TEST_ASSERT_TRUE(rebooted.hs.matched());
+  TEST_ASSERT_TRUE(cyd.hs.matched());
 }
 
 // One side keeps re-announcing Hello every kHelloRetryMs until the peer answers.
@@ -154,12 +249,18 @@ void test_service_retransmits_until_peer_seen(void) {
   peer_link.poll();
   TEST_ASSERT_EQUAL_INT(2, peer_obs.hellos);
 
-  // Peer finally answers -> our service() stops announcing.
+  // The peer finally announces itself. Two distinct things follow, and the counts keep
+  // them apart: we answer it exactly once (it cannot know us yet — this observer never
+  // replied, so from our side this is first contact)...
   hs.onPeerHello(makeHello(protocol::kProtoVer, protocol::kSchemaHash));
+  peer_link.poll();
+  TEST_ASSERT_EQUAL_INT(3, peer_obs.hellos);
+
+  // ...and from then on service() announces no more, however long we wait.
   clk.advance(protocol::kHelloRetryMs * 3);
   hs.service();
   peer_link.poll();
-  TEST_ASSERT_EQUAL_INT(2, peer_obs.hellos);
+  TEST_ASSERT_EQUAL_INT(3, peer_obs.hellos);
   TEST_ASSERT_TRUE(hs.matched());
 }
 
@@ -171,6 +272,11 @@ int main(int, char **) {
   RUN_TEST(test_never_received_hello_is_unmatched);
   RUN_TEST(test_mismatch_after_match_rearms_closed);
   RUN_TEST(test_handshake_matches_over_pipe);
+  RUN_TEST(test_first_contact_is_answered);
+  RUN_TEST(test_peer_reboot_is_answered_immediately);
+  RUN_TEST(test_repeated_hello_is_rate_limited);
+  RUN_TEST(test_repeated_hello_answered_again_after_window);
+  RUN_TEST(test_one_sided_reboot_rematches_over_pipe);
   RUN_TEST(test_service_retransmits_until_peer_seen);
   return UNITY_END();
 }

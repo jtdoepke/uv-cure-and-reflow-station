@@ -7,14 +7,20 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include "LGFX_CYD2USB.hpp"
-#include "auto_brightness.h"      // ambient-light -> backlight logic (lib/app_logic, §18)
-#include "esp32_ambient_light.h"  // LDR IAmbientLight adapter (firmware glue)
-#include "home_screen.h"          // UI construction lives in lib/ui_logic (host-testable)
-#include "lgfx_backlight.h"       // LGFX IBacklight adapter (firmware glue)
-#include "nvs_settings_storage.h" // NVS-backed ISettingsStorage adapter (firmware glue)
-#include "settings_screen.h"      // Settings hub + panels (§24)
-#include "settings_store.h"       // typed device settings (lib/app_logic)
-#include "sleep_controller.h"     // idle sleep/wake policy (lib/app_logic, §17)
+#include "auto_brightness.h"        // ambient-light -> backlight logic (lib/app_logic, §18)
+#include "cyd_link.h"               // reliability facade (lib/protocol, §9)
+#include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
+#include "esp32_clock.h"            // IClock adapter for the link's cadences (firmware glue)
+#include "esp32_serial_transport.h" // ISerialTransport adapter over the link UART (firmware glue)
+#include "frame_link.h"             // TinyFrame framing (lib/protocol)
+#include "home_screen.h"            // UI construction lives in lib/ui_logic (host-testable)
+#include "home_viewmodel.h"         // handshake -> LinkState mapper (lib/ui_logic)
+#include "lgfx_backlight.h"         // LGFX IBacklight adapter (firmware glue)
+#include "message_router.h"         // frame -> typed message dispatch (lib/protocol)
+#include "nvs_settings_storage.h"   // NVS-backed ISettingsStorage adapter (firmware glue)
+#include "settings_screen.h"        // Settings hub + panels (§24)
+#include "settings_store.h"         // typed device settings (lib/app_logic)
+#include "sleep_controller.h"       // idle sleep/wake policy (lib/app_logic, §17)
 #include "subjects.h"
 #include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
@@ -53,6 +59,84 @@ static Esp32AmbientLight g_ambient;
 static LgfxBacklight g_backlight(gfx);
 static AutoBrightness g_auto_brightness(g_ambient, g_backlight);
 static SleepController g_sleep;
+
+// CYD <-> controller link (§9). GPIO27=TX / GPIO22=RX on the CN1 header — §2 put the link there
+// deliberately, clear of the CYD's own UART0/USB, so the serial monitor and flashing stay free
+// of contention and this side needs no bench flag (the controller's does; see
+// src_control/control_board.h). Serial1 with an explicit pin remap: its defaults (GPIO9/10) are
+// wired to the SPI flash, so the 4-arg begin() below is mandatory, not stylistic. Using Serial1
+// also leaves "Serial2" meaning its stock 16/17 as it does in the controller's bench build.
+//
+// This is production wiring, not bench scaffolding: it is safe by construction because
+// HeartbeatSender boots at session=0/enable=false and the controller's SessionGate filters any
+// session it has not adopted — so an un-started CYD authorizes exactly nothing. Hello +
+// handshake + inert heartbeats is what production should do before C6's Setup/Confirm (§19)
+// starts a run. The MessageRouter is default-constructed and bound in setup(): FrameLink binds
+// its handler at construction but CydLink needs the FrameLink to send, so the cycle is broken
+// with setObserver().
+static Esp32Clock g_link_clk;
+static Esp32SerialTransport g_link_uart(Serial1);
+static protocol::MessageRouter g_link_router;
+static protocol::FrameLink g_link(g_link_uart, TF_MASTER, g_link_router); // CYD = TF_MASTER
+static protocol::CydLink g_cyd_link(g_link, g_link_clk);
+
+// §9's link constants, mirrored here only where this file has to make a choice.
+// TinyFrame's parser-resync timeout is counted in TF_Tick() *calls*, not milliseconds
+// (TF_PARSER_TIMEOUT_TICKS = 10, TF_Config.h), so tick on a fixed 10 ms cadence to turn it into
+// a real ~100 ms — comfortably inside the controller's 750 ms command-timeout.
+static constexpr uint32_t kLinkTickMs = 10;
+static constexpr size_t kLinkRxBuf = 512;  // we receive Telemetry/Ack — modest
+static constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SENDBUF_LEN (1024)
+
+#if defined(CYD_BENCH_LINK)
+// A8 bench stimulus (§8 step 1) — NOT production behavior; §19/C6's Setup/Confirm owns starting
+// a run. Drives the controller to authorized() at boot so the dummy-load LEDs light and the
+// fail-safe cut is observable when the TX is pulled.
+//
+// Recipe -> Ack -> Start mirrors the real flow (a run always uploads a recipe before starting)
+// and exercises both setup-path commands rather than just one. The session is random per boot
+// so a CYD reboot presents a genuinely new session, as §9 says it must.
+static uint32_t g_bench_session = 0;
+static bool g_bench_recipe_sent = false;
+static bool g_bench_start_sent = false;
+
+static void bench_link_stimulus() {
+  using protocol::ReliableSender;
+  if (!g_cyd_link.handshake().matched()) {
+    return; // schema gate first, fail-closed (§9)
+  }
+  auto &tx = g_cyd_link.sender();
+
+  if (!g_bench_recipe_sent) {
+    if (tx.state() == ReliableSender::State::Idle) {
+      oven_Recipe rec = oven_Recipe_init_default;
+      rec.id = 1;
+      rec.mode = oven_Mode_MODE_CURE;
+      rec.segments_count = 1;
+      rec.segments[0].dur_ms = 60000;
+      rec.segments[0].heat_c = 80.0F;
+      rec.segments[0].interp = oven_Interp_INTERP_HOLD;
+      g_bench_recipe_sent = tx.sendRecipe(rec); // the sender stamps the seq
+    }
+    return;
+  }
+  if (!g_bench_start_sent) {
+    if (tx.state() == ReliableSender::State::Acked) {
+      oven_Start st = oven_Start_init_default;
+      st.session = g_bench_session;
+      st.recipe_id = 1;
+      g_bench_start_sent = tx.sendStart(st);
+    }
+    return;
+  }
+  // Start acked -> the controller has adopted the session, so heartbeats can authorize it.
+  if (tx.state() == ReliableSender::State::Acked &&
+      g_cyd_link.heartbeat().session() != g_bench_session) {
+    g_cyd_link.heartbeat().setSession(g_bench_session);
+    g_cyd_link.heartbeat().setEnable(true); // the explicit HEAT_EN bit (§9)
+  }
+}
+#endif // CYD_BENCH_LINK
 
 static void build_home();
 
@@ -230,6 +314,28 @@ void setup() {
   // Wake immediately on any non-idle machine state (HOT / running / fault) — §17/§22.
   lv_subject_add_observer(&subj_run_state, on_run_state, nullptr);
 
+  // Link last: run_display_test() above spends ~3 s in delay() loops, and there is no point
+  // servicing a handshake nothing is pumping. (Hello retransmits would survive it; starting
+  // afterwards is simply honest about when we can actually talk.)
+  Serial1.setRxBufferSize(kLinkRxBuf); // both must precede begin()
+  Serial1.setTxBufferSize(kLinkTxBuf);
+  Serial1.begin(115200, SERIAL_8N1, /*rx=*/22, /*tx=*/27); // §9: 115200 8N1, CN1 pins
+  // Seed the setup-path seq from a per-boot random base. seq is monotonic only *within* a boot,
+  // but the controller's dedup treats it as globally unique, so an unseeded reboot would replay
+  // seq 1 and have its first Start mistaken for a duplicate — Acked, but the session silently
+  // never adopted (see ReliableSender::setSeqBase).
+  g_cyd_link.sender().setSeqBase(esp_random());
+  g_link_router.setObserver(g_cyd_link); // without this every frame is dropped, silently
+  // Hello; service() retransmits until the controller answers. The nonce must be fresh every
+  // boot: it is how the controller spots that we restarted and re-announces itself, so the link
+  // recovers instead of sitting unmatched (§9 re-sync).
+  g_cyd_link.begin(esp_random());
+#if defined(CYD_BENCH_LINK)
+  g_bench_session = esp_random() | 1U; // non-zero: 0 means "no session" (§9)
+  Serial.printf("[bench] link stimulus armed, session=%08lx\n",
+                static_cast<unsigned long>(g_bench_session));
+#endif
+
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_begin(gfx);
 #endif
@@ -237,6 +343,33 @@ void setup() {
 
 void loop() {
   auto now = millis();
+
+  // Link first (§9): the controller's 750 ms command-timeout is budgeted against this loop's
+  // period, and the LVGL work below is bursty — a screen rebuild can run tens of ms. A dropped
+  // heartbeat self-heals on the next tick, so the normal ~5-20 ms period leaves ~10x margin on
+  // the 200 ms cadence; sustained blocking past 750 ms would be a real bug worth catching, and
+  // §7/B8·2's dedicated link task is the answer if it ever gets close.
+  g_link.poll();
+  g_cyd_link.service(); // handshake + heartbeat cadence + setup-path retries
+  static uint32_t last_link_tick = 0;
+  if (static_cast<uint32_t>(now - last_link_tick) >= kLinkTickMs) {
+    last_link_tick = now;
+    g_link.tick();
+  }
+#if defined(CYD_BENCH_LINK)
+  bench_link_stimulus();
+#endif
+
+  // Publish the §9 link health as Home's indicator + run-flow gate (§14). linkAlive() is the
+  // part that decays — the controller's telemetry arriving — since the handshake latches and
+  // would otherwise keep claiming a link over an unplugged cable. Set every loop rather than
+  // diffed: lv_subject_set_int notifies only when the value actually changes
+  // (lv_subject_notify_if_changed), so this costs a compare and rebuilds nothing.
+  lv_subject_set_int(&subj_link_state,
+                     HomeViewModel::linkStateFrom(g_cyd_link.handshake().sawPeer(),
+                                                  g_cyd_link.handshake().matched(),
+                                                  g_cyd_link.linkAlive()));
+
   lv_tick_inc(now - last_tick);
   last_tick = now;
   lv_timer_handler();
@@ -267,6 +400,17 @@ void loop() {
     Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n", analogRead(34),
                   g_auto_brightness.level(), static_cast<int>(g_settings.autoBrightness()),
                   static_cast<long>(bias), static_cast<int>(g_sleep.awake()));
+    // Link state (§9), on the CYD's own USB console — which is free precisely because §2 put
+    // the link on other pins. matched=0 with sawPeer=1 is a schema skew; sawPeer=0 means we
+    // are still announcing into silence. peer= is the controller's boot nonce, so a change
+    // there is a controller restart.
+    Serial.printf("[link] matched=%d sawPeer=%d alive=%d state=%d nonce=%08lx peer=%08lx\n",
+                  static_cast<int>(g_cyd_link.handshake().matched()),
+                  static_cast<int>(g_cyd_link.handshake().sawPeer()),
+                  static_cast<int>(g_cyd_link.linkAlive()),
+                  static_cast<int>(lv_subject_get_int(&subj_link_state)),
+                  static_cast<unsigned long>(g_cyd_link.handshake().bootNonce()),
+                  static_cast<unsigned long>(g_cyd_link.handshake().peer().boot_nonce));
   }
 
 #if defined(UI_DEV_TOOLS)

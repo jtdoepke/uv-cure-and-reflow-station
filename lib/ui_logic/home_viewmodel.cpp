@@ -48,6 +48,21 @@ uint32_t HomeViewModel::linkColor(int link_state) {
   return link_state == LINK_OK ? theme::IDLE : theme::FAULT;
 }
 
+int HomeViewModel::linkStateFrom(bool saw_peer, bool matched, bool alive) {
+  // Liveness first, because it is the only input that decays. No telemetry arriving means
+  // nothing is out there *right now*, whatever we once heard — and `saw_peer`/`matched` both
+  // latch, so consulting them first would keep claiming a link over an unplugged cable.
+  // `!saw_peer` with telemetry flowing is the brief pre-handshake window at boot: real, but not
+  // something we can call healthy yet, so it reads as no-link too (fail-closed).
+  if (!alive || !saw_peer) {
+    return LINK_NONE;
+  }
+  // Something is there and talking; the only question left is whether we agree on the .proto.
+  // A peer we cannot trust is not a healthy link — the mode tiles stay disabled either way (§9),
+  // but the operator needs to know which of "check the cable" and "reflash the pair" to do.
+  return matched ? LINK_OK : LINK_SCHEMA;
+}
+
 bool HomeViewModel::modeEnabled(int link_state) {
   return link_state == LINK_OK;
 }

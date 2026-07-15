@@ -18,9 +18,10 @@
 //
 // No clock, no port: tick(nowMs, linkHealthy) mirrors SleepController::tick(nowMs, sleepAllowed)
 // — time and the health predicate are passed in, so this stays in the fast native_logic_cyd lane.
-// It deliberately does NOT reuse lib/control_logic/heartbeat_monitor.h: that is controller-tree
-// code bound to the IClock port, and dragging lib/control_port into the CYD lane to reuse ~12
-// lines would be a worse trade than reusing the *pattern*.
+// It deliberately does NOT reuse lib/protocol/heartbeat_monitor.h: that class is bound to the
+// IClock port, and dragging lib/control_port into the CYD lane to reuse ~12 lines would be a
+// worse trade than reusing the *pattern*. (It moved out of lib/control_logic with A9, when the
+// CYD's own link layer needed the same freshness question — the reasoning here is unchanged.)
 #pragma once
 
 #include <cstdint>

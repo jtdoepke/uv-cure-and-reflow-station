@@ -32,6 +32,11 @@ public:
   // initializers before the enclosing class is complete.)
   HeaterActuator(IHeaterSwitch &sw, IClock &clock) : HeaterActuator(sw, clock, Config{}) {}
 
+  // The duty currently in force, 0..1. Read *after* SafetySupervisor::tick() to get what the
+  // heater is actually doing rather than what the control loop asked for: forceOff() zeroes
+  // this, so a safety cut shows up here. Telemetry (§9) reports it.
+  float duty() const { return duty_; }
+
   // Commanded duty from the control loop; clamped to 0..1 and stored. Takes effect at
   // the next window latch (tick()), so a mid-window change can't glitch the output.
   void setDuty(float d0to1) { duty_ = d0to1 < 0.0F ? 0.0F : (d0to1 > 1.0F ? 1.0F : d0to1); }

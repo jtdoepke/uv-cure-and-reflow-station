@@ -32,8 +32,11 @@ public:
     responder_.setSink(*this);
   }
 
-  // Send our Hello at boot.
-  void begin() { handshake_.sendHello(); }
+  // Send our Hello at boot. boot_nonce must differ across boots of this board — it is
+  // what lets the CYD notice a controller restart (watchdog, brownout, crash) and
+  // re-announce itself, without which we would never re-match and would sit refusing
+  // to leave safe state (§9 re-sync).
+  void begin(uint32_t boot_nonce) { handshake_.begin(boot_nonce); }
 
   // Retransmit Hello until the peer is seen. Call every loop iteration.
   void service() { handshake_.service(); }

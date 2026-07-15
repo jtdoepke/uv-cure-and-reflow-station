@@ -233,6 +233,89 @@ void test_start_seq_follows_recipe(void) {
   TEST_ASSERT_EQUAL_UINT32(7, r.sink.last_start_session);
 }
 
+// Swaps a fresh sender onto the same wire, standing in for a CYD reboot: the
+// controller keeps running (and keeps its cached seq), the CYD's counter restarts.
+struct RebootedCyd {
+  protocol::ReliableSender sender;
+  CydObserver obs;
+  RebootedCyd(Rig &r) : sender(r.cyd_link, r.clk), obs(sender) { r.cyd_router.setObserver(obs); }
+};
+
+static oven_Start startFor(uint32_t session) {
+  oven_Start st = oven_Start_init_default;
+  st.session = session;
+  st.recipe_id = 1;
+  return st;
+}
+
+// WHY setSeqBase exists — the failure it prevents. seq is monotonic only within a
+// boot, but the responder's dedup treats it as globally unique, so an unseeded
+// reboot re-sends seq 1 and the controller mistakes a brand-new Start for a
+// replay. Note what the CYD sees: Acked. The link looks healthy while the session
+// was silently never adopted, so the oven would never authorize (or, worse, would
+// stay authorized on the pre-reboot session). Delete setSeqBase and this passes
+// with `starts == 1`.
+void test_reboot_without_seq_base_is_deduped(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  TEST_ASSERT_TRUE(r.sender.sendStart(startFor(0xAAA))); // seq 1
+  r.exchange();
+  TEST_ASSERT_EQUAL_INT(1, r.sink.starts);
+  TEST_ASSERT_EQUAL_UINT32(0xAAA, r.sink.last_start_session);
+
+  RebootedCyd fresh(r);                                      // seq_ back to 0
+  TEST_ASSERT_TRUE(fresh.sender.sendStart(startFor(0xBBB))); // seq 1 again -> collision
+  r.exchange();
+
+  // The sender is told it landed...
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Acked), stateInt(fresh.sender.state()));
+  // ...but the controller replayed the cached verdict and skipped the side effect:
+  // no new Start, and the session is still the pre-reboot one.
+  TEST_ASSERT_EQUAL_INT(1, r.sink.starts);
+  TEST_ASSERT_EQUAL_UINT32(0xAAA, r.sink.last_start_session);
+}
+
+// Seeding the counter per boot dodges the single-slot dedup: the rebooted CYD's
+// Start is accepted and its session actually adopted.
+void test_reboot_with_seq_base_readopts_session(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  r.sender.setSeqBase(1000);
+  TEST_ASSERT_TRUE(r.sender.sendStart(startFor(0xAAA))); // seq 1001
+  r.exchange();
+  TEST_ASSERT_EQUAL_INT(1, r.sink.starts);
+  TEST_ASSERT_EQUAL_UINT32(1001, r.sink.last_start_seq);
+
+  RebootedCyd fresh(r);
+  fresh.sender.setSeqBase(5000);
+  TEST_ASSERT_TRUE(fresh.sender.sendStart(startFor(0xBBB))); // seq 5001 -> no collision
+  r.exchange();
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Acked), stateInt(fresh.sender.state()));
+  TEST_ASSERT_EQUAL_INT(2, r.sink.starts); // accepted, not deduped
+  TEST_ASSERT_EQUAL_UINT32(5001, r.sink.last_start_seq);
+  TEST_ASSERT_EQUAL_UINT32(0xBBB, r.sink.last_start_session); // the new session landed
+}
+
+// The seed is a base, not the first seq: the next command is base + 1, and the
+// Recipe -> Start progression carries on from there.
+void test_seq_base_offsets_subsequent_commands(void) {
+  protocol::AcceptAllValidator v;
+  Rig r(v);
+
+  r.sender.setSeqBase(42);
+  r.sender.sendRecipe(simpleRecipe(1));
+  r.exchange();
+  TEST_ASSERT_EQUAL_UINT32(43, r.sender.pendingSeq());
+
+  r.sender.sendStart(startFor(7));
+  r.exchange();
+  TEST_ASSERT_EQUAL_UINT32(44, r.sender.pendingSeq());
+  TEST_ASSERT_EQUAL_UINT32(44, r.sink.last_start_seq);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_ack_happy_path);
@@ -241,5 +324,8 @@ int main(int, char **) {
   RUN_TEST(test_give_up_after_max_retries);
   RUN_TEST(test_duplicate_seq_suppressed);
   RUN_TEST(test_start_seq_follows_recipe);
+  RUN_TEST(test_reboot_without_seq_base_is_deduped);
+  RUN_TEST(test_reboot_with_seq_base_readopts_session);
+  RUN_TEST(test_seq_base_offsets_subsequent_commands);
   return UNITY_END();
 }

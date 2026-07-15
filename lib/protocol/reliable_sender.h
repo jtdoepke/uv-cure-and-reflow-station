@@ -29,6 +29,20 @@ public:
   // link and clock must outlive this sender.
   ReliableSender(FrameLink &link, IClock &clock) : link_(link), clock_(clock) {}
 
+  // Seed the seq counter; the next command sends base + 1. Call once at boot,
+  // before the first send.
+  //
+  // seq is only monotonic *within* a boot, but the controller's dedup treats it as
+  // globally unique (SetupResponder caches one {seq -> verdict} and replays the
+  // verdict on a repeat). So a rebooted CYD starting over at 0 has its first
+  // command mistaken for a replay: the Ack comes back and the sender reports
+  // Acked, but the controller skips the side effect — onStartAccepted never fires
+  // and the session is never adopted. Silent, and it looks like a working link.
+  // Seeding from a per-boot random source makes that collision vanishingly
+  // unlikely. Unseeded, the counter still starts at 0, which is correct for tests
+  // and for any single-boot use.
+  void setSeqBase(uint32_t base) { seq_ = base; }
+
   // Stamp the next seq into a copy of recipe/start, send it, and enter Pending.
   // Returns false (sending nothing) if a command is already outstanding.
   bool sendRecipe(const oven_Recipe &recipe);

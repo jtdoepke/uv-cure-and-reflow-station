@@ -23,6 +23,13 @@ tagged to a step before starting that step's items.
 - [x] **A1** [A] — TinyFrame framing + `ISerialTransport` port + in-memory pipe. (§9)
 - [x] **A2** [A] — Reliability layer: heartbeat, seq/ACK-NAK retry, session,
   schema-hash handshake gate. (§9)
+  *Amended by **A8** (two bugs its host tests structurally could not see, both now pinned):
+  seq restarted at 0 each boot while `SetupResponder` dedups on seq alone, so a rebooted CYD's
+  first command was silently swallowed → `ReliableSender::setSeqBase()`; and `Handshake` never
+  answered a `Hello`, so whoever heard first went quiet without confirming and the slower board
+  never matched → per-boot `Hello.boot_nonce` + answer-on-hear. The tests hid both by booting
+  both facades at the same instant. Also **A9**, which built the controller→CYD `Telemetry` half
+  of §9's hot path that fell between A2 and C7.*
 - [x] **A3** [A] — `HeaterActuator` time-proportioning class. (§11)
 
 ## New ports to create (not standalone items — build each with its first consumer)
@@ -34,8 +41,11 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - **Temp-input** (control-sensor readback; §11 `IThermocouples`) — first needed by **A5/A6**, also **A4b**.
 - **`IContactor`** (energize-to-close; §4) — **A4a**. *Landed with A4a: `lib/control_port/IContactor.h`
   plus `FakeContactor` (`test/helpers`).*
-- **`IWatchdog`** (kick + reset-cause readback; §9/§11) — **A4b**, **A8**.
-- **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **A8** / **D5**.
+- ~~**`IWatchdog`** (kick + reset-cause readback; §9/§11)~~ *Landed with A8:
+  `lib/control_port/IWatchdog.h` (`kick()` + `ResetCause lastResetCause()`) plus `FakeWatchdog`
+  (`test/helpers`) and the `Esp32Watchdog` adapter. **A4b** still owns mapping `ResetCause` onto
+  `Fault{WATCHDOG}` emission.*
+- **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **D5**.
 - **Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.
   *Partially landed: **B5** shipped `ISettingsStorage` + a `FakeSettingsStorage` (`lib/storage_port`);
   **B4** still needs the profile-blob/LittleFS storage port.*
@@ -156,10 +166,96 @@ existing `IClock`/`IHeaterSwitch` idiom:
 
 ## Wave 3 — Bench safety proof, screens, generators (compose Wave 2)
 
-- [ ] **A8** [A] — bench `Esp32*` adapters + dummy-load firmware: heartbeat-pull
+- [x] **A8** [A] — bench `Esp32*` adapters + dummy-load firmware: heartbeat-pull
   test with an LED "heater" shuts off within the timeout. **Closes §8 step 1.**
   deps: A4a, two dev boards (no oven). *A5/A6/A7 enrich a real bench run but aren't
   needed for the fail-safe proof itself.*
+  *Proven on two dev boards, no oven: **the heater output dies 745–756 ms after the heartbeats
+  stop**, against `kCommandTimeoutMs` = 750 (measured over 4 trials via an edge-triggered bench
+  log; the 1 Hz trace is far too coarse to tell a real timeout from a lucky guess). New
+  `src_control/` adapters — `Esp32SerialTransport`, `Esp32HeaterSwitch` (GPIO25), `Esp32Contactor`
+  (GPIO26), `Esp32Watchdog`, `Esp32Clock` promoted out of `main.cpp` — injected into the A1–A4a
+  logic **unchanged**: both `main.cpp`s are recognizable mirrors of `test_reliability_integration`'s
+  `Rig`, so `main()` really is the only divergence from the host tests (§11). Both firmwares now
+  pump `FrameLink::poll()`/`tick()` from their own loop (neither facade's `service()` does), on a
+  fixed 10 ms cadence because TinyFrame's resync timeout counts **`tick()` calls, not ms**.
+  **Decision: a bench-only `CONTROL_BENCH` build moves the controller's link to UART2** — §2 pins
+  production to UART0 for §25's ROM loader, but that is also the devkit's USB-bridge port, and a
+  powered bridge idles TX *driven high*, so it wins arbitration outright (a series resistor only
+  picks the loser). The flag therefore also decides whether a **console exists at all**: production
+  has none, since the link owns `Serial` — `TF_Error`'s printf is compiled out (`TF_ERROR_QUIET`)
+  for the same reason, and both are verified by grepping the built `.elf` rather than trusted.
+  **Bench duty stub** (`authorized ? 0.5 : 0`): `SafetySupervisor` only ever cuts and A5's PID does
+  not exist, so nothing would raise duty and the LED could never light; at `windowMs=1000` that is a
+  500 ms blink = "authorized **and** the loop is alive", while the contactor LED (driven by the
+  supervisor itself) is the true `authorized()` readout. `Esp32SerialTransport::write` deliberately
+  does **not** clamp to `availableForWrite()`: `TF_WriteImpl` discards the returned count, so a
+  short write truncates a frame with no resume path — non-blocking comes from sizing the TX ring
+  above `TF_SENDBUF_LEN` instead. CYD link plumbing landed **unconditionally** (it is production
+  wiring, and a `session=0`/`enable=false` sender authorizes nothing), with only the boot-time
+  Recipe+Start+`HEAT_EN` stimulus behind `esp32dev_cyd_bench`; §19/C6 owns starting a run.
+  **Three bugs the bench found that the host tests could not**, all fixed here with regression
+  coverage: (1) **`SetupResponder` dedups on seq alone while `ReliableSender` restarts seq at 0
+  each boot**, so a rebooted CYD's `Start{seq=1}` was read as a replay — Acked, but
+  `onStartAccepted` never fired and the session was silently never adopted; fixed with
+  `ReliableSender::setSeqBase()`, seeded from `esp_random()` per boot. (2) **`Handshake` never
+  answered a `Hello`**, and *hearing* a peer is not *being heard* — whoever heard first went quiet
+  without confirming, so the CYD (~3 s slower to boot) sat at `sawPeer=0` while the controller read
+  `matched=1`, and a lone controller reset left it `matched=0` forever. That defeated §9's *decided*
+  re-sync and would have made **every watchdog reset take the link down permanently**. Fixed by
+  appending a per-boot `boot_nonce` to `Hello` (append-only, so the frozen contract holds) and
+  answering a received Hello — immediately on a new/changed nonce, else at most once per
+  `kHelloRetryMs`; the rate limit is what makes it terminate, since an answer is never "new" to a
+  peer that already knows us. The host tests hid this by having both facades `begin()` at the same
+  instant. (3) design.md §11 said `SafetySupervisor.tick()` runs **first** each loop — wrong on the
+  merits, since the PID's later `setDuty()` would overwrite `forceOff()` and re-latch a nonzero
+  window, losing safety to the PID for a full second; corrected to **last**. New `test_bench_link`
+  suite composes `test_reliability_integration`'s two-facade rig with A4a's output stack — the
+  first coverage of "real frames stop → the **output** actually cuts" (`test_safety_supervisor`
+  reaches into `gate()` directly; `test_reliability_integration` owns no outputs). **§8 step 1's
+  three clauses all close:** outputs-default-OFF (controller alone holds `safe=1` indefinitely),
+  command-timeout (above), and **watchdog** — a bench hang trigger proves the reset really fires
+  and the next boot reports `ResetCause::Watchdog`, which also confirmed that subscribing the task
+  by hand (rather than Arduino's `enableLoopWDT()`, whose wrapper would auto-feed the dog) is what
+  makes the kick mean anything. **Not in scope:** `Fault{WATCHDOG}` *emission* stays A4b's (A4a
+  deferred all FaultCode plumbing) — A8 only logs the cause on the bench. No UV/fan/motor ports
+  (A6 owns the logic that would drive them). No PID (A5) — hence the duty stub. **A8 proves the
+  cut, not a latch:** restoring the wire re-authorizes on its own, which is correct — A4b's
+  `trip()` is what makes a fault sticky. The bench pinout is not production's, so link-on-UART0
+  must be re-verified before §25; §8 step 2's re-run against the real chain is where that lands.*
+- [x] **A9** [A] — controller→CYD `Telemetry` hot path + CYD-side link health. deps: A2, A8.
+  (§9, §14)
+  *The half of §9's hot path nobody owned: A2 built the CYD→controller `Heartbeat`, C7 owns
+  *consuming* telemetry for the Run screen, and emitting it fell between them — so the link was
+  one-way and **the CYD had no way to know the controller existed**. Found the way it had to be:
+  the Home indicator kept reading "Link" with the controller physically unplugged. `matched()`
+  cannot fill that gap — it answers a different question ("did a peer once answer, and do we
+  agree on the `.proto`") and it **latches**. New `protocol::TelemetrySender` mirroring
+  `HeartbeatSender` (fire-on-tick, no retransmit — a lost frame self-heals), emitting at §9's
+  decided 250 ms **unconditionally, run or no run**, per §9's "unconditionally sends Hello + IDLE
+  telemetry". The caller owns the payload via `state()`; the sender only stamps
+  session/seq/ctrl_millis and owns the cadence, so it stays ignorant of what telemetry *means* —
+  today the controller emits an otherwise-zeroed IDLE frame carrying `heater_duty`, read **after**
+  `SafetySupervisor::tick()` so it reports what the outputs actually did rather than what the
+  control loop asked for; A5/A6/D4 fill in the rest. `CydLink::linkAlive()` reads *arrival* (not
+  contents) as the liveness proof. **New `kLinkTimeoutMs = 1000`** (~4 missed frames — the same
+  "miss 3-4 and act" logic as `kCommandTimeoutMs`, in the other direction); deliberately **not**
+  the same number as `FaultController::linkTimeoutMs` = 2000, which is a separate, more patient
+  run-scoped choice about when to throw a red modal (§22). Both are **TBD §10** placeholders.
+  `HomeViewModel::linkStateFrom` gained an `alive` input and consults it **first**, since it is
+  the only one that decays; `saw_peer`/`matched` still distinguish "check the cable" from
+  "reflash the pair", which must never collapse into one state. **`HeartbeatMonitor` moved
+  `lib/control_logic` → `lib/protocol`** (+ `namespace protocol`): both ends ask the identical
+  question of the other's hot-path stream — `SessionGate` of `Heartbeat` at `kCommandTimeoutMs`,
+  `CydLink` of `Telemetry` at `kLinkTimeoutMs` — so one implementation now serves both directions
+  instead of `lib/protocol` reaching up into `control_logic`. B7's `FaultController` still
+  deliberately reuses the *pattern* rather than the class (it owns no clock port); its comment was
+  updated, not its reasoning. Also added `HeaterActuator::duty()` so telemetry can report the
+  post-safety truth. **Unblocks** §22's `FaultController.linkHealthy`, which B7 left as a
+  parameter with no producer. Door-open wake (§17) still waits on D1/D3 — the transport exists
+  now, the sensor doesn't. Verified on the bench: holding the controller in reset reads
+  `matched=1 sawPeer=1 alive=0 state=LINK_NONE` — the latch and the decay disagreeing, exactly as
+  intended — and it recovers on its own when telemetry resumes.*
 - [ ] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
 - [ ] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
   then feasibility-curve preview). deps: C1, B1, B2. (§12)

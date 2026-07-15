@@ -14,6 +14,19 @@ inline constexpr uint32_t kHeartbeatPeriodMs = 200;
 // this window (~3-4 missed heartbeats).
 inline constexpr uint32_t kCommandTimeoutMs = 750;
 
+// Controller -> CYD telemetry period. Sent unconditionally, run or no run: it is
+// the CYD's only evidence the controller is alive at all, and §9's re-sync has the
+// controller emit IDLE telemetry from boot.
+inline constexpr uint32_t kTelemetryPeriodMs = 250;
+
+// The CYD reads the link as down after this long with no telemetry (~4 missed
+// frames — the same "miss 3-4 and act" logic as kCommandTimeoutMs, in the other
+// direction). Deliberately NOT the same number as FaultController::linkTimeoutMs:
+// this drives Home's indicator + run-flow gate (§14), which should be honest within
+// a second, whereas that one decides when to throw a red mid-run modal (§22) and is
+// deliberately more patient. **TBD §10** — both are unmeasured placeholders.
+inline constexpr uint32_t kLinkTimeoutMs = 1000;
+
 // Setup path (Recipe/Start): resend interval and retry budget before the sender
 // gives up and surfaces an error. kSetupMaxRetries counts resends *after* the
 // initial send, so a command is transmitted up to 1 + kSetupMaxRetries times.

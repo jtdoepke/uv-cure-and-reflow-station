@@ -7,10 +7,19 @@
 // Content messages from the controller (Telemetry/Done/Fault) are forwarded to
 // an optional app observer so Track B can consume them without CydLink knowing
 // their meaning. Header-only: thin composition, no state beyond its members.
+//
+// It does read one thing out of that stream on its own account: *arrival*. Telemetry is the
+// only traffic the controller sends unprompted (§9, 250 ms, run or no run), so its freshness is
+// the CYD's sole evidence the controller is still there — matched() only ever proves one
+// answered a Hello once, and latches. linkAlive() is that evidence, and it is what Home's link
+// indicator + run-flow gate (§14) and B7's FaultController.linkHealthy (§22) key off.
 #pragma once
 
+#include "IClock.h"
 #include "handshake.h"
+#include "heartbeat_monitor.h"
 #include "heartbeat_sender.h"
+#include "link_params.h"
 #include "message_router.h"
 #include "reliable_sender.h"
 
@@ -19,10 +28,11 @@ namespace protocol {
 class CydLink : public IMessageObserver {
 public:
   CydLink(FrameLink &link, IClock &clock)
-      : handshake_(link, clock), heartbeat_(link, clock), sender_(link, clock) {}
+      : handshake_(link, clock), heartbeat_(link, clock), sender_(link, clock), telemetry_(clock) {}
 
-  // Send our Hello at boot.
-  void begin() { handshake_.sendHello(); }
+  // Send our Hello at boot. boot_nonce must differ across boots of this board — it is
+  // what lets the controller notice a CYD restart and re-announce itself (§9 re-sync).
+  void begin(uint32_t boot_nonce) { handshake_.begin(boot_nonce); }
 
   // Drive all three cadences. Call every loop iteration.
   void service() {
@@ -38,11 +48,21 @@ public:
   HeartbeatSender &heartbeat() { return heartbeat_; }
   ReliableSender &sender() { return sender_; }
 
+  // Is the controller still there? True only while its telemetry keeps arriving (§9: it sends
+  // unconditionally at kTelemetryPeriodMs, run or no run).
+  //
+  // This — not handshake().matched() — is the liveness signal. matched() answers "did a peer
+  // once answer a Hello, and did we agree on the .proto", and it *latches*: it stays true over
+  // a cable that came out ten minutes ago. Telemetry arrival is the only thing that decays.
+  // Fail-closed: false until the first frame lands.
+  bool linkAlive() const { return !telemetry_.expired(kLinkTimeoutMs); }
+
   // IMessageObserver — reliability messages handled here; content forwarded.
   void onHello(const oven_Hello &h) override { handshake_.onPeerHello(h); }
   void onAck(const oven_Ack &a) override { sender_.onAck(a); }
   void onNak(const oven_Nak &n) override { sender_.onNak(n); }
   void onTelemetry(const oven_Telemetry &t) override {
+    telemetry_.feed(); // arrival is the liveness signal, whatever the frame says
     if (app_ != nullptr) {
       app_->onTelemetry(t);
     }
@@ -62,6 +82,7 @@ private:
   Handshake handshake_;
   HeartbeatSender heartbeat_;
   ReliableSender sender_;
+  HeartbeatMonitor telemetry_; // freshness of the controller's stream, not of a heartbeat
   IMessageObserver *app_ = nullptr;
 };
 

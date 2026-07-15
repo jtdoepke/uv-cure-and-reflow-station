@@ -41,6 +41,11 @@ struct Rig {
   }
 };
 
+// Distinct per-board boot nonces (§9 re-sync). Arbitrary here; on hardware they are
+// re-rolled every boot, which is what lets a peer notice a restart.
+static constexpr uint32_t kCydNonce = 0xC1DB0071;
+static constexpr uint32_t kCtrlNonce = 0xC7180071;
+
 static oven_Recipe cureRecipe(uint32_t id) {
   oven_Recipe rec = oven_Recipe_init_default;
   rec.id = id;
@@ -61,8 +66,8 @@ void test_full_boot_to_run_and_timeout(void) {
   const uint32_t kSession = 0xABCDE;
 
   // --- boot handshake ---
-  r.cyd.begin();
-  r.ctrl.begin();
+  r.cyd.begin(kCydNonce);
+  r.ctrl.begin(kCtrlNonce);
   r.exchange();
   TEST_ASSERT_TRUE(r.cyd.handshake().matched());
   TEST_ASSERT_TRUE(r.ctrl.handshake().matched());
@@ -106,8 +111,8 @@ void test_schema_mismatch_blocks_run(void) {
   Rig r;
   const uint32_t kSession = 7;
 
-  r.cyd.begin();
-  r.ctrl.begin();
+  r.cyd.begin(kCydNonce);
+  r.ctrl.begin(kCtrlNonce);
   r.exchange();
 
   // Bring a session up and authorize it.

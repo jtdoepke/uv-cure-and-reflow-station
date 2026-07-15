@@ -15,12 +15,12 @@ void setUp(void) {
 void tearDown(void) {}
 
 void test_never_fed_is_expired(void) {
-  HeartbeatMonitor hb(clk);
+  protocol::HeartbeatMonitor hb(clk);
   TEST_ASSERT_TRUE(hb.expired(kWindowMs));
 }
 
 void test_fresh_feed_is_not_expired(void) {
-  HeartbeatMonitor hb(clk);
+  protocol::HeartbeatMonitor hb(clk);
   hb.feed();
   TEST_ASSERT_FALSE(hb.expired(kWindowMs));
   clk.advance(kWindowMs - 1);
@@ -28,14 +28,14 @@ void test_fresh_feed_is_not_expired(void) {
 }
 
 void test_stale_feed_is_expired(void) {
-  HeartbeatMonitor hb(clk);
+  protocol::HeartbeatMonitor hb(clk);
   hb.feed();
   clk.advance(kWindowMs);
   TEST_ASSERT_TRUE(hb.expired(kWindowMs));
 }
 
 void test_refeed_renews_the_window(void) {
-  HeartbeatMonitor hb(clk);
+  protocol::HeartbeatMonitor hb(clk);
   hb.feed();
   clk.advance(kWindowMs - 1);
   hb.feed();
@@ -44,7 +44,7 @@ void test_refeed_renews_the_window(void) {
 }
 
 void test_survives_millis_wraparound(void) {
-  HeartbeatMonitor hb(clk);
+  protocol::HeartbeatMonitor hb(clk);
   clk.now = 0xFFFFFF00u; // 256 ms before wrap
   hb.feed();
   clk.now = 0x000000FFu; // 511 ms later, past the wrap
@@ -54,7 +54,7 @@ void test_survives_millis_wraparound(void) {
 }
 
 void test_reset_returns_to_expired(void) {
-  HeartbeatMonitor hb(clk);
+  protocol::HeartbeatMonitor hb(clk);
   hb.feed();
   hb.reset();
   TEST_ASSERT_TRUE(hb.expired(kWindowMs));

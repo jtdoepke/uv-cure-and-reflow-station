@@ -62,21 +62,24 @@ The CYD does **not** have enough free GPIO to run the oven's sensors and loads
 **Interconnect (DECIDED):**
 
 - **Pin inventory (the hard constraint):** the CYD exposes three plugs — **P5**
-  (VIN, TX, RX, GND), **P3** (3.3 V, GPIO27, GPIO22, GND), **CN1** (GPIO21,
-  GPIO22, GPIO33, GND). CN1 contributes **zero free pins**: GPIO21 is the
+  (VIN, TX, RX, GND), **CN1** (3.3 V, GPIO27, GPIO22, GND), **P3** (GPIO21,
+  GPIO22, GPIO33, GND). P3 contributes **zero free pins**: GPIO21 is the
   backlight PWM and GPIO33 the touch CS (`include/LGFX_CYD2USB.hpp`), and its
-  GPIO22 duplicates P3's. So the only free GPIOs are **P3's 27/22 and P5's TX/RX
+  GPIO22 duplicates CN1's. So the only free GPIOs are **CN1's 27/22 and P5's TX/RX
   (GPIO1/GPIO3)** — exactly the four the interconnect needs, which is why P5's
   TX/RX get used after all (as the rarely-driven OTA lines, below, not the link).
+  *(Header names verified against the board during A8: the connector carrying the
+  two free GPIOs is CN1, not P3 — this doc had the two labels swapped. The free-pin
+  set, and therefore every conclusion below, is unchanged.)*
 - **Comms:** a dedicated *second* hardware UART — **CYD GPIO27=TX / GPIO22=RX
-  (P3)** crossed to the controller's UART. 3.3 V both sides → no level shifting.
+  (CN1)** crossed to the controller's UART. 3.3 V both sides → no level shifting.
   Deliberately *not* P5/UART0, so the CYD's USB serial monitor + flashing stay
   free of contention. On the controller side the link **must land on UART0
   (GPIO1/3)** — the pins its ROM serial loader speaks (§21/§25); controller
   boot-ROM chatter on its TX0 arrives as garbage frames the CRC rejects.
   Protocol detail in §9.
 - **Power:** a mains-derived **5 V PSU on the controller side** powers the
-  controller and feeds the CYD via **P5 (VIN + GND)**. The P3 signal cable carries
+  controller and feeds the CYD via **P5 (VIN + GND)**. The CN1 signal cable carries
   **TX/RX + GND as a twisted triple** — the signal return must not detour through
   the power cable (that loop area next to a mains-switching SSR is how phantom
   CRC/heartbeat faults happen); P5's ground remains the power return. Route both
@@ -93,8 +96,28 @@ The CYD does **not** have enough free GPIO to run the oven's sensors and loads
   reset or in its bootloader. Known bench caveat: USB-flashing the CYD wiggles
   GPIO3 (CH340 TX), so the controller may reset repeatedly during a CYD bench
   flash — harmless (fail-safe defaults, §4), and field OTA never involves USB.
+- **Bench exception — the controller's link moves to UART2 (DECIDED, backlog A8):**
+  the link must land on UART0 in production (above), but on a dev board UART0 is
+  *also* the USB-serial bridge's port, and a powered bridge idles its TX **driven
+  high** — so it wins arbitration against the CYD's TX on the controller's RX0. You
+  cannot have both boards on USB *and* the link up; a series resistor does not help,
+  it only decides who loses. The `esp32dev_control_bench` env (`-D CONTROL_BENCH`)
+  therefore puts the **controller's** link on **UART2 (GPIO16/17)** and keeps UART0
+  as flash + monitor. Production `esp32dev_control` is unchanged — link on UART0,
+  and consequently **no console at all**: a stray `Serial.printf` there would be
+  bytes on the wire, which is also why TinyFrame's `TF_Error` is compiled out there
+  (`TF_ERROR_QUIET`). The CYD needs no such flag; its link already lives on CN1's
+  GPIO27/22, clear of its own USB. Cost: the bench pinout is not production's, so
+  link-on-UART0 must be re-verified before §25 — §8 step 2's re-run of the step-1
+  proof against real hardware is where that lands.
 - **Build caveat:** with the PSU on VIN, don't dual-source 5 V (PSU + USB) while
-  flashing the CYD — disconnect the PSU or rely on the board's USB diode.
+  flashing the CYD — disconnect the PSU or rely on the board's USB diode. On the
+  two-devkit bench the same rule bites in reverse: leave the boards' 5 V and 3.3 V
+  rails **unconnected** (GND + the two signal lines only) and let each self-power
+  from its own USB. Tying 3.3 V would parallel two LDO outputs — the higher one
+  hogs, and since AMS1117 has no reverse-current protection, unplugging one board
+  leaves it half-alive through the tie, which would quietly invalidate every
+  reset-based step of the §8 step-1 proof.
 
 ### Division of labor — smart controller (DECIDED)
 
@@ -808,7 +831,7 @@ Cadence numbers are the accepted defaults (§ table below).
 
 ### Link layer (DECIDED)
 
-- UART, **115200 8N1**. CYD **GPIO27=TX / GPIO22=RX** (P3, second hardware UART,
+- UART, **115200 8N1**. CYD **GPIO27=TX / GPIO22=RX** (CN1, second hardware UART,
   *not* UART0) crossed to the controller's **UART0** (its ROM-loader pins, §2);
   3.3 V both sides, no level shifting. Signal cable carries **TX/RX + GND as a
   twisted triple** (§2 interconnect — the signal return stays out of the power
@@ -927,6 +950,32 @@ Plain link CRC catches bit errors but not *version skew*: a frame from a firmwar
 built against a different `.proto` can transmit with a perfect CRC and be
 mis-decoded. One mechanism guards against that:
 
+- **Telemetry arrival is the CYD's liveness signal (DECIDED, A9).** The link is asymmetric: the
+  CYD's `Heartbeat` proves the CYD alive *to the controller*, and nothing proves the reverse.
+  `Hello`/`matched()` cannot fill that gap — it answers "did a peer once answer, and do we agree
+  on the `.proto`", and it **latches**, so it happily reports a healthy link over a cable that
+  came out ten minutes ago (it did exactly that on the bench). So the controller emits
+  `Telemetry` **unconditionally at 250 ms, run or no run**, and the CYD treats its *arrival* —
+  not its contents — as proof the controller exists: `CydLink::linkAlive()`, false until the
+  first frame and after `kLinkTimeoutMs` of silence. That drives Home's indicator + run-flow gate
+  (§14) and is the producer for §22's `FaultController.linkHealthy`. The two timeouts are
+  deliberately different numbers: 1000 ms here (be honest within a second) vs
+  `FaultController.linkTimeoutMs` = 2000 ms (be slow to throw a red mid-run modal).
+- **Hello carries a per-boot nonce; a peer that hears must answer (DECIDED, A8).**
+  Announcing stops once a peer's `Hello` is seen — but *hearing* a peer is not the
+  same as *being heard*, so whoever hears first would go quiet without confirming
+  and leave the other side announcing into a void forever. This is not a corner
+  case: the CYD spends ~3 s in its boot self-test before it starts listening, so it
+  loses that race every time, and it also broke the re-sync above outright (a
+  rebooted controller could never re-match, meaning **every watchdog reset would
+  take the link down permanently** — the watchdog would recover the MCU and kill the
+  link doing it). So `Hello` carries a random `boot_nonce`, re-rolled each boot, and
+  a received `Hello` is **answered**: immediately if the nonce is new or changed (a
+  peer that just booted certainly does not know us), otherwise at most once per
+  `kHelloRetryMs`. The rate limit is what makes it terminate — an answer is never
+  "new" to a peer that already knows us, so it cannot bounce back — while still
+  recovering an answer lost on the wire. *(Found on the A8 bench, not in the host
+  tests: both facades `begin()` at the same instant there, which hid the race.)*
 - **Handshake schema-hash gate (strict, fail-closed).** A build-time fingerprint
   of the shared `.proto` (hash of its compiled `FileDescriptorSet`) is baked into
   both firmwares as a constant and exchanged in `Hello.schemaHash`. **Mismatch →
@@ -969,7 +1018,8 @@ tests). Linked into **both** firmwares so the contract can't drift.
 | Baud | 115200 8N1 | safe over short wires; recipe upload is tiny |
 | Heartbeat period | 200 ms | CYD→controller liveness+auth |
 | Command-timeout | 750 ms | miss ~3–4 HBs → safe |
-| Telemetry rate | 250 ms (4 Hz) | smooth live temp graph |
+| Telemetry rate | 250 ms (4 Hz) | smooth live temp graph — **and the CYD's only liveness evidence** (below) |
+| Link timeout (CYD) | 1000 ms | miss ~4 telemetry frames → Home reads "No link" (§14). **TBD §10** |
 | Setup ACK timeout / retries | 200 ms / ×3 | then surface a UI error |
 | CRC | CRC-16/CCITT | over frame body |
 
@@ -1191,11 +1241,16 @@ class HeaterActuator {
   few ms) — thermally negligible over a 1 s window, so **no cycle-counting or
   zero-cross-detect input is needed** in the port.
 
-**Safety override & liveness:** `SafetySupervisor.tick()` runs first each loop; on
-any fault/interlock/stale-heartbeat it calls `heater.forceOff()` (and opens the
-contactor) — the actuator never overrides safety. If the loop *hangs*, `tick()`
-stops running and the pin would hold its last state, so the **hardware watchdog**
-(→ reset → pull-down → OFF) is the backstop, not the actuator itself.
+**Safety override & liveness:** `SafetySupervisor.tick()` runs **last** each loop —
+after the PID sets duty and the actuator ticks — so safety has the final word over
+whatever was commanded; on any fault/interlock/stale-heartbeat it calls
+`heater.forceOff()` (and opens the contactor) — the actuator never overrides safety.
+(*Corrected in A8, which wrote the first real loop: this said "first", which is wrong
+on the merits — ticking first would let the PID's later `setDuty()` overwrite
+`forceOff()`'s zeroed duty and let the actuator re-latch a nonzero on-time for a whole
+window, i.e. safety would lose to the PID for a full second.*) If the loop *hangs*,
+`tick()` stops running and the pin would hold its last state, so the **hardware
+watchdog** (→ reset → pull-down → OFF) is the backstop, not the actuator itself.
 
 **Testability example:** `FakeClock` + recording `IHeaterSwitch`; `setDuty(0.3)`,
 `windowMs = 1000`; advance the clock and assert the switch was on ~300 ms per 1 s

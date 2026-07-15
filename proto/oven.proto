@@ -27,6 +27,14 @@ message Hello {
   fixed64 schema_hash = 2; // FileDescriptorSet hash; mismatch => fail closed
   uint32 fw_ver = 3; // controller->CYD only
   uint32 caps = 4; // controller->CYD only: capability bitmask
+  // Random, re-rolled every boot. A Hello carrying a nonce different from the one we
+  // last saw means the peer restarted and knows nothing about us, so we answer with
+  // our own Hello -- without that, a peer rebooting after the handshake would Hello
+  // into silence forever (we stop announcing once we have seen it) and could never
+  // re-match, defeating §9's decided re-sync. An unchanged nonce (a retransmit, or a
+  // stray duplicate frame) is ignored, which is what stops two live boards trading
+  // Hellos back and forth forever.
+  uint32 boot_nonce = 5;
 }
 
 // Declared run mode. The controller cross-checks it against recipe content and

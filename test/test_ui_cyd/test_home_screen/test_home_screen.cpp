@@ -53,6 +53,26 @@ void test_vm_link_gates_mode_and_pairs_word(void) {
   TEST_ASSERT_EQUAL_UINT32(theme::FAULT, HomeViewModel::linkColor(LINK_NONE));
 }
 
+// The §9 link maps onto the indicator: nothing there is "no link"; present but disagreeing on
+// the .proto is a schema fault, not a healthy link (fail-closed — those two must never collapse
+// into one state, since only one of them is fixed by plugging a cable in).
+void test_vm_link_state_from_handshake(void) {
+  TEST_ASSERT_EQUAL_INT(LINK_NONE, HomeViewModel::linkStateFrom(false, false, false));
+  TEST_ASSERT_EQUAL_INT(LINK_OK, HomeViewModel::linkStateFrom(true, true, true));
+  TEST_ASSERT_EQUAL_INT(LINK_SCHEMA, HomeViewModel::linkStateFrom(true, false, true));
+  // Telemetry flowing before the handshake lands (a real, brief window at boot) is not yet a
+  // healthy link: never report OK to something we have not actually handshaken with.
+  TEST_ASSERT_EQUAL_INT(LINK_NONE, HomeViewModel::linkStateFrom(false, true, true));
+}
+
+// The regression this exists for: the handshake LATCHES, so a controller that is unplugged
+// still reads saw_peer=matched=true forever. Only liveness decays, and it must win — otherwise
+// Home cheerfully claims "Link" over a cable lying on the bench, which is exactly what it did.
+void test_vm_dead_link_beats_a_latched_handshake(void) {
+  TEST_ASSERT_EQUAL_INT(LINK_NONE, HomeViewModel::linkStateFrom(true, true, false));
+  TEST_ASSERT_EQUAL_INT(LINK_NONE, HomeViewModel::linkStateFrom(true, false, false));
+}
+
 // --- Rendered-screen behaviour ---
 
 void test_mode_tiles_publish_nav_intent(void) {
@@ -137,6 +157,8 @@ int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_vm_state_pairs_word_and_colour);
   RUN_TEST(test_vm_link_gates_mode_and_pairs_word);
+  RUN_TEST(test_vm_link_state_from_handshake);
+  RUN_TEST(test_vm_dead_link_beats_a_latched_handshake);
   RUN_TEST(test_mode_tiles_publish_nav_intent);
   RUN_TEST(test_secondary_row_publishes_nav_intent);
   RUN_TEST(test_link_loss_disables_mode_tiles);

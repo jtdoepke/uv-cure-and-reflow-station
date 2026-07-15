@@ -15,7 +15,7 @@
 // safe. This is the reliability seam only; the run state machine (A6) and the
 // output-driving safety logic (A4) live above it.
 //
-// Lives in control_logic (depends on HeartbeatMonitor); reuses that class for
+// Lives in control_logic (it owns the session policy); reuses protocol::HeartbeatMonitor for
 // freshness rather than re-deriving wraparound-safe timing.
 #pragma once
 
@@ -70,7 +70,7 @@ public:
   uint32_t activeSession() const { return active_session_; }
 
 private:
-  HeartbeatMonitor monitor_;
+  protocol::HeartbeatMonitor monitor_;
   protocol::Handshake &handshake_;
   uint32_t active_session_ = 0;
   bool has_active_ = false;
