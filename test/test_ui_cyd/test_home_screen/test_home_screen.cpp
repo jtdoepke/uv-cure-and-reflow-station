@@ -10,13 +10,14 @@
 #include "src/debugging/test/lv_test.h" // lv_test_display_create / mouse / wait (gated by LV_USE_TEST)
 
 #include "home_screen.h"
+#include "panel.h"
 #include "home_viewmodel.h"
 #include "subjects.h"
 #include "theme.h"
 
 void setUp(void) {
   lv_init();
-  lv_test_display_create(320, 240);
+  lv_test_display_create(panel::W, panel::H);
   lv_test_indev_create_all();
   ui_subjects_init(); // subjects must exist before the screen binds to them
 }

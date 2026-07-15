@@ -9,6 +9,7 @@
 #include <lvgl.h>
 #include "src/debugging/test/lv_test.h" // lv_test_display_create / mouse / wait (gated by LV_USE_TEST)
 
+#include "panel.h"
 #include "value_stepper.h"
 
 // File-static view model: its lv_subject_t must outlive lv_deinit() (the widgets unlink their
@@ -40,7 +41,7 @@ static NumericFieldConfig timeout_cfg() {
 
 void setUp(void) {
   lv_init();
-  lv_test_display_create(320, 240);
+  lv_test_display_create(panel::W, panel::H);
   lv_test_indev_create_all();
   commit_called = cancel_called = value_tap_called = false;
   committed_value = 0;

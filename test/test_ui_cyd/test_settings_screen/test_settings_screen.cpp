@@ -9,6 +9,7 @@
 #include "src/debugging/test/lv_test.h"
 
 #include "helpers/fake_settings_storage.h"
+#include "panel.h"
 #include "settings_screen.h"
 #include "settings_store.h"
 #include "subjects.h"
@@ -27,7 +28,7 @@ static void on_exit(void *) {
 
 void setUp(void) {
   lv_init();
-  lv_test_display_create(320, 240);
+  lv_test_display_create(panel::W, panel::H);
   lv_test_indev_create_all();
   ui_subjects_init();
   fs.present = false;

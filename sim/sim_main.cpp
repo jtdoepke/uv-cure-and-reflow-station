@@ -31,6 +31,7 @@
 
 #include "home_screen.h"
 #include "numeric_keypad.h"
+#include "panel.h"
 #include "selectable_list.h"
 #include "settings_screen.h"
 #include "subjects.h"
@@ -55,7 +56,6 @@ extern "C" void lodepng_free(void *ptr) {
   std::free(ptr);
 }
 
-static const int32_t SCR_W = 320, SCR_H = 240; // landscape, same as the firmware
 static lv_display_t *sim_disp = nullptr;
 
 // Render pending changes, then encode the display's full-frame buffer as a 24-bit PNG.
@@ -145,7 +145,7 @@ int main(int argc, char **argv) {
   }
 
   lv_init();
-  sim_disp = lv_test_display_create(SCR_W, SCR_H);
+  sim_disp = lv_test_display_create(panel::W, panel::H);
   // The test display defaults to XRGB8888; render RGB565 like the firmware instead
   // (the display reallocates its full-frame buffer on this event).
   lv_display_set_color_format(sim_disp, LV_COLOR_FORMAT_RGB565);

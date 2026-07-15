@@ -6,6 +6,7 @@
 #include <lvgl.h>
 #include "src/debugging/test/lv_test.h"
 
+#include "panel.h"
 #include "selectable_list.h"
 
 // File-static model: its lv_subject_t must outlive lv_deinit() (rows unlink observers at teardown).
@@ -29,7 +30,7 @@ static constexpr int kCount = 4;
 
 void setUp(void) {
   lv_init();
-  lv_test_display_create(320, 240);
+  lv_test_display_create(panel::W, panel::H);
   lv_test_indev_create_all();
   open_called = false;
   opened_index = -1;

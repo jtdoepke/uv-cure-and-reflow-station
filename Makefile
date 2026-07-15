@@ -43,7 +43,9 @@ tidy: ## Local static analysis of lib logic + firmware glue (advisory; not a CI 
 	clang-tidy -p .pio/tidy-esp32 $$(git ls-files 'src_cyd/*.cpp')
 
 test:      ## Host test suites (no board)
-	pio test -e native_logic_cyd -e native_ui_cyd -e native_control
+# native_ui_cyd_35 runs the same UI suites against the 3.5" panel's geometry — the suites are
+# geometry-independent, so a layout that only works at 320x240 fails here rather than on glass.
+	pio test -e native_logic_cyd -e native_ui_cyd -e native_ui_cyd_35 -e native_control
 
 build:     ## Firmware compile-check (both MCUs + both bench envs)
 # The bench envs are #if-guarded code paths, so they rot unless something compiles them.

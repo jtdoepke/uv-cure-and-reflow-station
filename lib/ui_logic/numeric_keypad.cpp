@@ -135,7 +135,7 @@ NumericKeypad create_numeric_keypad(lv_obj_t *parent, NumericKeypadViewModel &vm
   // --- Right rail: field name, live value, range, caution, ✕ Cancel. ---
   lv_obj_t *rail = lv_obj_create(parent);
   theme::apply_panel(rail);
-  lv_obj_set_width(rail, 96);
+  lv_obj_set_width(rail, theme::KEYPAD_RAIL_W);
   lv_obj_set_height(rail, lv_pct(100));
   lv_obj_set_flex_flow(rail, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(rail, theme::PAD_S, 0);
