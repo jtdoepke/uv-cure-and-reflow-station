@@ -10,7 +10,7 @@ Checks: >
   readability-else-after-return,
   -bugprone-easily-swappable-parameters
 # Only surface diagnostics from our own code; skip Arduino/ESP32/LVGL/LovyanGFX headers.
-HeaderFilterRegex: '^(src|lib|include/LGFX_CYD2USB\.hpp|test)'
+HeaderFilterRegex: '^(src|lib|include/LGFX_CYD2432S028\.hpp|test)'
 WarningsAsErrors: ''
 FormatStyle: file
 ---

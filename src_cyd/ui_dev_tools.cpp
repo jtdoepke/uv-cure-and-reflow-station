@@ -12,7 +12,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 
-#include "LGFX_CYD2USB.hpp"
+#include "cyd_board.h"
 #include "ui_dev_tools.h"
 
 // Gitignored WiFi credentials: WIFI_SSID / WIFI_PASSWORD (see include/secrets.h.example).
@@ -47,7 +47,8 @@ static void put_u32le(uint8_t *p, uint32_t v) {
 }
 
 // GET /screenshot.bmp — live GRAM readback streamed as a bottom-up 24-bit BMP.
-// One row buffer (w*3 bytes); rows of 320 px are already 4-byte aligned.
+// One row buffer (w*3 bytes). BMP requires 4-byte-aligned rows and this writer emits no padding,
+// so it relies on w*3 being a multiple of 4 — true for every panel width we ship (320, 480).
 static void handle_screenshot() {
   const int32_t w = s_gfx->width();
   const int32_t h = s_gfx->height();
@@ -71,7 +72,12 @@ static void handle_screenshot() {
   WiFiClient client = server.client();
   client.write(hdr, sizeof(hdr));
 
-  static uint8_t row[320 * 3];
+  // Sized from the configured panel, not a literal: a wider panel would silently overrun this.
+  // test_embedded_hw asserts panel::W == gfx.width(), which is what makes the bound real.
+  static uint8_t row[panel::W * 3];
+  if (w > panel::W) {
+    return; // cannot happen if the board flags match the panel; refuse rather than overrun
+  }
   for (int32_t y = h - 1; y >= 0; y--) {
     s_gfx->readRectRGB(0, y, w, 1, row); // fills R,G,B per pixel
     for (int32_t x = 0; x < w; x++) {    // BMP wants B,G,R

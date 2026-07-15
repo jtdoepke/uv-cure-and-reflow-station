@@ -1,13 +1,14 @@
-// ESP32-2432S028 "Cheap Yellow Display" (dual-USB v3 / ST7789) demo.
+// CYD "Cheap Yellow Display" HMI firmware.
 //
-// LovyanGFX drives the panel + touch; display config is in include/LGFX_CYD2USB.hpp.
-// The app runs a startup color self-test, then shows a "Hello CYD!" label and a
-// touch-counting button. See CLAUDE.md for build/upload commands.
+// LovyanGFX drives the panel + touch. Which board, which orientation, and every pin this file
+// needs come from include/cyd_board.h — deliberately, so this stays the app's composition root
+// and not a board definition. The app runs a startup color self-test, then shows the Home screen.
+// See CLAUDE.md for build/upload commands.
 
 #include <Arduino.h>
 #include <lvgl.h>
-#include "LGFX_CYD2USB.hpp"
 #include "auto_brightness.h"        // ambient-light -> backlight logic (lib/app_logic, §18)
+#include "cyd_board.h"              // this board's pins, capabilities, orientation, buffers
 #include "cyd_link.h"               // reliability facade (lib/protocol, §9)
 #include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
 #include "esp32_clock.h"            // IClock adapter for the link's cadences (firmware glue)
@@ -27,20 +28,11 @@
 #include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
 #endif
 
-static const uint16_t SCR_W = 320, SCR_H = 240; // landscape
 static LGFX gfx;
 
-// Double-buffered async DMA flush. Set to 0 to reclaim ~15 KB DRAM: that drops the
-// second draw buffer and reverts to the original single-buffer, CPU-blocking flush.
-// Turn this off FIRST if the WiFi dev build (esp32dev_cyd_uidev) starts failing the
-// draw-buffer malloc — the 2nd buffer is the easiest ~15 KB to give back, at the
-// cost of display responsiveness.
-#define DISP_DOUBLE_BUFFER 1
-
-// 1/10-screen partial draw buffer, RGB565 (2 bytes/pixel). This board has no PSRAM,
-// so never allocate a full-frame buffer. Heap-allocated in setup() rather than static:
-// the WiFi stack in the esp32dev_cyd_uidev env overflows the static DRAM segment otherwise.
-static constexpr size_t DRAW_BUF_BYTES = SCR_W * SCR_H / 10 * 2;
+// Partial draw buffers, RGB565 — sized and explained in cyd_board.h. Heap-allocated in setup()
+// rather than static: the WiFi stack in the esp32dev_cyd_uidev env overflows the static DRAM
+// segment otherwise.
 static uint8_t *draw_buf = nullptr;
 #if DISP_DOUBLE_BUFFER
 static uint8_t *draw_buf2 = nullptr; // second buffer: render next chunk while this one DMAs out
@@ -55,17 +47,15 @@ static SettingsScreen g_settings_screen;
 // Auto-brightness (§18) + idle sleep/wake (§17). AutoBrightness owns the backlight; the
 // SleepController decides awake/asleep and AutoBrightness ramps the backlight off/on to match.
 // Fed from g_settings each loop (auto on/off, brightness bias, idle timeout).
-static Esp32AmbientLight g_ambient;
+static Esp32AmbientLight g_ambient(kAmbientPin);
 static LgfxBacklight g_backlight(gfx);
 static AutoBrightness g_auto_brightness(g_ambient, g_backlight);
 static SleepController g_sleep;
 
-// CYD <-> controller link (§9). GPIO27=TX / GPIO22=RX on the CN1 header — §2 put the link there
-// deliberately, clear of the CYD's own UART0/USB, so the serial monitor and flashing stay free
+// CYD <-> controller link (§9). The UART, its pins and its buffer sizing live in cyd_board.h —
+// §2 put the link clear of the CYD's own UART0/USB, so the serial monitor and flashing stay free
 // of contention and this side needs no bench flag (the controller's does; see
-// src_control/control_board.h). Serial1 with an explicit pin remap: its defaults (GPIO9/10) are
-// wired to the SPI flash, so the 4-arg begin() below is mandatory, not stylistic. Using Serial1
-// also leaves "Serial2" meaning its stock 16/17 as it does in the controller's bench build.
+// src_control/control_board.h).
 //
 // This is production wiring, not bench scaffolding: it is safe by construction because
 // HeartbeatSender boots at session=0/enable=false and the controller's SessionGate filters any
@@ -75,18 +65,10 @@ static SleepController g_sleep;
 // its handler at construction but CydLink needs the FrameLink to send, so the cycle is broken
 // with setObserver().
 static Esp32Clock g_link_clk;
-static Esp32SerialTransport g_link_uart(Serial1);
+static Esp32SerialTransport g_link_uart(linkSerial());
 static protocol::MessageRouter g_link_router;
 static protocol::FrameLink g_link(g_link_uart, TF_MASTER, g_link_router); // CYD = TF_MASTER
 static protocol::CydLink g_cyd_link(g_link, g_link_clk);
-
-// §9's link constants, mirrored here only where this file has to make a choice.
-// TinyFrame's parser-resync timeout is counted in TF_Tick() *calls*, not milliseconds
-// (TF_PARSER_TIMEOUT_TICKS = 10, TF_Config.h), so tick on a fixed 10 ms cadence to turn it into
-// a real ~100 ms — comfortably inside the controller's 750 ms command-timeout.
-static constexpr uint32_t kLinkTickMs = 10;
-static constexpr size_t kLinkRxBuf = 512;  // we receive Telemetry/Ack — modest
-static constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SENDBUF_LEN (1024)
 
 #if defined(CYD_BENCH_LINK)
 // A8 bench stimulus (§8 step 1) — NOT production behavior; §19/C6's Setup/Confirm owns starting
@@ -233,7 +215,7 @@ static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
 
 // Startup self-test: fill the whole screen with each named color for ~0.8s.
 // Confirms the panel works and colors are right BEFORE the UI loads:
-//   - a color shown as its photo-negative -> flip cfg.invert in LGFX_CYD2USB.hpp
+//   - a color shown as its photo-negative -> flip cfg.invert in this board's LGFX header
 //   - RED renders as blue / BLUE as red    -> flip cfg.rgb_order
 #if !defined(UI_DEV_TOOLS) // skipped in the dev env: saves 3.2 s per flash-iterate cycle
 static void run_display_test() {
@@ -262,15 +244,15 @@ void setup() {
                 (unsigned long)(protocol::kSchemaHash & 0xFFFFFFFFu));
 
   gfx.init();
-  gfx.setRotation(1);     // landscape
+  gfx.setRotation(kRotation); // the board's mounting orientation (cyd_board.h)
   gfx.setBrightness(255); // full for the boot color self-test; AutoBrightness takes over in loop()
-  analogSetPinAttenuation(Esp32AmbientLight::kPin, ADC_11db); // full ~0-3.3 V LDR swing (§18)
+  analogSetPinAttenuation(kAmbientPin, kAmbientAtten);
 
   lv_init();
 
-  draw_buf = static_cast<uint8_t *>(malloc(DRAW_BUF_BYTES)); // internal DRAM (no PSRAM)
+  draw_buf = static_cast<uint8_t *>(malloc(kDrawBufBytes)); // internal DRAM (no PSRAM)
 #if DISP_DOUBLE_BUFFER
-  draw_buf2 = static_cast<uint8_t *>(malloc(DRAW_BUF_BYTES));
+  draw_buf2 = static_cast<uint8_t *>(malloc(kDrawBufBytes));
   if (draw_buf == nullptr || draw_buf2 == nullptr) {
 #else
   if (draw_buf == nullptr) {
@@ -279,16 +261,16 @@ void setup() {
     abort();
   }
 
-  lv_display_t *disp = lv_display_create(SCR_W, SCR_H);
+  lv_display_t *disp = lv_display_create(panel::W, panel::H);
   lv_display_set_flush_cb(disp, my_disp_flush);
 #if DISP_DOUBLE_BUFFER
   // RGB565_SWAPPED makes LVGL render in the panel's byte order, so the flush can feed
   // swap565_t straight to DMA with no conversion (see my_disp_flush). Revert this and
   // the buffer line below together if DISP_DOUBLE_BUFFER is turned off.
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
-  lv_display_set_buffers(disp, draw_buf, draw_buf2, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, draw_buf, draw_buf2, kDrawBufBytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 #else
-  lv_display_set_buffers(disp, draw_buf, nullptr, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, draw_buf, nullptr, kDrawBufBytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 #endif
 
   lv_indev_t *indev = lv_indev_create();
@@ -317,9 +299,9 @@ void setup() {
   // Link last: run_display_test() above spends ~3 s in delay() loops, and there is no point
   // servicing a handshake nothing is pumping. (Hello retransmits would survive it; starting
   // afterwards is simply honest about when we can actually talk.)
-  Serial1.setRxBufferSize(kLinkRxBuf); // both must precede begin()
-  Serial1.setTxBufferSize(kLinkTxBuf);
-  Serial1.begin(115200, SERIAL_8N1, /*rx=*/22, /*tx=*/27); // §9: 115200 8N1, CN1 pins
+  linkSerial().setRxBufferSize(kLinkRxBuf); // both must precede begin()
+  linkSerial().setTxBufferSize(kLinkTxBuf);
+  linkSerial().begin(kLinkBaud, SERIAL_8N1, kLinkRxPin, kLinkTxPin);
   // Seed the setup-path seq from a per-boot random base. seq is monotonic only *within* a boot,
   // but the controller's dedup treats it as globally unique, so an unseeded reboot would replay
   // seq 1 and have its first Start mistaken for a duplicate — Acked, but the session silently
@@ -391,13 +373,13 @@ void loop() {
   g_auto_brightness.setBias(bias);
   g_auto_brightness.tick(now);
 
-  // On-glass curve tuning trace (1 Hz): the raw LDR (GPIO34) vs the resulting backlight. On this
-  // board raw is ~0 in room light and climbs into the hundreds/thousands only as it gets dark
-  // (§18). Handy while tuning AutoBrightness::kCurve; safe to drop once the curve is dialed in.
+  // On-glass curve tuning trace (1 Hz): the raw LDR vs the resulting backlight. On this board raw
+  // is ~0 in room light and climbs into the hundreds/thousands only as it gets dark (§18). Handy
+  // while tuning AutoBrightness::kCurve; safe to drop once the curve is dialed in.
   static uint32_t last_ldr_log = 0;
   if (static_cast<uint32_t>(now - last_ldr_log) >= 1000U) {
     last_ldr_log = now;
-    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n", analogRead(34),
+    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n", g_ambient.read(),
                   g_auto_brightness.level(), static_cast<int>(g_settings.autoBrightness()),
                   static_cast<long>(bias), static_cast<int>(g_sleep.awake()));
     // Link state (§9), on the CYD's own USB console — which is free precisely because §2 put

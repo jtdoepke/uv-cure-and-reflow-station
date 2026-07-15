@@ -1,10 +1,13 @@
-// test_embedded_hw suite — runs on the real ESP32-2432S028 via `pio test -e embedded`.
-// Flash over the Micro-USB port. Asserts LovyanGFX bring-up, rotated geometry, brightness,
-// heap headroom, and a human-in-the-loop touch target (you tap a drawn box).
+// test_embedded_hw suite — runs on a real CYD via `pio test -e embedded`. Flash over the
+// Micro-USB port. Asserts LovyanGFX bring-up, rotated geometry, brightness, heap headroom, and a
+// human-in-the-loop touch target (you tap a drawn box).
+//
+// Board-agnostic on purpose: everything panel-specific comes from cyd_board.h / panel.h, so the
+// env's [board_*] flags decide which board this is flashed to.
 #include <Arduino.h>
 #include <unity.h>
 
-#include "LGFX_CYD2USB.hpp"
+#include "cyd_board.h"
 
 static LGFX gfx;
 
@@ -16,10 +19,12 @@ void test_gfx_init(void) {
   TEST_ASSERT_TRUE(gfx.init());
 }
 
+// The one cross-check the static_asserts cannot do: that the PANEL_* flags the whole UI lays
+// itself out against match what the panel driver actually reports at runtime.
 void test_rotated_dimensions(void) {
-  gfx.setRotation(1); // landscape
-  TEST_ASSERT_EQUAL_INT(320, gfx.width());
-  TEST_ASSERT_EQUAL_INT(240, gfx.height());
+  gfx.setRotation(kRotation);
+  TEST_ASSERT_EQUAL_INT(panel::W, gfx.width());
+  TEST_ASSERT_EQUAL_INT(panel::H, gfx.height());
 }
 
 void test_brightness(void) {
@@ -35,7 +40,10 @@ void test_heap_headroom(void) {
 // red box and assert the tap lands inside it. getTouch() returns calibrated screen coords.
 void test_touch_target(void) {
   gfx.fillScreen(0x0000);
-  const int bx = 140, by = 100, bw = 40, bh = 40;
+  // Centred, and sized as the design guide's 10 mm touch floor rather than a px literal: the box
+  // then lands on-screen and stays the same physical size on any panel.
+  const int bw = panel::pxFromMmX10(100), bh = bw;
+  const int bx = (panel::W - bw) / 2, by = (panel::H - bh) / 2;
   gfx.fillRect(bx, by, bw, bh, 0xF800); // red
   Serial.println(">> Tap the RED box within 10 s");
 
@@ -50,8 +58,10 @@ void test_touch_target(void) {
     delay(10);
   }
   TEST_ASSERT_TRUE_MESSAGE(got, "no touch detected within timeout");
-  TEST_ASSERT_INT_WITHIN(30, bx + bw / 2, x); // within ~30 px of box center
-  TEST_ASSERT_INT_WITHIN(30, by + bh / 2, y);
+  // Tolerance = half the box, i.e. "the tap landed in the box you were told to tap". Derived
+  // rather than a px literal so it means the same thing on a panel with a different pitch.
+  TEST_ASSERT_INT_WITHIN(bw / 2, bx + bw / 2, x);
+  TEST_ASSERT_INT_WITHIN(bh / 2, by + bh / 2, y);
 }
 
 void setup() {

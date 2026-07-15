@@ -30,7 +30,7 @@ compiledb: ## Regenerate compile_commands.json for clangd/IDE (esp32dev_cyd firm
 	python3 tools/clangd-inject-sysincludes.py compile_commands.json
 
 # Two passes: (1) host-buildable library logic via a fresh native_ui_cyd compile DB in .pio/tidy;
-# (2) the firmware glue (src_cyd/*.cpp, and include/LGFX_CYD2USB.hpp via its TU) via a sanitized
+# (2) the firmware glue (src_cyd/*.cpp, and include/LGFX_CYD2432S028.hpp via its TU) via a sanitized
 # copy of the esp32dev_cyd DB in .pio/tidy-esp32 — tools/tidy-sanitize-compiledb.py applies the
 # same Xtensa fixups .clangd describes (clang-tidy doesn't read .clangd). The esp32dev_cyd DB is
 # restored at the root for clangd in between.
