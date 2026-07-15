@@ -47,10 +47,13 @@ test:      ## Host test suites (no board)
 # geometry-independent, so a layout that only works at 320x240 fails here rather than on glass.
 	pio test -e native_logic_cyd -e native_ui_cyd -e native_ui_cyd_35 -e native_control
 
-build:     ## Firmware compile-check (both MCUs + both bench envs)
+build:     ## Firmware compile-check (both MCUs + both bench envs + the on-target suite)
 # The bench envs are #if-guarded code paths, so they rot unless something compiles them.
 # Unlike esp32dev_cyd_uidev they need no secrets.h, so there is no reason to leave them out.
 	pio run -e esp32dev_cyd -e esp32dev_control -e esp32dev_cyd_bench -e esp32dev_control_bench
+# The embedded suite needs a board to RUN, but not to build — and building it here is the only
+# thing standing between it and bit-rot. It was broken for exactly this reason: nothing built it.
+	pio test -e embedded --without-testing --without-uploading
 
 # Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
 # ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".

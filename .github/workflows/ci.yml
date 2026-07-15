@@ -51,11 +51,15 @@ jobs:
       # Fast host tests: pure logic behind the ports + LVGL headless UI. `native` uses the
       # runner's system GCC (no toolchain download needed).
       - name: Native tests
-        run: pio test -e native_logic_cyd -e native_ui_cyd -e native_control
+        run: pio test -e native_logic_cyd -e native_ui_cyd -e native_ui_cyd_35 -e native_control
 
       # CI can't flash a board, but building both firmwares catches compile/link regressions.
+      # The embedded suite is built (not run) for the same reason: nothing else compiles it, and
+      # that is precisely how it silently stopped building.
       - name: Firmware compile-check
-        run: pio run -e esp32dev_cyd -e esp32dev_control
+        run: |
+          pio run -e esp32dev_cyd -e esp32dev_control
+          pio test -e embedded --without-testing --without-uploading
 
       # Headless UI-simulator smoke: build the sim, render the real UI plus one click,
       # keep the PNG as an inspectable artifact. Pure memory render — no display server.
