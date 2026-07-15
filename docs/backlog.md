@@ -52,8 +52,37 @@ existing `IClock`/`IHeaterSwitch` idiom:
   constants only). Safety constants stay in the controller header, not here (§6). Compiles into
   both firmwares (proven under `native_control`). Foundational — unblocks B1/B3/B9, A5's
   feedforward, and the ETA/preview (C7).*
-- [ ] **B7** [B] — fault table + latching/ack-routing logic (§22) and run-summary
+- [x] **B7** [B] — fault table + latching/ack-routing logic (§22) and run-summary
   residual math (§16). deps: none. *One small PR each.*
+  *PR1 (§22): `fault_table.h` (code → `{title, guidance, codeName, severity, overTemp}`) +
+  `fault_controller.h` (the two-state latch: never auto-dismiss, `+N` supersede, ack-routing).
+  Keys off the generated `oven_FaultCode`, so `native_logic_cyd` gained nanopb (mirroring
+  `native_control`); a CYD-side copy of the enum would be the drift §9's matched-pair invariant
+  exists to prevent. Operator copy lives in `app_logic`, not the view, so §22's wording is
+  unit-tested — LINK_LOST's two-clause text verbatim. Both §22 trigger origins enter through
+  `FaultController`; the self-raised LINK_LOST is edge-triggered + run-scoped. **Two decisions
+  design.md doesn't make** (both presentation-only — the controller has already safed itself —
+  and pinned by tests): the **severity order** (`severity` appears once in all of design.md with
+  no order defined) HEATER_STUCK > OVERTEMP_* > SENSOR_FAULT/TC_IMPLAUSIBLE > WATCHDOG/INTERNAL/
+  unknown > LINK_LOST > TARGET_UNREACHABLE/RUNTIME_EXCEEDED, so a LINK_LOST can't mask a real
+  over-temp; and **HOT is chamber-specific** (OVERTEMP_CASE is the §6 electronics sensor and says
+  nothing about a touchable chamber).
+  PR2 (§16): `deviation_monitor.h` — ONE streaming residual channel; §15's live cue reads
+  `deviating()` per tick and §16's summary reads `stats()` at Done off the same object, so
+  "same residual math as the live cue" is true by construction, not by two implementations
+  agreeing. dt-weighted (a mid-run rate change must not reweight the miss) and clock-free, so
+  D6 can replay a log offline for identical numbers. `run_fit.h` — two channels + per-phase
+  target checks → `{verdict, cause, advisory}`, implementing §16's discrimination rule
+  (dirty estimator → ProjectionModel; clean estimator + missed projection → Oven). Completed
+  runs only. Output is an **inline amber advisory, never the red modal** (§22). Lives in
+  `app_logic`, not `calibration`: it never touches an `OvenModel` (the projection is B1/C7's
+  input), the controller has no use for it, and its thresholds are hand-authored TBD §10
+  constants D6's emitter must never clobber.
+  Unblocks **C8**'s Fault overlay + Run Summary. All thresholds are unmeasured placeholders —
+  §10 "Deviation/drift thresholds" (§8 step 4) owns them. Two items want a human pass: the
+  split advisory strings (§16 gives one paragraph for both causes and says the advisory now
+  "picks its wording accordingly" without supplying the two texts), and whether the CYD-side
+  link timeout belongs here or with C7/B6's link owner.*
 - [x] **C1** [C] — `NumericEntry` logic + keypad widget. deps: none. (§26)
   *Host-tested `NumericEntry` state machine (`lib/app_logic`) + on-screen keypad widget &
   view-model (`lib/ui_logic/numeric_keypad*`) with commit/cancel/clamp seams shared with C2/C8.
@@ -73,9 +102,17 @@ existing `IClock`/`IHeaterSwitch` idiom:
   ESP32 adapters + `main.cpp` wiring with live bias preview. Curve calibrated + inverted for
   this board's LDR (GPIO34 reads ~0 in room light, climbs in the dark). Verified on hardware.
   Door-open wake deferred until the controller reports door state over telemetry (§9).*
-- [ ] **A7** [A] — controller-side recipe validation: range checks,
+- [x] **A7** [A] — controller-side recipe validation: range checks,
   mode-from-content derivation, NAK reasons (plugs into A2's `ISetupValidator`
   seam). deps: A2. (§4, §9)
+  *Host-tested `RecipeValidator` (`lib/control_logic`) implementing `protocol::ISetupValidator`:
+  structural + range checks and the §4 content-derived cap selector (any `uv`/`motor` segment
+  forces the cure ceiling; a REFLOW-tagged recipe containing them is NAKed), against the
+  hand-written `oven_safety.h`. The untrusted `mode` tag is cross-checked, never trusted to pick
+  the cap. **Two NAK reasons remain deferred**: `NAK_WORKPIECE_TC_INVALID` (needs the temp-input
+  port) and `NAK_ILLEGAL_TRANSITION` (needs A6's run state). Two §10 opens still bear on it — the
+  UV/cure absolute ceiling (`CURE_HARD_MAX_C` is a TBD placeholder, gating §8 step 3) and D1's
+  fan-motor decision, which fixes the `Segment` fan field's domain.*
 - [ ] **D1** [D] — §10 teardown verifications (one investigation task): fan motor
   type, cooling-fan existence, SMPS reuse, humidity-sensor interface, relay board.
   deps: hardware access. *Gates the `Recipe` schema details, the drivers, and all
@@ -130,8 +167,14 @@ existing `IClock`/`IHeaterSwitch` idiom:
   chart + live ETA; cure paused/resume overlay). deps: C3, B2; soft: B6 (resume
   overlay, 3rd PR). (§15)
 - [ ] **C8** [C] — Run Summary (§16) + Fault overlay (§22) + Settings hub + panels
-  (§24), one each. deps: B7, B5, C1, C2, C3. *Settings hub + panels slice already shipped
-  with B5 (`settings_screen.*`); Run Summary + Fault overlay remain (Fault overlay needs B7).*
+  (§24), one each. deps: B7, B5, C1, C2, C3. *All deps now landed. Settings hub + panels slice
+  already shipped with B5 (`settings_screen.*`); Run Summary + Fault overlay remain. B7 shipped
+  the logic both bind to: the Fault overlay renders `fault_table::faultInfo/formatTitle` and
+  drives `FaultController` (`state()`/`updatedAtMs` to diff into `lv_subject_t`, `acknowledge()`
+  → `AckRoute`, `active()` for the RGB-LED/buzzer, `overTempLatched()` → §14 HOT / §17 sleep);
+  Run Summary renders `RunFitResult` + `advisoryText()` as an inline amber banner (never the
+  modal, §22). Still C8's: the buzzer pattern/volume (TBD §10) and a review pass on B7's draft
+  advisory strings.*
 - [ ] **B6** [B] — remainder-profile generator for cure resume. deps: B1. (§15)
 - [ ] **B9** [B] — random-profile generator within safety bounds. deps: B1, B2. (§5, §20)
 - [ ] **C6** [C] — Setup + Confirm. deps: C4, C5 (loads a library profile as a
