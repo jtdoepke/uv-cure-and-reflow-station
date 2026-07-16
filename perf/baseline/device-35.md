@@ -29,6 +29,28 @@ time):
 the SPI under the render, so the production redraw (144 ms) is gated by RENDER, and the second
 15 KB draw buffer saves 190 − 144 = **46 ms per redraw (24%)** — it earns its DRAM; do not drop it.
 
+### The grid is NOT the bottleneck (measured, 2026-07-16)
+
+Task count made the dot grid look like the villain — ~600 of a Home redraw's ~900
+draw tasks. It is not. Building with grid_draw_cb short-circuited to an immediate return
+(diagnostic `-D PERF_NO_GRID`, never committed enabled):
+
+| | Home render |
+|---|--:|
+| grid on | 129 ms |
+| grid off | 116 ms |
+
+The entire dot grid costs **~13 ms (10%)**. So render is **not task-count-bound** — 600
+single-pixel fills are 600 pixels, trivial pixel volume however many tasks they are. The
+other ~116 ms is real compositing: the full-screen opaque background, the `LV_OPA_50` mode
+tiles that alpha-blend against the canvas beneath them (the design's see-through tiles —
+"every press forces the canvas to recomposite", design.md), and text glyphs. All of it is
+pixel-locked by the design.
+
+**Consequence:** a batched or tiled-image grid (the deferred high-risk item) would save at
+most that 13 ms for real pixel-diff risk. Dropped. The render floor is design-inherent, and
+the extractable render wins were the leak (unbounded, now fixed) and the ~200 off-clip dots.
+
 ### Consequences for the candidate list
 
 - **SPI 40→80 MHz (Opt-12/13): deprioritised to last-resort.** SPI is already fully hidden under
