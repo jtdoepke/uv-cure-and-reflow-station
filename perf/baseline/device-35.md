@@ -86,11 +86,17 @@ so taller buffers cut the whole table proportionally. That is the documented def
   the C 16-bit replication loop on the LX6, which has no SIMD — the vendor's 5.8×/9.8× figures are
   ESP32-**S3** (real vector ops). And it only ever hooks the OPAQUE fill/copy paths, not the
   text/alpha blends that are 38% of our render. Spike reverted.
-  - **Incidental finding worth a later look:** plain RGB565 renders **~8 ms (6%) faster** than
-    RGB565_SWAPPED (120.8 vs ~129 ms) — the swapped path does a per-pixel byte-swap DURING
-    compositing. We use swapped for zero-copy DMA; rendering plain and swapping in the (overlapped)
-    flush would move that 8 ms off the render-bound critical path. Needs its own spike: whether
-    LovyanGFX's swap-on-push stays under the render ceiling. Separate from the ASM question.
+  - **Incidental finding, then CLOSED:** plain RGB565 renders ~8 ms (6%) faster than
+    RGB565_SWAPPED (120.8 vs ~129 ms) — the swapped path byte-swaps per pixel during compositing.
+    Tempting to render plain and swap in the flush. **Measured: it is a LOSS.** Plain render +
+    `gfx.pushImage(rgb565_t)` (LovyanGFX's pixelcopy-swap-into-DMA path) gives refr_total **188 ms
+    vs the swapped path's 136 ms** — flush_sum explodes to 62 ms because pushImage's per-chunk
+    CPU swap is effectively blocking and does NOT overlap the next chunk's render, unlike the
+    current async zero-copy `pushImageDMA` session. The byte-swap is ~8 ms of unavoidable CPU work
+    (the ESP32 SPI has no clean 16-bit hardware byte-swap — `WR_BYTE_ORDER` reorders 32-bit words,
+    i.e. pixel pairs, and LovyanGFX never uses it), and the current design already places it
+    optimally: during render, with zero-copy async DMA. Don't revisit unless the swap can be
+    offloaded to core 0 (dual-core rendering), which is a separate architecture.
 - **The dot grid is the prize.** The host harness shows it is ~80% of Home's draw tasks, render is
   80–90% of the redraw, so cutting grid tasks cuts the thing that actually dominates.
 - **`DISP_DOUBLE_BUFFER=0` to reclaim 15 KB: costs 46 ms/redraw.** Only if RAM-starved.
