@@ -1,6 +1,6 @@
 ---
 name: clangd-xtensa-setup
-description: This skill should be used when VSCode/clangd shows false errors in the ESP32 firmware code (src_cyd/main.cpp, include/LGFX_CYD2USB.hpp) — "unknown argument '-mlongcalls'", "riscv/rv_utils.h file not found", "machine/endian.h file not found", "gnu/stubs-32.h" errors, pointer-size static_assert failures in ESP-IDF headers, or "unknown target 'xtensa'" — or when compile_commands.json is missing/stale, after changing build_flags in platformio.ini, or when running `make compiledb`. Not for real `pio run` build errors (compiler truth, not clangd) and not for `make tidy` findings (see lint-format-toolchain).
+description: This skill should be used when VSCode/clangd shows false errors in the ESP32 firmware code (src_cyd/main.cpp, include/cyd_board.h, include/LGFX_CYD*.hpp) — "unknown argument '-mlongcalls'", "riscv/rv_utils.h file not found", "machine/endian.h file not found", "gnu/stubs-32.h" errors, pointer-size static_assert failures in ESP-IDF headers, or "unknown target 'xtensa'" — or when compile_commands.json is missing/stale, after changing build_flags in platformio.ini, or when running `make compiledb`. Not for real `pio run` build errors (compiler truth, not clangd) and not for `make tidy` findings (see lint-format-toolchain).
 ---
 
 # clangd + ESP32 Xtensa Editor Setup

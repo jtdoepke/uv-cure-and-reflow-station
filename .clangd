@@ -1,6 +1,6 @@
 # clangd config — makes VSCode's clangd linting (and clang-based tools) understand the
 # ESP32 Xtensa GCC build described by compile_commands.json (run `make compiledb` to (re)generate
-# it for the esp32dev_cyd firmware env). clangd is clang-based, so out of the box it:
+# it for the esp32dev_cyd35 firmware env). clangd is clang-based, so out of the box it:
 #   1. rejects Xtensa-only GCC flags  -> "unknown argument '-mlongcalls'" etc.
 #   2. mis-detects the target as the host (64-bit) -> pointer-size / static_assert errors in
 #      ESP-IDF headers, and falls into the RISC-V branch (riscv/rv_utils.h not found)

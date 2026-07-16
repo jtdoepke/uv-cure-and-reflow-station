@@ -58,7 +58,7 @@ jobs:
       # that is precisely how it silently stopped building.
       - name: Firmware compile-check
         run: |
-          pio run -e esp32dev_cyd -e esp32dev_control
+          pio run -e esp32dev_cyd35 -e esp32dev_cyd -e esp32dev_control
           pio test -e embedded --without-testing --without-uploading
 
       # Headless UI-simulator smoke: build the sim, render the real UI plus one click,

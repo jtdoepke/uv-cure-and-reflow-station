@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "device_info.h"
 #include "home_screen.h"
 #include "numeric_keypad.h"
 #include "panel.h"
@@ -175,6 +176,10 @@ int main(int argc, char **argv) {
   lv_display_set_color_format(sim_disp, LV_COLOR_FORMAT_RGB565);
   lv_test_indev_create_all();
   ui_subjects_init();
+  // About reports what the FIRMWARE injects (device_info.h); the sim is not a board, and saying so
+  // is the point — a default of "unknown" here would look like a bug in the panel it is reviewing.
+  ui_set_device_info(
+      DeviceInfo{"simulator", "sim", panel::kPortrait ? "320x480 portrait" : "320x240 landscape"});
 
   // The stepper demo's view model must outlive the action loop (the widgets bind to its
   // subject), so it lives at function scope.

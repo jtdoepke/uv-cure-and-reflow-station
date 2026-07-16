@@ -1,13 +1,30 @@
 # Small-Touchscreen Design Guide (glove-operated machine controller)
 
-Distilled reference for designing oven-controller screens on this panel: 2.8″ 320×240
-ST7789, resistive XPT2046 touch, operated with nitrile gloves, controlling genuinely
-hazardous outputs (heat, UV). The hard pass/fail rules live in SKILL.md; this file holds
-the rationale, the numbers' provenance, and the patterns to reach for.
+Distilled reference for designing oven-controller screens on **two** resistive XPT2046
+panels, operated with nitrile gloves, controlling genuinely hazardous outputs (heat, UV).
+The hard pass/fail rules live in SKILL.md; this file holds the rationale, the numbers'
+provenance, and the patterns to reach for.
 
 ## Panel math
 
-Pixel pitch ≈ 71.1 mm diagonal / 400 px diagonal ≈ **0.18 mm/px → 5.6 px/mm**.
+**The px numbers below are derived, not constants.** There are two panels at different
+pitches, so a px literal only ever meant a physical size on the one panel it was hand-derived
+for. `theme.h` authors every token in **millimetres** and converts at compile time via
+`panel::pxFromMmX10()`; write `theme::TOUCH_MIN`, never `56`.
+
+| | 3.5″ ST7796S 320×480 (default) | 2.8″ ST7789 320×240 |
+|---|---|---|
+| Diagonal | 88.9 mm / 576.9 px | 71.1 mm / 400 px |
+| Pitch | **6.49 px/mm** (`PANEL_PX_PER_MM_X100=649`) | **5.60 px/mm** (`560`) |
+| 10 mm floor | ~65 px | ~56 px |
+
+(5.60, not the nominal 5.624: it is the figure the original px literals were derived from, and
+`theme.h` `static_assert`s the round-trip so the conversion provably changed nothing.)
+
+Glyphs are the exception — a font is a fixed pixel grid and cannot be scaled by the tokens, so
+the fonts are chosen by pitch too (14/28 px vs 16/32 px; see `lib/ui_logic/fonts/README.md`).
+
+The table below is for the 2.8″ panel at 5.6 px/mm; multiply by 1.16 for the 3.5″.
 
 | Physical size | Pixels | Use |
 |---|---|---|

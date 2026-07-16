@@ -10,9 +10,9 @@ Two jobs from one box:
 - **PCB reflow oven** — run solder-paste reflow temperature profiles using the oven's
   existing heating element and a thermocouple.
 
-The CYD (ESP32-2432S028, 320×240 ST7789 + resistive touch) provides the UI: pick a mode,
-set time/temperature, run a profile, and watch live status — all on the touchscreen mounted
-where the microwave keypad used to be.
+A CYD ("Cheap Yellow Display") ESP32 touchscreen provides the UI: pick a mode, set
+time/temperature, run a profile, and watch live status — all on a panel mounted where the
+microwave keypad used to be. A second ESP32 owns the safety-critical outputs.
 
 > ⚠️ **This project involves mains voltage, high temperatures, and UV light. Read the
 > [Safety](#safety) section before building anything. Mains wiring can kill you; a
@@ -35,13 +35,27 @@ UI, or any connection to the oven's electrics. See the [Roadmap](#roadmap).
 
 ## Hardware
 
-### Controller — ESP32-2432S028 "Cheap Yellow Display" (dual-USB v3)
+### HMI — a CYD "Cheap Yellow Display" (two variants supported)
 
-- ESP32-WROOM-32 (no PSRAM), 320×240 **ST7789** SPI TFT, **XPT2046** resistive touch.
-- This is the "7789" v3 board (Micro-USB **and** USB-C ports). Flash over the **Micro-USB**
-  port — the USB-C port lacks CC resistors and won't enumerate on many hosts.
-- Firmware/pin details live in [`CLAUDE.md`](CLAUDE.md) and
-  [`include/LGFX_CYD2USB.hpp`](include/LGFX_CYD2USB.hpp).
+Both are ESP32-WROOM-32 (no PSRAM) with **XPT2046** resistive touch. Pick one with a build
+env; nothing under `lib/` knows which is fitted.
+
+| | **ESP32-3248S035** (default) | ESP32-2432S028 |
+|---|---|---|
+| Panel | 3.5" **ST7796S**, 320×480 portrait | 2.8" **ST7789**, 240×320 run landscape |
+| Env | `esp32dev_cyd35` | `esp32dev_cyd` |
+| LGFX config | [`include/LGFX_CYD3248S035.hpp`](include/LGFX_CYD3248S035.hpp) | [`include/LGFX_CYD2432S028.hpp`](include/LGFX_CYD2432S028.hpp) |
+| Ambient-light sensor | none (Settings shows a plain brightness control) | LDR on GPIO34 (auto-brightness) |
+| GRAM readback | no (SDO unwired — no on-device screenshots) | yes |
+
+- **The 3.5" board is the default because it survives WiFi bring-up.** The 2.8"'s stock
+  (likely counterfeit) AMS1117 LDO browns out the moment the radio initializes — and OTA is
+  the controller's only field-reflash path once the oven is enclosed, so that is a board with
+  no field-update story, not a cosmetic fault. See `docs/design.md` §21.
+- The 2.8" is the "7789" v3 board (Micro-USB **and** USB-C ports). On either board flash over
+  the **Micro-USB** port — the USB-C port lacks CC resistors and won't enumerate on many hosts.
+- Pin maps live in [`include/cyd_board.h`](include/cyd_board.h) + the LGFX headers above;
+  build/upload commands in [`CLAUDE.md`](CLAUDE.md).
 
 ### The oven (donor appliance)
 
@@ -59,10 +73,11 @@ UI, or any connection to the oven's electrics. See the [Roadmap](#roadmap).
 | Door interlock | Switch on the door | Cut power to heater/UV when the door opens |
 | Safety cutoff | Thermal fuse + independent over-temp limit | Hardware backstop, not software-only |
 
-**GPIO is tight on the CYD.** Most pins are taken by the display, touch, SD slot, RGB LED,
-LDR, and speaker. Spare pins are exposed on the CN1/P3/P5 headers (commonly GPIO 22, 27, and
-input-only 35, with I²C available on 22/27). Expect to drive the SSR/UV/thermocouple over
-those few pins and/or an I²C GPIO expander. This is an open design question.
+**GPIO is tight on the CYD** — most pins go to the display, touch, SD slot, RGB LED, LDR and
+speaker. That is why the safety-critical outputs live on a *second* ESP32 (the controller),
+which has its own pins to spare; the CYD only speaks to it over a UART. The free pins differ
+per board (2.8": GPIO22/27 on CN1; 3.5": GPIO25/32, since its touch shares the display bus and
+27 is the backlight) — see `include/cyd_board.h`, and `docs/design.md` §2/§6.
 
 ## Getting started
 
@@ -110,9 +125,11 @@ formatting** section of [`CLAUDE.md`](CLAUDE.md) for details.
 ## Project structure
 
 ```text
-platformio.ini            PlatformIO config — esp32dev_cyd firmware + native/embedded test envs
+platformio.ini            PlatformIO config — CYD + controller firmware, native/embedded test envs
 include/
-  LGFX_CYD2USB.hpp        LovyanGFX display + touch configuration for this board
+  cyd_board.h             The HMI board's pins, capabilities and orientation (one #if)
+  LGFX_CYD3248S035.hpp    LovyanGFX display + touch config — 3.5" ST7796S board
+  LGFX_CYD2432S028.hpp    LovyanGFX display + touch config — 2.8" ST7789 board
   lv_conf.h               LVGL 9.5 configuration
 lib/                      Testable, hardware-independent modules (compiled by app + tests)
   display_port/           IDisplay / ITouch ports — the hardware boundary

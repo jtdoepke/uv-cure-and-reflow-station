@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "device_info.h"
 #include "numeric_keypad.h"
 #include "subjects.h"
 #include "theme.h"
@@ -299,11 +300,16 @@ void SettingsScreen::buildAbout() {
   buildHeader("About");
   // Read-only, so no Up/Down/Open footer — just a scrolling column of info rows. Real values
   // arrive with the controller-link + handshake wiring (§9); placeholders for now.
+  // Identity comes from the firmware (device_info.h), never from a literal here: this panel is
+  // where someone checks what they are running, so a stale hard-coded board name is not a cosmetic
+  // bug — it is this screen failing at its only job. It said "ESP32-2432S028" on the 3.5" board.
+  const DeviceInfo &info = ui_device_info();
   lv_obj_t *col = make_scroll_column(parent_);
-  build_info_row(col, "CYD firmware", "dev");
+  build_info_row(col, "CYD firmware", info.firmware);
+  build_info_row(col, "Board", info.board);
+  build_info_row(col, "Panel", info.panel);
   build_info_row(col, "Controller", "-");
   build_info_row(col, "Schema hash", "-");
-  build_info_row(col, "Board", "ESP32-2432S028");
 }
 
 // --- Per-panel Open dispatchers ---

@@ -22,7 +22,7 @@ Anything that `#include`s `LovyanGFX.hpp` cannot compile for the native target (
   inject fakes (`test/helpers/fake_clock.h`). `lib/control_logic/heartbeat_monitor.h` +
   `test/test_control/test_heartbeat/` are the pattern to copy. Shared wire-contract code
   goes in `lib/protocol` (pure C++, nanopb; also tested in the `native_control` lane).
-- **Only the firmware adapters** (`src_cyd/main.cpp`, `include/LGFX_CYD2USB.hpp`;
+- **Only the firmware adapters** (`src_cyd/main.cpp`, `include/cyd_board.h`, `include/LGFX_CYD*.hpp`;
   `src_control/main.cpp` for the controller) touch LGFX / Arduino peripherals.
 
 If a native build errors on ESP-IDF/Arduino/SPI headers, a LovyanGFX include leaked past

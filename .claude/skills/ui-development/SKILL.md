@@ -15,7 +15,10 @@ done.
 
 1. Edit UI code in `lib/ui_logic/` (never `src_cyd/main.cpp`; see three-tier-testing).
 2. `make sim-shot ARGS="<actions>"` — builds the `native_sim` env, renders the real
-   `create_main_ui()` widgets headlessly, runs the scripted actions, writes a PNG.
+   `lib/ui_logic` widgets headlessly, runs the scripted actions, writes a PNG.
+   **Add `SIM_PANEL=35` for the default 3.5″ 320×480 portrait panel** (`native_sim_35`).
+   The two geometries are different layouts (tokens scale, flows flip), so a screenshot is
+   only evidence about the panel it was rendered for — check both when changing layout.
 3. Read `.pio/sim/ui.png` (the Read tool renders PNG) and inspect.
 4. Repeat.
 
@@ -38,9 +41,21 @@ Examples:
 - Before/after pair: `make sim-shot ARGS="shot .pio/sim/before.png click 160 120 wait 300"`
 - Custom output: `make sim-shot SIM_OUT=.pio/sim/settings.png ARGS="click 40 210"`
 
-Coordinates are the same 320×240 landscape space the `native_ui_cyd` tests use
-(`lv_test_mouse_click_at`). The sim renders RGB565 exactly as the device does (same
-`lv_conf.h`, same color depth), so colors/dithering match the firmware rasterizer.
+Coordinates are the same space the matching `native_ui_cyd` / `native_ui_cyd_35` tests use
+(`lv_test_mouse_click_at`) — 320×240 landscape by default, 320×480 portrait under
+`SIM_PANEL=35`. The sim renders RGB565 exactly as the device does (same `lv_conf.h`, same
+color depth), so colors/dithering match the firmware rasterizer.
+
+`sensor off` is how you reach a board with no ambient-light sensor (the 3.5″): it drives
+`subj_has_ambient_light`, which swaps Settings' brightness-bias row for an absolute
+Screen brightness one and disables auto-brightness. A panel reads it when **built**, so put
+`sensor off` before the clicks that open the panel.
+
+**The screenshot settles before it captures**, and that matters: LVGL's default theme animates
+style changes over 80 ms, and the mode tiles change state as soon as the link subject moves
+(subjects boot at `LINK_NONE`). An unsettled shot catches tiles mid-blend and reads exactly
+like a washed-out palette bug that does not exist. `write_png()` waits for
+`lv_anim_count_running() == 0`; do not remove that.
 
 The harness lives in `sim/sim_main.cpp` (a host CLI, not firmware, not a test suite).
 Exit codes: 0 ok, 1 usage error, 2 PNG write failure; prints `WROTE <path>` per capture.
@@ -52,14 +67,18 @@ color/inversion, real touch calibration, perceived latency. Requires the board o
 Micro-USB and WiFi credentials in `include/secrets.h` (see
 `references/device-api.md`).
 
-1. `make dev-flash` — builds `esp32dev_cyd_uidev` (firmware + dev-tools web server), uploads,
+1. `make dev-flash` — builds `esp32dev_cyd35_uidev` (firmware + dev-tools web server), uploads,
    prints the device IP, exits.
-2. `make dev-shot IP=<ip>` — fetches `/screenshot.bmp` (live ST7789 GRAM readback),
-   converts to `.pio/sim/device.png`. Read it.
+2. `make dev-shot IP=<ip>` — fetches `/screenshot.bmp` (live GRAM readback), converts to
+   `.pio/sim/device.png`. Read it. **Not available on the 3.5″ board** — its panel's SDO is
+   unwired, so readback returns zeros; the endpoint returns **501** rather than serving a
+   flawlessly-encoded black PNG that `dev-shot` would report as a success. Use the sim there,
+   and drive the real screen with `dev-touch` + the serial trace instead.
 3. `make dev-touch IP=<ip> X=160 Y=120` — injects a 150 ms touch at screen coords.
 4. `make dev-status` — re-query IP/heap/uptime over serial without flashing.
 
-The dev-tools server is compiled only under `-D UI_DEV_TOOLS=1` (the `esp32dev_cyd_uidev`
+The dev-tools server is compiled only under `-D UI_DEV_TOOLS=1` (the `esp32dev_cyd35_uidev` /
+`esp32dev_cyd_uidev`
 env); production `pio run -e esp32dev_cyd` never links WiFi or the web server. Full endpoint
 reference: `references/device-api.md`.
 
@@ -96,7 +115,8 @@ load-bearing rules:
 
 ## Design rules (pass/fail for every screen)
 
-Physical reality: 2.8″ 320×240 resistive panel ≈ **0.18 mm/px (5.6 px/mm)**, operated
+Physical reality: two resistive panels — 3.5″ 320×480 at **6.49 px/mm** (default) and 2.8″
+320×240 at **5.6 px/mm**. Author sizes in mm via `theme.h`, never in px. Operated
 with nitrile gloves. Resistive = single-touch, pressure-driven, no hover. Full rationale,
 standards, and patterns: `references/design-guide.md`. The hard rules:
 

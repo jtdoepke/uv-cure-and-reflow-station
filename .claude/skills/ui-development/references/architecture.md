@@ -18,7 +18,7 @@ on the host (`native_ui_cyd`) and decouples screens from each other.
 | Model / app domain | plain C++, **no `lv_` calls** | `lib/app_logic/` |
 | ViewModel | owns `lv_subject_t` members; exposes intent methods (`onStartPressed()`) that mutate subjects | `lib/ui_logic/` (e.g. `*_viewmodel.h/.cpp`) |
 | View / screen | builds the widget tree, calls `lv_*_bind_*`; **no business logic** | `lib/ui_logic/` (e.g. `*_screen.cpp`) |
-| HAL / adapter | display+touch drivers, LVGL glue | `src_cyd/main.cpp`, `include/LGFX_CYD2USB.hpp` (device); `sim/` (host) |
+| HAL / adapter | display+touch drivers, LVGL glue | `src_cyd/main.cpp`, `include/cyd_board.h` + `include/LGFX_CYD*.hpp` (device); `sim/` (host) |
 
 Only the first two layers carry logic, and both compile for the native test envs — the
 same host-testability rule three-tier-testing already enforces.

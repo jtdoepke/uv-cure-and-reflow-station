@@ -60,7 +60,7 @@ shows `include/lv_conf.h` changes that weren't an intentional upstream sync, rev
 1. **Library logic** (`lib/**/*.cpp`) — regenerates a `native_ui_cyd` host compile DB into
    `.pio/tidy/`, runs `clang-tidy -p .pio/tidy`, then restores the esp32dev_cyd DB at root
    (for clangd) via `make compiledb`.
-2. **Firmware glue** (`src_cyd/*.cpp`, and `include/LGFX_CYD2USB.hpp` through its translation
+2. **Firmware glue** (`src_cyd/*.cpp`, and `include/cyd_board.h` + `include/LGFX_CYD*.hpp` through their translation
    unit) — `tools/tidy-sanitize-compiledb.py` writes a clang-tidy-compatible copy of the
    esp32dev_cyd DB into `.pio/tidy-esp32/`, applying the same Xtensa fixups `.clangd` gives
    the editor (strip GCC-only flags, add `--target=xtensa`), because clang-tidy doesn't

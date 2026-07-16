@@ -10,6 +10,7 @@
 #include "auto_brightness.h"        // ambient-light -> backlight logic (lib/app_logic, §18)
 #include "cyd_board.h"              // this board's pins, capabilities, orientation, buffers
 #include "cyd_link.h"               // reliability facade (lib/protocol, §9)
+#include "device_info.h"            // board/panel identity for Settings > About (lib/ui_logic)
 #include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
 #include "esp32_clock.h"            // IClock adapter for the link's cadences (firmware glue)
 #include "esp32_serial_transport.h" // ISerialTransport adapter over the link UART (firmware glue)
@@ -306,6 +307,9 @@ void setup() {
   ui_subjects_init();
   // Publish this board's hardware capabilities as data — lib/ui_logic must never see a board flag.
   lv_subject_set_int(&subj_has_ambient_light, kHasAmbientLight ? 1 : 0);
+  // Same rule for the identity strings Settings > About reports: the board knows its own name, the
+  // UI does not (device_info.h). Before any screen is built, so About can never render a default.
+  ui_set_device_info(DeviceInfo{kBoardName, "dev", kPanelName});
 
   // Load persisted settings and clamp caps to the current hard-max (§4/§24), then publish the
   // cross-screen values so any consumer sees them before Settings is opened.

@@ -61,10 +61,17 @@ The CYD does **not** have enough free GPIO to run the oven's sensors and loads
 
 **Interconnect (DECIDED):**
 
-- **Pin inventory (the hard constraint):** the CYD exposes three plugs — **P5**
-  (VIN, TX, RX, GND), **CN1** (3.3 V, GPIO27, GPIO22, GND), **P3** (GPIO21,
-  GPIO22, GPIO33, GND). P3 contributes **zero free pins**: GPIO21 is the
-  backlight PWM and GPIO33 the touch CS (`include/LGFX_CYD2USB.hpp`), and its
+- **Pin inventory (the hard constraint).** *Board-specific: the inventory below is the
+  **2.8" ESP32-2432S028**'s, which was the only board when this was written. The default is
+  now the **3.5" ESP32-3248S035**, whose free pins are **GPIO25/32** — free precisely because
+  its touch shares the display's SPI bus, so the 2.8"'s bit-banged touch pins are spare, while
+  its GPIO27 is the backlight. Per-board pin maps live in `include/cyd_board.h` + the
+  `LGFX_*.hpp` headers; the "zero slack" conclusion below is about the 2.8" specifically, but
+  the shape of the argument — a handful of free pins, hence a second MCU for the outputs —
+  holds on both.*
+  The 2.8" CYD exposes three plugs — **P5** (VIN, TX, RX, GND), **CN1** (3.3 V, GPIO27,
+  GPIO22, GND), **P3** (GPIO21, GPIO22, GPIO33, GND). P3 contributes **zero free pins**:
+  GPIO21 is the backlight PWM and GPIO33 the touch CS, and its
   GPIO22 duplicates CN1's. So the only free GPIOs are **CN1's 27/22 and P5's TX/RX
   (GPIO1/GPIO3)** — exactly the four the interconnect needs, which is why P5's
   TX/RX get used after all (as the rarely-driven OTA lines, below, not the link).
@@ -428,7 +435,8 @@ a small hysteresis band, suffices for a steady low-temp soak.
 
 ## 6. Hardware & I/O (on the controller — full detail in a future hardware doc)
 
-Loads/sensors hang off the controller ESP32 (GPIO-rich); the CYD only does UI.
+Loads/sensors hang off the controller ESP32 (GPIO-rich); the CYD only does UI — see §6a for
+the HMI board itself.
 
 - **Heater:** a **top-mounted sheathed tubular element** driven via a zero-cross
   SSR (rated ~3.5× element current, heatsinked) + upstream **contactor** + series
@@ -708,6 +716,63 @@ The teardown research found subsystems worth reusing rather than rebuilding:
 - **Humidity (steam) sensor** — cure-mode-only, proprietary analog (see above).
 - ⚠️ **Remove the inverter/HV/magnetron section** (lethal, holds charge even
   unplugged; qualified-person job). Unused here. (README safety.)
+
+## 6a. Hardware — the HMI board (two CYD variants)
+
+The CYD drives no load, so this section is short by design: its hardware surface is a panel, a
+touch controller, a backlight, one UART to the controller (§2) and — on one board — an LDR.
+**Two variants are supported**, and the firmware treats "which board" as *config*, not as a
+fork:
+
+| | **ESP32-3248S035** (`esp32dev_cyd35`, DEFAULT) | ESP32-2432S028 v3 (`esp32dev_cyd`) |
+|---|---|---|
+| Panel | 3.5" **ST7796S**, 320×480, run **portrait** | 2.8" **ST7789**, 240×320, run **landscape** |
+| Pixel pitch | 6.49 px/mm | 5.60 px/mm |
+| Bus | VSPI; **touch shares it** (`bus_shared`) | HSPI; touch on its own bit-banged SPI |
+| Backlight | GPIO27 | GPIO21 |
+| Link UART (§2) | rx **25** / tx **32** | rx **22** / tx **27** (CN1) |
+| Ambient light | **none fitted** | LDR on GPIO34 (§18 auto-brightness) |
+| GRAM readback | **no** (SDO unwired) | yes |
+| WiFi bring-up (§21) | **survives** | **browns out** |
+| Panel contrast | poor — blacks read grey at every backlight level | good |
+
+Both are ESP32-WROOM-32/32E, 4 MB flash, **no PSRAM** (so: partial LVGL draw buffers only,
+sized in scanlines — a screen *fraction* would silently double the DRAM cost on the bigger
+panel). The link pins move between boards because the 3.5"'s touch shares the display bus,
+freeing the 2.8"'s bit-banged touch pins while taking its backlight pin.
+
+**The 3.5" is the default because of the §21 row**, not the extra pixels: without a radio there
+is no OTA, and OTA is the controller's only field-reflash path once the oven is enclosed (§25).
+
+### How "which board" is expressed (the rule that keeps this cheap)
+
+- **`include/cyd_board.h`** is the *only* place that reads a `CYD_BOARD_*` flag. It dispatches
+  to that board's `LGFX_*.hpp` and defines its pins, orientation, buffer sizing and
+  capabilities. `src_cyd/main.cpp` is a composition root and holds **no pin literal**.
+- **Nothing under `lib/` may branch on a board identity** — that is enforced at build level,
+  since the native envs have no board at all. `lib/` sees only:
+  - **geometry**, via the neutral `PANEL_*` flags (`lib/panel/panel.h`). Layout branches on
+    `panel::kPortrait`, never on a board name; a third panel at some other pitch gets the right
+    answer with no edit. `theme.h` authors every size in **millimetres** and converts at
+    compile time, because the design rules are physical (a 10 mm touch floor is 56 px on one
+    board and 65 px on the other). Fonts, which cannot scale that way, are picked by pitch.
+  - **capabilities as data** — `subj_has_ambient_light` (a board with no LDR gets a null
+    adapter, a disabled "Not fitted" row, and an absolute Screen-brightness control instead of
+    an auto-brightness bias) and `device_info.h` (what §24's About reports). One firmware shape,
+    no dead branches, and the constants fold away.
+- One `[board_*]` section in `platformio.ini` sets both flag families, so they cannot disagree;
+  `cyd_board.h` `static_assert`s the pairing anyway, and `#error`s if two boards are selected.
+
+### Consequences worth knowing
+
+- **No on-device screenshots on the 3.5"** (SDO unwired). The dev-tools endpoint returns 501
+  rather than serving a perfectly-encoded black PNG — a tool that lies is worse than one that
+  refuses. The simulator (`make sim-shot SIM_PANEL=35`) covers layout; the device loop is
+  `dev-touch` + the serial trace.
+- **The 3.5"'s contrast is a real design input, not a defect to tune out.** Its blacks sit grey
+  at every backlight level, which is a property of the glass. The ISA-101 dark theme (§23) is
+  built on colour against near-black, so it has less headroom here than the palette assumes —
+  **open (§10)**: re-check the palette on this glass before the enclosure is finalized.
 
 ## 7. Persistence & configuration
 
@@ -1157,6 +1222,18 @@ other side of the UART. A **hardware abstraction layer** splits the controller
 firmware into portable logic vs per-chip hardware access, so the same tested logic
 runs on the **bench dev board**, the **PCB's ESP32-WROOM-32E** (§2), and on the
 **host** with fakes.
+
+*(That cross-reference was aspirational when written — `IDisplay`/`ITouch` were declared and
+documented as "the hardware boundary" but had no production adapter, while `main.cpp` called
+LovyanGFX directly. They are implemented now: `LgfxDisplay` / `LgfxTouch` / `InjectedTouch` /
+`NullAmbientLight` in `src_cyd/`. Note what earned them their keep, because it is the same
+test this section applies: **`InjectedTouch`**, which composes the dev-tools touch injector
+onto the panel and thereby deletes an `#if` from the indev hot path — a second implementation
+of a port, which is the only thing that makes a port more than ceremony. The flush is
+deliberately **not** on `IDisplay`: it needs DMA-pushed byte-swapped RGB565 inside a session
+held open across a frame's chunks, so a port carrying it would be LovyanGFX with an `I` on the
+front — the exact move this section rejects for `IHeaterSwitch`. There is no policy in it to
+push up and no second implementation.)*
 
 ### Layering
 
@@ -1956,6 +2033,13 @@ bundle.
   rail from a **buck regulator** (or an LDO genuinely rated for the transient with thermal
   margin — *not* a bare AMS1117), with **bulk decoupling at the ESP32 module**. A supply
   that merely suffices for the always-on display will fail exactly when OTA is needed.
+  - **RESOLVED for the dev HMI (measured, not argued):** the **3.5" ESP32-3248S035** board
+    **survives WiFi bring-up** where the 2.8" collapses — repeated `esp32dev_cyd35_uidev`
+    boots show **1 boot banner, 0 brownouts**, the radio associating (`READY ip=...`) and the
+    controller link staying `matched=1` throughout, with no external supply. That is why it is
+    now `default_envs`: on this board the §25 OTA path is actually reachable. **This does not
+    relax the custom-PCB requirement above** — one board's LDO happening to cope is not a
+    design margin, and the finished product still needs a supply specified for the transient.
 - WiFi remains a **non-goal for operation** (§1): a run needs no network; these are
   convenience/maintenance services only.
 

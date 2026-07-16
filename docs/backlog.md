@@ -271,6 +271,33 @@ existing `IClock`/`IHeaterSwitch` idiom:
   Run Summary renders `RunFitResult` + `advisoryText()` as an inline amber banner (never the
   modal, §22). Still C8's: the buzzer pattern/volume (TBD §10) and a review pass on B7's draft
   advisory strings.*
+- [x] **C10** [C] — second CYD board variant (3.5" ST7796S 320×480 portrait) + the board
+  abstraction that makes a third cheap. deps: none (HMI-side only). *Motivated by §21, not by
+  the extra pixels: the 3.5" board **survives WiFi bring-up** (1 boot, 0 brownouts, radio up,
+  link `matched=1`) where the 2.8"'s AMS1117 collapses — and without a radio there is no OTA,
+  the controller's only field reflash path (§25). It is now `default_envs`; the 2.8" stays
+  supported and both are built by `make build` + CI so neither rots.*
+  *The rule that made it cheap: **nothing under `lib/` learns a board identity.** `CYD_BOARD_*`
+  is read only by the new `include/cyd_board.h` (pins, orientation, buffers, capabilities);
+  `lib/` sees neutral geometry (`lib/panel/panel.h` → `panel::kPortrait`; `theme.h` re-authored
+  in **millimetres**, `static_assert`ing that the 2.8"'s numbers are byte-identical) and
+  capabilities as **data** (`subj_has_ambient_light`, `device_info.h`). Fonts are the one thing
+  mm cannot scale, so 16/32 px are picked by **pitch** — generation verified reproducible
+  (re-running the recipe reproduces the committed 14 px font byte-for-byte). Ports finally
+  earned their keep: `LgfxDisplay`/`LgfxTouch`/`InjectedTouch` (§11's claim was aspirational
+  until now). Full inventory + consequences in §6a.*
+  *Five latent bugs it flushed out, all pre-existing: an unsigned-underflow that expired the
+  §17 sleep timeout instantly (latent on the 2.8", fatal on the slower-flushing 3.5");
+  `pio test -e embedded` hadn't compiled in months (now in `make build` + CI); `dev-shot`
+  silently wrote black PNGs on an unreadable panel (now 501); LVGL's default theme was tinting
+  our dark UI's DISABLED state **lighter** via `recolor` (the honest cause of "washed out");
+  and ✕ Cancel slid 38 px out from under the finger as you typed (`flex_grow` on a hidden
+  child). Also: a `pinMode`-after-`digitalWrite` on the controller's contactor (§4 fail-safe
+  adjacent) — see the fix in `Esp32Contactor`.*
+  *Open: the 3.5" panel's contrast is poor (blacks read grey at every backlight level), which
+  is a real input to §23's ISA-101 palette — flagged as an open in §6a/§10. And
+  `PANEL_PX_PER_MM_X100=649` is nominal; measure the active area with calipers (654 would move
+  `STEPPER_BTN` 111→112).*
 - [ ] **B6** [B] — remainder-profile generator for cure resume. deps: B1. (§15)
 - [ ] **B9** [B] — random-profile generator within safety bounds. deps: B1, B2. (§5, §20)
 - [ ] **C6** [C] — Setup + Confirm. deps: C4, C5 (loads a library profile as a

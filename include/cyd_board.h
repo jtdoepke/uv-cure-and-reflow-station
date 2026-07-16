@@ -36,10 +36,16 @@
 #include "LGFX_CYD3248S035.hpp"
 static_assert(panel::kNativeW == 320 && panel::kNativeH == 480,
               "PANEL_* geometry does not match CYD_BOARD_3248S035 - the env is mixing sections");
+// Shown on Settings > About, which is where someone checks what they are running — so it lives
+// beside the pin map it describes, and main.cpp hands it to the UI (device_info.h).
+inline constexpr const char *kBoardName = "ESP32-3248S035";
+inline constexpr const char *kPanelName = "3.5\" ST7796S 320x480";
 #elif defined(CYD_BOARD_2432S028)
 #include "LGFX_CYD2432S028.hpp"
 static_assert(panel::kNativeW == 240 && panel::kNativeH == 320,
               "PANEL_* geometry does not match CYD_BOARD_2432S028 - the env is mixing sections");
+inline constexpr const char *kBoardName = "ESP32-2432S028";
+inline constexpr const char *kPanelName = "2.8\" ST7789 240x320";
 #else
 #error "No CYD board selected - define CYD_BOARD_2432S028 or CYD_BOARD_3248S035 ([board_*])"
 #endif

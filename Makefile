@@ -25,14 +25,14 @@ check: lint  ## Alias for `lint`
 hooks:     ## Install the pre-commit git hook (one-time)
 	pre-commit install
 
-compiledb: ## Regenerate compile_commands.json for clangd/IDE (esp32dev_cyd firmware env)
-	pio run -e esp32dev_cyd -t compiledb
+compiledb: ## Regenerate compile_commands.json for clangd/IDE (esp32dev_cyd35 firmware env)
+	pio run -e esp32dev_cyd35 -t compiledb
 	python3 tools/clangd-inject-sysincludes.py compile_commands.json
 
 # Two passes: (1) host-buildable library logic via a fresh native_ui_cyd compile DB in .pio/tidy;
 # (2) the firmware glue (src_cyd/*.cpp, and include/LGFX_CYD2432S028.hpp via its TU) via a sanitized
-# copy of the esp32dev_cyd DB in .pio/tidy-esp32 — tools/tidy-sanitize-compiledb.py applies the
-# same Xtensa fixups .clangd describes (clang-tidy doesn't read .clangd). The esp32dev_cyd DB is
+# copy of the esp32dev_cyd35 DB in .pio/tidy-esp32 — tools/tidy-sanitize-compiledb.py applies the
+# same Xtensa fixups .clangd describes (clang-tidy doesn't read .clangd). The esp32dev_cyd35 DB is
 # restored at the root for clangd in between.
 tidy: ## Local static analysis of lib logic + firmware glue (advisory; not a CI gate)
 	pio run -e native_ui_cyd -t compiledb
@@ -49,7 +49,7 @@ test:      ## Host test suites (no board)
 
 build:     ## Firmware compile-check (both MCUs + both bench envs + the on-target suite)
 # The bench envs are #if-guarded code paths, so they rot unless something compiles them.
-# Unlike esp32dev_cyd_uidev they need no secrets.h, so there is no reason to leave them out.
+# Unlike esp32dev_cyd35_uidev they need no secrets.h, so there is no reason to leave them out.
 	pio run -e esp32dev_cyd -e esp32dev_cyd35 -e esp32dev_control \
 		-e esp32dev_cyd_bench -e esp32dev_cyd35_bench -e esp32dev_control_bench \
 		-e touch_calib_cyd -e touch_calib_cyd35
@@ -73,15 +73,15 @@ sim-shot: sim  ## Render the UI to a PNG: make sim-shot [SIM_PANEL=35] ARGS="cli
 	@mkdir -p $(dir $(SIM_OUT))
 	.pio/build/$(SIM_ENV)/program --out $(SIM_OUT) $(ARGS)
 
-# On-device UI dev loop (esp32dev_cyd_uidev env; board on Micro-USB, WiFi creds in
+# On-device UI dev loop (esp32dev_cyd35_uidev env; board on Micro-USB, WiFi creds in
 # include/secrets.h — see the ui-development skill).
 DEV_OUT ?= .pio/sim/device.png
 
 dev-flash: ## Flash firmware + UI dev tools, then print the device IP
-	pio run -e esp32dev_cyd_uidev -t upload
+	pio run -e esp32dev_cyd35_uidev -t upload
 
 dev-status: ## Query device IP/status over serial (no flash)
-	pio run -e esp32dev_cyd_uidev -t status
+	pio run -e esp32dev_cyd35_uidev -t status
 
 dev-shot:  ## Screenshot the physical display: make dev-shot IP=192.168.x.x
 	tools/cyd-shot.sh $(IP) $(DEV_OUT)
