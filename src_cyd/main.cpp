@@ -246,7 +246,9 @@ void setup() {
   gfx.init();
   gfx.setRotation(kRotation); // the board's mounting orientation (cyd_board.h)
   gfx.setBrightness(255); // full for the boot color self-test; AutoBrightness takes over in loop()
-  analogSetPinAttenuation(kAmbientPin, kAmbientAtten);
+  if constexpr (kHasAmbientLight) {
+    analogSetPinAttenuation(kAmbientPin, kAmbientAtten);
+  }
 
   lv_init();
 

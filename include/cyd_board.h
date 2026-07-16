@@ -32,12 +32,16 @@
 #error "Two CYD boards selected - an env is composing both [board_*] sections. See platformio.ini."
 #endif
 
-#if defined(CYD_BOARD_2432S028)
+#if defined(CYD_BOARD_3248S035)
+#include "LGFX_CYD3248S035.hpp"
+static_assert(panel::kNativeW == 320 && panel::kNativeH == 480,
+              "PANEL_* geometry does not match CYD_BOARD_3248S035 - the env is mixing sections");
+#elif defined(CYD_BOARD_2432S028)
 #include "LGFX_CYD2432S028.hpp"
 static_assert(panel::kNativeW == 240 && panel::kNativeH == 320,
               "PANEL_* geometry does not match CYD_BOARD_2432S028 - the env is mixing sections");
 #else
-#error "No CYD board selected - define CYD_BOARD_2432S028 ([board_*] in platformio.ini)"
+#error "No CYD board selected - define CYD_BOARD_2432S028 or CYD_BOARD_3248S035 ([board_*])"
 #endif
 
 // Orientation. Applied as a runtime setRotation() rather than a compile-time panel-cfg edit,
@@ -57,8 +61,15 @@ inline constexpr int kRotation = panel::kRotation;
 inline HardwareSerial &linkSerial() {
   return Serial1;
 }
+#if defined(CYD_BOARD_3248S035)
+// Free precisely because this board's touch shares the display's SPI bus: 25/32 are the 2.8"'s
+// bit-banged touch SCLK/MOSI. Its link pins are unavailable here — 27 is the backlight.
+inline constexpr int kLinkRxPin = 25;
+inline constexpr int kLinkTxPin = 32;
+#else
 inline constexpr int kLinkRxPin = 22; // CN1 header (§2)
 inline constexpr int kLinkTxPin = 27;
+#endif
 inline constexpr uint32_t kLinkBaud = 115200; // §9: 115200 8N1
 
 // TinyFrame's parser-resync timeout is counted in TF_Tick() *calls*, not milliseconds
@@ -73,8 +84,13 @@ inline constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SE
 // auto-brightness row lives in lib/ui_logic and must never see a board flag. A board without an
 // LDR gets a null adapter and a disabled AutoBrightness — one firmware shape, no dead branches,
 // and the constant folds away.
+#if defined(CYD_BOARD_3248S035)
+inline constexpr bool kHasAmbientLight = false; // TODO(HW): unverified on this board
+inline constexpr int kAmbientPin = -1;
+#else
 inline constexpr bool kHasAmbientLight = true;
 inline constexpr int kAmbientPin = 34; // on-board LDR, ADC1 (reads fine with WiFi on)
+#endif
 inline constexpr adc_attenuation_t kAmbientAtten = ADC_11db; // full ~0-3.3 V LDR swing (§18)
 
 // --- LVGL draw buffers ---

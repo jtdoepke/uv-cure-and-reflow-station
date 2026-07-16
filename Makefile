@@ -1,6 +1,6 @@
 # Convenience wrappers. PlatformIO remains the source of truth for builds/tests.
 .PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot \
-	dev-flash dev-status dev-shot dev-touch
+	dev-flash dev-status dev-shot dev-touch touch-calib
 .DEFAULT_GOAL := help
 
 help:      ## Show this help
@@ -50,10 +50,13 @@ test:      ## Host test suites (no board)
 build:     ## Firmware compile-check (both MCUs + both bench envs + the on-target suite)
 # The bench envs are #if-guarded code paths, so they rot unless something compiles them.
 # Unlike esp32dev_cyd_uidev they need no secrets.h, so there is no reason to leave them out.
-	pio run -e esp32dev_cyd -e esp32dev_control -e esp32dev_cyd_bench -e esp32dev_control_bench
-# The embedded suite needs a board to RUN, but not to build — and building it here is the only
-# thing standing between it and bit-rot. It was broken for exactly this reason: nothing built it.
+	pio run -e esp32dev_cyd -e esp32dev_cyd35 -e esp32dev_control \
+		-e esp32dev_cyd_bench -e esp32dev_cyd35_bench -e esp32dev_control_bench \
+		-e touch_calib_cyd -e touch_calib_cyd35
+# The embedded suites need a board to RUN, but not to build — and building them here is the only
+# thing standing between them and bit-rot. It was broken for exactly this reason: nothing built it.
 	pio test -e embedded --without-testing --without-uploading
+	pio test -e embedded_cyd35 --without-testing --without-uploading
 
 # Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
 # ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".
@@ -81,3 +84,12 @@ dev-shot:  ## Screenshot the physical display: make dev-shot IP=192.168.x.x
 
 dev-touch: ## Inject a touch on the device: make dev-touch IP=192.168.x.x X=160 Y=120
 	curl -sf "http://$(IP)/api/touch/simulate?x=$(X)&y=$(Y)" && echo
+
+# Touch calibration rig (tools/touch_calibrate). Tap the 15 targets; paste the printed CALIB
+# values into that board's LGFX header. CALIB_ENV picks the board.
+CALIB_ENV ?= touch_calib_cyd35
+
+touch-calib: ## Calibrate touch on a board: make touch-calib [CALIB_ENV=touch_calib_cyd] [PORT=/dev/ttyUSB1]
+	pio run -e $(CALIB_ENV) -t upload $(if $(PORT),--upload-port $(PORT))
+	@echo "Tap the 15 targets, then read the CALIB lines:"
+	pio device monitor -e $(CALIB_ENV) $(if $(PORT),--port $(PORT))

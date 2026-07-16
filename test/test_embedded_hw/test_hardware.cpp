@@ -39,12 +39,15 @@ void test_heap_headroom(void) {
 // Visual output can't be auto-asserted, so verify touch with a human in the loop: draw a
 // red box and assert the tap lands inside it. getTouch() returns calibrated screen coords.
 void test_touch_target(void) {
-  gfx.fillScreen(0x0000);
+  gfx.fillScreen(0x000000u);
   // Centred, and sized as the design guide's 10 mm touch floor rather than a px literal: the box
   // then lands on-screen and stays the same physical size on any panel.
   const int bw = panel::pxFromMmX10(100), bh = bw;
   const int bx = (panel::W - bw) / 2, by = (panel::H - bh) / 2;
-  gfx.fillRect(bx, by, bw, bh, 0xF800); // red
+  // 0xRRGGBB, not RGB565: LovyanGFX's uint32_t colour overload is RGB888, so the 0xF800 that
+  // used to be here ("red" in 565) painted the box GREEN and the prompt below asked for a red
+  // box that was never drawn.
+  gfx.fillRect(bx, by, bw, bh, 0xFF0000u);
   Serial.println(">> Tap the RED box within 10 s");
 
   uint16_t x = 0, y = 0;
