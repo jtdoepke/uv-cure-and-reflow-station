@@ -75,12 +75,16 @@ already implements all of them in `lv_draw_sw_blend_to_rgb565_swapped.c`:
   fully-opaque runs** (`mask16==0xFFFF` → straight copy) so the multiply-mix runs only on the thin
   AA edges.
 
-The one unimplemented trick is the two-pixel SWAR *blend* (lvgl#5015) for those residual AA-edge
-and translucent-tile mixes (~38% of render is mask/alpha, but the mix is a small slice of that
-once the skip-paths fire). It was **never merged, does not preserve rounding** (so not
-pixel-identical), and needs the CUSTOM hook. A pixel-safe alternative for text specifically is a
-16-entry alpha LUT per (fg,bg) pair — but it needs a custom letter draw path and a constant
-background, which only holds for text on solid panels. Both are ~10 ms for real correctness risk.
+Even the SWAR two-pixel *blend* is already in: `lv_color_16_16_mix` (misc/lv_color.c, called by the
+mask/text and WITH_OPA paths) IS the `0x7E0F81F` packed-mask, two-channels-in-one-32-bit-register,
+single-multiply-per-pair trick — 5-bit-quantized alpha, `((fg-bg)*mix)>>5)+bg`. So lvgl#5015's core
+idea is mainline. The only unmerged part of #5015 was replacing that one multiply with a 33-case
+lookup, and THAT variant rounds differently (its output is off by ±1 LSB on some inputs vs the
+current `*mix>>5`), so it is not pixel-identical — it would fail the byte-exact golden gate for a
+micro-gain on a multiply that only runs on thin glyph edges. A pixel-safe alpha LUT for text
+(16 entries per fg/bg pair) is conceivable but needs a custom letter path and a constant
+background (only true on solid panels), ~10 ms for real risk. None of these are worth it: the
+per-pixel math is not the bottleneck.
 
 Render is **compositing-bound**, and specifically DISPATCH/per-chunk-overhead-bound, not
 pixel-math-bound: the DRAW_BUF_LINES sweep cut render 34% with identical pixels, i.e. ~44 ms was
