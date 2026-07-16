@@ -174,6 +174,23 @@ void apply_list_row(lv_obj_t *obj) {
   // makes a list of them read as noise.
 }
 
+void apply_labeled_row(lv_obj_t *obj) {
+  // Label left, value right, and they must never collide. Two content-sized labels in a
+  // SPACE_BETWEEN row overrun each other once the text is wider than the row (LVGL overlaps rather
+  // than shrinks), so the label GROWS into the space the value leaves (flex-grow, set by the
+  // caller) and WRAPS inside it, and the row height follows its content — never below LIST_ROW_H,
+  // so short rows keep their touch size and the list still looks regular. Shared by the selectable
+  // list and the About/info panels so the geometry cannot drift between them.
+  lv_obj_set_width(obj, lv_pct(100));
+  lv_obj_set_height(obj, LV_SIZE_CONTENT);
+  lv_obj_set_style_min_height(obj, LIST_ROW_H, 0);
+  lv_obj_set_style_pad_ver(obj, PAD_S, 0); // content-sized now, so it needs its own gap
+  lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(obj, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(obj, PAD_M, 0); // and a gap they cannot close
+}
+
 // ---------------------------------------------------------------------------------------------
 // Line-art — the FUI structure.
 // ---------------------------------------------------------------------------------------------

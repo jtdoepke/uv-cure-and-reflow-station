@@ -53,6 +53,12 @@ public:
   // Optional: receive newly-accepted commands (e.g. to adopt a session).
   void setSink(ISetupSink &sink) { sink_ = &sink; }
 
+  // Forget the last-processed seq. Call when the peer reboots (its Hello carries a
+  // new boot_nonce): the CYD's ReliableSender re-seeds its seq on boot, so without
+  // this a re-used seq would be mistaken for a retransmit and its side effect
+  // (validate + accept) silently skipped (§9 re-sync).
+  void reset() { have_last_ = false; }
+
   // Feed decoded setup messages (from MessageRouter).
   void onRecipe(const oven_Recipe &recipe);
   void onStart(const oven_Start &start);

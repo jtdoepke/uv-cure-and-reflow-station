@@ -39,7 +39,10 @@ public:
 
   // Commanded duty from the control loop; clamped to 0..1 and stored. Takes effect at
   // the next window latch (tick()), so a mid-window change can't glitch the output.
-  void setDuty(float d0to1) { duty_ = d0to1 < 0.0F ? 0.0F : (d0to1 > 1.0F ? 1.0F : d0to1); }
+  // The lower test is `!(d0to1 > 0.0F)` rather than `d0to1 < 0.0F` so NaN maps to OFF:
+  // a NaN duty would otherwise survive both compares and reach latchOnMs()'s
+  // static_cast<uint32_t>(NaN) — UB that can latch the heater full-ON.
+  void setDuty(float d0to1) { duty_ = !(d0to1 > 0.0F) ? 0.0F : (d0to1 > 1.0F ? 1.0F : d0to1); }
 
   // Call every control loop. Starts a fresh window every windowMs (latching that
   // window's on-time from the stored duty), then drives the switch on/off within it.

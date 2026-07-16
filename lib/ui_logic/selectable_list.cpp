@@ -159,8 +159,10 @@ void on_row_clicked(lv_event_t *e) {
 #define LIST_INTENT(method)                                                                        \
   [](lv_event_t *e) { static_cast<SelectableListModel *>(lv_event_get_user_data(e))->method(); }
 
+// out_label, when non-null, receives the button's label so the caller can bind an
+// observer to it (the Open button's verb tracks the highlighted row).
 lv_obj_t *make_footer_button(lv_obj_t *parent, const char *text, SelectableListModel &model,
-                             lv_event_cb_t on_click) {
+                             lv_event_cb_t on_click, lv_obj_t **out_label = nullptr) {
   lv_obj_t *btn = lv_button_create(parent);
   theme::apply_secondary(btn);
   lv_obj_set_flex_grow(btn, 1);
@@ -169,6 +171,9 @@ lv_obj_t *make_footer_button(lv_obj_t *parent, const char *text, SelectableListM
   lv_label_set_text(label, text);
   lv_obj_center(label);
   lv_obj_add_event_cb(btn, on_click, LV_EVENT_CLICKED, &model);
+  if (out_label != nullptr) {
+    *out_label = label;
+  }
   return btn;
 }
 
@@ -196,23 +201,13 @@ SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &mod
 
   for (int i = 0; i < model.count(); i++) {
     const SelectableListItem &it = model.item(i);
-    // Label left, value right — and they must never collide. Two content-sized labels in a
-    // SPACE_BETWEEN row simply overrun each other once the text is wider than the row: LVGL does
-    // not shrink them, it overlaps them, so a long label runs straight under its own value. The
-    // label therefore GROWS into the space the value leaves and WRAPS inside it, and the row's
-    // height follows its content (never below LIST_ROW_H, so short rows keep their touch size and
-    // the list still looks regular). Cheaper than eliding: on a 320 px panel these labels are the
-    // words the operator navigates by, and "Temperature li..." is not one of them.
+    // Label left, value right, sharing the anti-collision geometry (label grows + wraps, value
+    // keeps its natural width) — see theme::apply_labeled_row. On a 320 px panel these labels are
+    // the words the operator navigates by, so growing-and-wrapping beats eliding to "Temperature
+    // li...".
     lv_obj_t *row = lv_obj_create(ui.list);
     theme::apply_list_row(row);
-    lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, LV_SIZE_CONTENT);
-    lv_obj_set_style_min_height(row, theme::LIST_ROW_H, 0);
-    lv_obj_set_style_pad_ver(row, theme::PAD_S, 0); // content-sized now, so it needs its own gap
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, theme::PAD_M, 0); // and a gap they cannot close
+    theme::apply_labeled_row(row);
     lv_obj_set_user_data(row, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
 
     lv_obj_t *label = lv_label_create(row);
@@ -259,21 +254,14 @@ SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &mod
 
   // Up/Down show Font Awesome chevrons (LV_SYMBOL_UP/DOWN, 0xF077/0xF078) — carried by the 14 px
   // default font (see fonts/README.md). Open keeps a word since no matching glyph is embedded.
-  // Up/Down show Font Awesome chevrons (LV_SYMBOL_UP/DOWN, 0xF077/0xF078) — carried by the 14 px
-  // default font (see fonts/README.md).
   ui.btn_up = make_footer_button(footer, LV_SYMBOL_UP, model, LIST_INTENT(moveUp));
   ui.btn_down = make_footer_button(footer, LV_SYMBOL_DOWN, model, LIST_INTENT(moveDown));
   lv_subject_add_observer_obj(sel, on_up_state, ui.btn_up, &model);
   lv_subject_add_observer_obj(sel, on_down_state, ui.btn_down, &model);
 
   // The action button's label tracks the highlighted row's verb (default "Open").
-  ui.btn_open = lv_button_create(footer);
-  theme::apply_secondary(ui.btn_open);
-  lv_obj_set_flex_grow(ui.btn_open, 1);
-  lv_obj_set_height(ui.btn_open, lv_pct(100));
-  lv_obj_t *open_label = lv_label_create(ui.btn_open);
-  lv_obj_center(open_label);
-  lv_obj_add_event_cb(ui.btn_open, LIST_INTENT(onOpen), LV_EVENT_CLICKED, &model);
+  lv_obj_t *open_label = nullptr;
+  ui.btn_open = make_footer_button(footer, "Open", model, LIST_INTENT(onOpen), &open_label);
   lv_subject_add_observer_obj(sel, on_action_verb_changed, open_label, &model);
 
   return ui;

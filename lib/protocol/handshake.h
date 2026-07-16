@@ -58,7 +58,10 @@ public:
   void service();
 
   // Feed a decoded peer Hello (from MessageRouter::onHello). Updates matched_.
-  void onPeerHello(const oven_Hello &hello);
+  // Returns true when this Hello is from a peer we had not seen or one whose
+  // boot_nonce changed (i.e. the peer just (re)started) — the signal a caller uses
+  // to drop any per-peer state that a reboot invalidates (e.g. the setup dedup cache).
+  bool onPeerHello(const oven_Hello &hello);
 
   // True once a peer Hello has been seen whose proto_ver + schema_hash equal
   // ours. Fail-closed: false until then, and false again after a mismatching

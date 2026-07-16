@@ -102,7 +102,6 @@ constexpr int32_t RADIUS = 2; // px, not mm: a 2 px corner is a rendering detail
 constexpr int32_t HEADER_H = panel::pxFromMmX10(54);
 constexpr int32_t BAND_H = panel::pxFromMmX10(75);
 constexpr int32_t BANNER_H = panel::pxFromMmX10(43);
-constexpr int32_t TILE_H = panel::pxFromMmX10(186);
 constexpr int32_t SECONDARY_H = panel::pxFromMmX10(104);
 constexpr int32_t TOUCH_MIN = panel::pxFromMmX10(100);     // design guide's absolute floor
 constexpr int32_t DOT = panel::pxFromMmX10(25);            // state indicator dot
@@ -127,7 +126,7 @@ constexpr int32_t GRID_STEP = panel::pxFromMmX10(25); // dot-matrix pitch
 #if PANEL_PX_PER_MM_X100 == 560
 static_assert(PAD_S == 6 && PAD_M == 10 && GAP == 4, "2.8\" spacing drifted");
 static_assert(HEADER_H == 30 && BAND_H == 42 && BANNER_H == 24, "2.8\" band heights drifted");
-static_assert(TILE_H == 104 && SECONDARY_H == 58 && TOUCH_MIN == 56, "2.8\" tiles drifted");
+static_assert(SECONDARY_H == 58 && TOUCH_MIN == 56, "2.8\" tiles drifted");
 static_assert(DOT == 14 && STEPPER_BTN == 96 && LIST_ROW_H == 40, "2.8\" widgets drifted");
 static_assert(KEYPAD_RAIL_W == 96, "2.8\" keypad rail drifted");
 #endif
@@ -145,6 +144,7 @@ void apply_secondary(lv_obj_t *btn);      // secondary-row button
 void apply_stepper_button(lv_obj_t *btn); // large −/+ button, big glyph (value-stepper, §24)
 void apply_keypad_key(lv_obj_t *btn);     // keypad digit/control key, big glyph (keypad, §26)
 void apply_list_row(lv_obj_t *obj);       // selectable-list row surface (§23/§24)
+void apply_labeled_row(lv_obj_t *obj); // label-left/value-right anti-collision geometry (§23/§24)
 
 // Line-art — the structure that makes the panel read as instrumentation rather than as an app.
 //

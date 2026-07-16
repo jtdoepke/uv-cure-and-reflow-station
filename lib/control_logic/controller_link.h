@@ -47,8 +47,14 @@ public:
   protocol::Handshake &handshake() { return handshake_; }
   SessionGate &gate() { return gate_; }
 
-  // IMessageObserver — route each message to the piece that owns it.
-  void onHello(const oven_Hello &h) override { handshake_.onPeerHello(h); }
+  // IMessageObserver — route each message to the piece that owns it. A peer that
+  // just (re)booted invalidates the setup dedup cache: its ReliableSender re-seeded
+  // its seq, so an old cached verdict must not shadow the new run's first command.
+  void onHello(const oven_Hello &h) override {
+    if (handshake_.onPeerHello(h)) {
+      responder_.reset();
+    }
+  }
   void onRecipe(const oven_Recipe &r) override { responder_.onRecipe(r); }
   void onStart(const oven_Start &s) override { responder_.onStart(s); }
   void onHeartbeat(const oven_Heartbeat &hb) override { gate_.onHeartbeat(hb); }

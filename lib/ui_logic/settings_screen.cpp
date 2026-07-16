@@ -23,19 +23,12 @@ enum HubIndex {
 };
 
 // A read-only informational row: label left, value/detail right (About; the fixed sleep rules).
-// Same anti-collision rules as the selectable list's rows — see create_selectable_list(). This
-// panel needs them most: About's values are the long ones ("320x480 portrait", a schema hash).
+// Shares the selectable list's anti-collision geometry (theme::apply_labeled_row). This panel
+// needs it most: About's values are the long ones ("320x480 portrait", a schema hash).
 void build_info_row(lv_obj_t *parent, const char *label, const char *value) {
   lv_obj_t *row = lv_obj_create(parent);
   theme::apply_list_row(row);
-  lv_obj_set_width(row, lv_pct(100));
-  lv_obj_set_height(row, LV_SIZE_CONTENT);
-  lv_obj_set_style_min_height(row, theme::LIST_ROW_H, 0);
-  lv_obj_set_style_pad_ver(row, theme::PAD_S, 0);
-  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(row, theme::PAD_M, 0);
+  theme::apply_labeled_row(row);
   lv_obj_t *name = lv_label_create(row);
   lv_label_set_text(name, label);
   lv_obj_set_flex_grow(name, 1);
@@ -237,10 +230,6 @@ void SettingsScreen::buildDisplayUnits() {
   configParent();
   buildHeader("Display & units");
   const char *units_value = store_->units() == TempUnits::Fahrenheit ? "Fahrenheit" : "Celsius";
-  // Auto-brightness needs a sensor. On a board with none the row stays visible but disabled —
-  // SelectableListModel skips disabled rows for ▲/▼ and refuses to open them — because a row that
-  // says "Not fitted" answers the question, while a row that silently vanishes invites someone to
-  // go looking for the setting they remember. The stored preference is untouched either way.
   // Both brightness rows depend on whether this board has a light sensor — a capability that
   // arrives as DATA (subj_has_ambient_light); this file must never see a board flag.
   //

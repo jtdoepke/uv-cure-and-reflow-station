@@ -3,6 +3,8 @@
 // unit tests; the seq/Ack-Nak wiring around it is covered by test_reliable_setup.
 #include <unity.h>
 
+#include <cmath>
+
 #include "oven.pb.h"
 #include "oven_safety.h"
 #include "recipe_validator.h"
@@ -99,6 +101,17 @@ void test_below_floor_out_of_range(void) {
   TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_OUT_OF_RANGE, reason);
 }
 
+// A non-finite (NaN) setpoint is rejected out-of-range: every magnitude guard
+// compares false against NaN, so the finiteness check is what stops it. The
+// validator is the untrusted-CYD backstop; heat_c arrives as a raw wire float.
+void test_nan_setpoint_out_of_range(void) {
+  RecipeValidator v;
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_REFLOW, NAN, false, false);
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_FALSE(v.validateRecipe(rec, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_OUT_OF_RANGE, reason);
+}
+
 // A valid reflow recipe (plain heat within the reflow ceiling) is accepted.
 void test_valid_reflow_accepted(void) {
   RecipeValidator v;
@@ -167,9 +180,27 @@ void test_rejected_recipe_not_remembered(void) {
   TEST_ASSERT_FALSE(accepts(v, bad, reason));
 
   oven_Start s = oven_Start_init_default;
+  s.session = 7; // non-zero: session 0 is rejected before the recipe check
   s.recipe_id = 42;
   TEST_ASSERT_FALSE(v.validateStart(s, reason));
   TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_UNKNOWN_RECIPE, reason);
+}
+
+// A Start naming session 0 is rejected out-of-range: 0 is the IDLE telemetry
+// sentinel and must never be adopted as a live run, even if the recipe is known.
+void test_start_session_zero_out_of_range(void) {
+  RecipeValidator v;
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_REFLOW, 200.0F, false, false);
+  rec.id = 3;
+  TEST_ASSERT_TRUE(accepts(v, rec, reason));
+
+  oven_Start s = oven_Start_init_default;
+  s.session = 0;
+  s.recipe_id = 3; // known recipe, but session 0 is still rejected
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_OUT_OF_RANGE, reason);
 }
 
 int main(int, char **) {
@@ -181,10 +212,12 @@ int main(int, char **) {
   RUN_TEST(test_uv_above_cure_ceiling_is_mismatch);
   RUN_TEST(test_reflow_above_hard_max_out_of_range);
   RUN_TEST(test_below_floor_out_of_range);
+  RUN_TEST(test_nan_setpoint_out_of_range);
   RUN_TEST(test_valid_reflow_accepted);
   RUN_TEST(test_valid_cure_accepted);
   RUN_TEST(test_cure_content_selects_tight_cap);
   RUN_TEST(test_start_requires_known_recipe);
+  RUN_TEST(test_start_session_zero_out_of_range);
   RUN_TEST(test_rejected_recipe_not_remembered);
   return UNITY_END();
 }

@@ -42,7 +42,7 @@ void Handshake::service() {
   }
 }
 
-void Handshake::onPeerHello(const oven_Hello &hello) {
+bool Handshake::onPeerHello(const oven_Hello &hello) {
   // Read the remembered nonce before peer_ is overwritten. "New" covers both a peer we
   // have never heard and one whose nonce changed, i.e. a peer that rebooted.
   const bool peer_is_new = !saw_peer_ || hello.boot_nonce != peer_.boot_nonce;
@@ -69,6 +69,7 @@ void Handshake::onPeerHello(const oven_Hello &hello) {
   if (peer_is_new || due) {
     sendHello();
   }
+  return peer_is_new;
 }
 
 } // namespace protocol

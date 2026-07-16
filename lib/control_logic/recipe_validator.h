@@ -27,6 +27,7 @@
 // Header-only, DI-free, no Arduino: unit-testable in native_control.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 
 #include "oven.pb.h"
@@ -47,7 +48,10 @@ public:
     float max_heat = recipe.segments[0].heat_c;
     for (pb_size_t i = 0; i < recipe.segments_count; ++i) {
       const oven_Segment &seg = recipe.segments[i];
-      if (seg.dur_ms == 0) {
+      // NaN/Inf off the wire would sail through every magnitude guard below (all
+      // comparisons against NaN are false), so reject non-finite setpoints here —
+      // this is the untrusted-CYD backstop, it cannot assume well-formed floats.
+      if (seg.dur_ms == 0 || !std::isfinite(seg.heat_c)) {
         reason = oven_NakReason_NAK_OUT_OF_RANGE;
         return false;
       }
@@ -80,6 +84,14 @@ public:
   }
 
   bool validateStart(const oven_Start &start, oven_NakReason &reason) override {
+    // Session 0 is the IDLE sentinel in telemetry (src_control/main.cpp), so a run
+    // must never adopt it: an accepted Start{session=0} would read as active on the
+    // controller while telemetry still reported IDLE. The CYD already picks non-zero
+    // (esp_random() | 1U); the backstop enforces it independently.
+    if (start.session == 0) {
+      reason = oven_NakReason_NAK_OUT_OF_RANGE;
+      return false;
+    }
     if (!have_accepted_ || start.recipe_id != last_accepted_id_) {
       reason = oven_NakReason_NAK_UNKNOWN_RECIPE;
       return false;

@@ -87,7 +87,6 @@ public:
     estimator_ = DeviationMonitor(cfg_.estimator);
     phaseCount_ = 0;
     phaseOpen_ = false;
-    lastMs_ = nowMs;
   }
 
   // Closes any open phase first, so callers can just call beginPhase per segment.
@@ -114,7 +113,6 @@ public:
   void addSample(uint32_t nowMs, float workTempC, float projectedC, float boardEstC) {
     runQuality_.addSample(nowMs, workTempC, projectedC);
     estimator_.addSample(nowMs, boardEstC, workTempC); // ground truth is the reference
-    lastMs_ = nowMs;
 
     if (!phaseOpen_ || phaseCount_ == 0) {
       return;
@@ -212,7 +210,6 @@ private:
   bool phaseOpen_ = false;
   bool phaseAbove_ = false;
   uint32_t phaseLastMs_ = 0;
-  uint32_t lastMs_ = 0;
 };
 
 // §16's advisory copy. Lives here, not in the view — the fault_table.h precedent: operator-facing

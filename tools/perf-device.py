@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # Drive the on-glass perf probe (src_cyd/perf_probe.cpp, env esp32dev_cyd35_perf) and print its
-# [perf] report. Usage: perf-device.py [PORT] [CMD]  (defaults /dev/ttyUSB1, "a").
+# [perf] report. Usage: perf-device.py PORT [CMD]  (CMD defaults "a").
+#
+# PORT is required and has no default: with multiple devkits attached the ttyUSBn numbering is
+# random per plug order, so identify the board by its ESP32 MAC (see CLAUDE.md) and pass the
+# confirmed device. `make perf-device` resolves it via tools/resolve-port.sh.
 #
 # The firmware talks 115200 regardless of monitor_speed (Serial.begin(115200) in main.cpp), and
 # dtr/rts are held off so opening the port does not reset the board mid-measurement.
@@ -12,7 +16,10 @@ try:
 except ImportError:
     sys.exit("pyserial not installed: pip install pyserial")
 
-port = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyUSB1"
+if len(sys.argv) < 2:
+    sys.exit("usage: perf-device.py PORT [CMD]  (PORT required; identify the board by MAC, see CLAUDE.md)")
+
+port = sys.argv[1]
 cmd = sys.argv[2] if len(sys.argv) > 2 else "a"
 
 s = serial.Serial()

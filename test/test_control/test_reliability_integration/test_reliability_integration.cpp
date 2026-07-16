@@ -139,9 +139,61 @@ void test_schema_mismatch_blocks_run(void) {
   TEST_ASSERT_FALSE(r.ctrl.authorized());
 }
 
+// A CYD reboot clears the controller's setup dedup cache. The rebooted CYD announces
+// a new boot_nonce; ControllerLink::onHello sees the changed peer and resets the
+// SetupResponder, so the rebooted CYD's re-used seq numbers (its ReliableSender
+// restarts at 0) are re-validated instead of being mistaken for retransmits — the new
+// boot's session is actually adopted rather than silently deduped.
+void test_cyd_reboot_readopts_session(void) {
+  Rig r;
+
+  r.cyd.begin(kCydNonce);
+  r.ctrl.begin(kCtrlNonce);
+  r.exchange();
+
+  // First boot brings up session A (recipe seq 1, start seq 2).
+  TEST_ASSERT_TRUE(r.cyd.sender().sendRecipe(cureRecipe(1)));
+  r.exchange();
+  oven_Start st = oven_Start_init_default;
+  st.session = 0xAAA;
+  st.recipe_id = 1;
+  TEST_ASSERT_TRUE(r.cyd.sender().sendStart(st));
+  r.exchange();
+  TEST_ASSERT_EQUAL_UINT32(0xAAA, r.ctrl.gate().activeSession());
+
+  // The CYD reboots: a fresh link stack over the same wire, a new boot_nonce, and a
+  // ReliableSender whose seq restarts at 0 (so it re-uses seq 1 and 2).
+  protocol::MessageRouter reboot_router;
+  protocol::FrameLink reboot_link(r.pipe.a(), TF_MASTER, reboot_router);
+  protocol::CydLink reboot_cyd(reboot_link, r.clk);
+  reboot_router.setObserver(reboot_cyd);
+  reboot_cyd.begin(kCydNonce ^ 0x1U); // changed nonce -> controller drops stale dedup
+
+  // Controller consumes the reboot Hello (onHello -> responder.reset()); the rebooted
+  // CYD consumes the controller's answer.
+  r.ctrl_link.poll();
+  reboot_link.poll();
+
+  // The rebooted CYD re-uploads with the same seqs but a new session B.
+  TEST_ASSERT_TRUE(reboot_cyd.sender().sendRecipe(cureRecipe(1))); // seq 1 again
+  r.ctrl_link.poll();
+  reboot_link.poll();
+  oven_Start st2 = oven_Start_init_default;
+  st2.session = 0xBBB;
+  st2.recipe_id = 1;
+  TEST_ASSERT_TRUE(reboot_cyd.sender().sendStart(st2)); // seq 2 again
+  r.ctrl_link.poll();
+  reboot_link.poll();
+
+  // Without the dedup reset both would replay the cached verdict and the session would
+  // still read 0xAAA; with it, the new boot's session is adopted.
+  TEST_ASSERT_EQUAL_UINT32(0xBBB, r.ctrl.gate().activeSession());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_full_boot_to_run_and_timeout);
   RUN_TEST(test_schema_mismatch_blocks_run);
+  RUN_TEST(test_cyd_reboot_readopts_session);
   return UNITY_END();
 }

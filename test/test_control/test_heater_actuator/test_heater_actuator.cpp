@@ -6,6 +6,8 @@
 // forceOff safety override, duty clamping, and millis() wraparound.
 #include <unity.h>
 
+#include <cmath>
+
 #include "heater_actuator.h"
 #include "helpers/fake_clock.h"
 #include "helpers/fake_heater_switch.h"
@@ -142,6 +144,18 @@ void test_duty_clamped(void) {
   }
 }
 
+// A NaN duty maps to full off, never full on: the clamp treats non-finite as 0 so
+// NaN can't reach latchOnMs()'s static_cast<uint32_t>(NaN) UB (which could latch on).
+void test_nan_duty_is_off(void) {
+  FakeClock clk;
+  FakeHeaterSwitch sw;
+  HeaterActuator act(sw, clk);
+  act.setDuty(NAN);
+  TEST_ASSERT_EQUAL_FLOAT(0.0F, act.duty());
+  TEST_ASSERT_EQUAL_INT(0, countOnOverWindow(act, clk, sw, 10, 1000));
+  TEST_ASSERT_EQUAL_INT(0, sw.transitions); // never even toggled
+}
+
 // Window timing is wrap-safe: starting a window just before millis() rolls over 2^32
 // still yields the correct on-time across the boundary.
 void test_wraparound_window(void) {
@@ -171,6 +185,7 @@ int main(int, char **) {
   RUN_TEST(test_duty_latched_per_window);
   RUN_TEST(test_force_off_is_immediate_and_sticky);
   RUN_TEST(test_duty_clamped);
+  RUN_TEST(test_nan_duty_is_off);
   RUN_TEST(test_wraparound_window);
   return UNITY_END();
 }
