@@ -71,7 +71,13 @@ static Esp32AmbientLight g_ambient(kAmbientPin);
 #else
 static NullAmbientLight g_ambient;
 #endif
-static AutoBrightness g_auto_brightness(g_ambient, g_display);
+// Everything but the manual level stays AutoBrightness's own policy (§18); the level a board
+// without a sensor sits at is a fact about that board's panel, so it comes from cyd_board.h.
+static AutoBrightness g_auto_brightness(g_ambient, g_display, [] {
+  AutoBrightness::Config c;
+  c.manualNominal = kManualBacklight;
+  return c;
+}());
 static SleepController g_sleep;
 
 // CYD <-> controller link (§9). The UART, its pins and its buffer sizing live in cyd_board.h —
