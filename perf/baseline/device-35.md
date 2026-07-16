@@ -81,10 +81,18 @@ single-multiply-per-pair trick — 5-bit-quantized alpha, `((fg-bg)*mix)>>5)+bg`
 idea is mainline. The only unmerged part of #5015 was replacing that one multiply with a 33-case
 lookup, and THAT variant rounds differently (its output is off by ±1 LSB on some inputs vs the
 current `*mix>>5`), so it is not pixel-identical — it would fail the byte-exact golden gate for a
-micro-gain on a multiply that only runs on thin glyph edges. A pixel-safe alpha LUT for text
-(16 entries per fg/bg pair) is conceivable but needs a custom letter path and a constant
-background (only true on solid panels), ~10 ms for real risk. None of these are worth it: the
-per-pixel math is not the bottleneck.
+micro-gain on a multiply that only runs on thin glyph edges. A pixel-safe alpha LUT for text was BUILT
+AND MEASURED (2026-07-16) — and it is a LOSS. Ceiling first: hooking the swapped WITH_MASK path to
+skip the mix entirely dropped Home render 129 → 113 ms, so the glyph-edge mix is ~16 ms. But the
+real pixel-identical LUT (self-adapting cache keyed on fg/bg, each entry computed with the exact
+`lv_color_swap_16`/`lv_color_16_16_mix`, per-pixel fallback for varying bg) measured **132.7 ms —
+WORSE than the 129 ms baseline**. The cache management alone (per-pixel bg compare + generation
+check + array loads that stall on cache misses) costs ~20 ms, more than the 16 ms mix it replaces,
+and the per-pixel loop also loses LVGL's 2-px-batched interior fast path. The lesson: `mix` is
+already a single SWAR multiply, and on the LX6 a *correct* table lookup cannot beat a single
+multiply. The 16 ms ceiling was real but misleading — removing work ≠ a cheaper replacement
+existing. Spike reverted. **None of these are worth it: the per-pixel math is not the bottleneck,
+and it is already optimal.**
 
 Render is **compositing-bound**, and specifically DISPATCH/per-chunk-overhead-bound, not
 pixel-math-bound: the DRAW_BUF_LINES sweep cut render 34% with identical pixels, i.e. ~44 ms was
