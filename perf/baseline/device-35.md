@@ -51,6 +51,27 @@ pixel-locked by the design.
 most that 13 ms for real pixel-diff risk. Dropped. The render floor is design-inherent, and
 the extractable render wins were the leak (unbounded, now fixed) and the ~200 off-clip dots.
 
+### Full render decomposition (measured 2026-07-16, diagnostic builds)
+
+Home full redraw isolated by short-circuiting each element (`-D PERF_NO_GRID` / `PERF_OPAQUE`
+/ `PERF_NO_TEXT`, and the probe's `b` blank-screen command — none committed enabled):
+
+| element | cost | share |
+|---|--:|--:|
+| panel / tile / border structure fills | ~56 ms | 43% |
+| text glyphs (big anti-aliased readout + tile fonts) | ~35 ms | 27% |
+| full-screen background fill | ~26 ms | 20% |
+| dot grid | ~13 ms | 10% |
+| (of which alpha blending, translucent tiles + hairlines) | ~11 ms | — |
+
+Render is **compositing-bound**: it is drawing the design's elements, each at ~40 cycles/pixel
+because the SW renderer runs unaccelerated from flash (LV_USE_DRAW_SW_ASM is NONE — no Xtensa
+backend — and IRAM placement overflows). None of the four has a pixel-safe cheaper path; each is
+core to the design. The one systemic lever that cuts across all of them without touching pixels
+is **fewer, taller chunks** (DRAW_BUF_LINES) — a widget crossing chunks is re-drawn per chunk,
+so taller buffers cut the whole table proportionally. That is the documented deferred win
+(cyd_board.h), gated on the OTA DRAM budget.
+
 ### Consequences for the candidate list
 
 - **SPI 40→80 MHz (Opt-12/13): deprioritised to last-resort.** SPI is already fully hidden under
