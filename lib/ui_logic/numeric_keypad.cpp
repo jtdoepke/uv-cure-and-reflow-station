@@ -195,7 +195,7 @@ NumericKeypad create_numeric_keypad(lv_obj_t *parent, NumericKeypadViewModel &vm
   // Big value + units; wraps if "<value> <units>" overruns the narrow rail. Colour tracks valid.
   ui.value_label = lv_label_create(info);
   lv_obj_set_width(ui.value_label, lv_pct(100));
-  lv_obj_set_style_text_font(ui.value_label, &red_hat_mono_28, 0);
+  lv_obj_set_style_text_font(ui.value_label, &theme::big_font(), 0);
   lv_label_set_long_mode(ui.value_label, LV_LABEL_LONG_WRAP);
   lv_subject_add_observer_obj(value, on_value_changed, ui.value_label, &vm);
   lv_subject_add_observer_obj(valid, on_value_color, ui.value_label, &vm);

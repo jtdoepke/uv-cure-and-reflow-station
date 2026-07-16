@@ -20,12 +20,31 @@
 
 #include "panel.h"
 
-// Larger Red Hat Mono for big numeric readouts (value-stepper §24). Applied per-widget via
-// lv_obj_set_style_text_font; the global LV_FONT_DEFAULT stays 14 px. Generated + committed
-// under fonts/ (see fonts/README.md). Declared here so any view may use it.
-LV_FONT_DECLARE(red_hat_mono_28)
+// Larger Red Hat Mono for big numeric readouts (value-stepper §24) and glove-sized keys (§26).
+// Applied per-widget via lv_obj_set_style_text_font. Generated + committed under fonts/ (see
+// fonts/README.md). Declared here so any view may use it.
+//
+// Sized by the panel's PITCH, not by a board name — glyphs are the one thing the mm-authored
+// tokens below cannot scale, because a font is a fixed grid of pixels. A 28 px glyph is 5.0 mm at
+// 5.60 px/mm but only 4.3 mm at 6.49; 32 px puts it back to 4.9 mm. Same argument for the 14/16 px
+// LV_FONT_DEFAULT, which platformio.ini sets per board.
+//
+// A pitch threshold rather than `#if CYD_BOARD_...` for the usual reason: lib/ must never learn a
+// board identity, and pitch is the property this actually depends on — a third board at 6.5 px/mm
+// gets the right answer with no edit here. The unused size is not declared, so it never links.
+#if PANEL_PX_PER_MM_X100 >= 600
+#define THEME_BIG_FONT red_hat_mono_32
+#else
+#define THEME_BIG_FONT red_hat_mono_28
+#endif
+LV_FONT_DECLARE(THEME_BIG_FONT)
 
 namespace theme {
+
+// The big-readout font, as a reference the views use without naming a size.
+inline const lv_font_t &big_font() {
+  return THEME_BIG_FONT;
+}
 
 // Palette — neutral grayscale base + three reserved state colours (never used decoratively).
 constexpr uint32_t BG = 0x101216;      // screen background

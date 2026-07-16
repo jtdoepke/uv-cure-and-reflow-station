@@ -691,10 +691,23 @@
  *  #define LV_FONT_CUSTOM_DECLARE   LV_FONT_DECLARE(my_font_1) LV_FONT_DECLARE(my_font_2)
  *  @endcode
  */
+/* Sized off the panel's pixel pitch (PANEL_PX_PER_MM_X100, set per board in platformio.ini): a
+ * 14 px glyph is 2.50 mm at 5.60 px/mm but only 2.16 mm at 6.49, so a denser panel takes 16 px to
+ * hold the same physical text size the mm-authored theme tokens hold for everything else. Keyed on
+ * the pitch rather than a board name, matching theme.h's big-readout rule; the threshold is
+ * repeated there only because this file is included by LVGL's own sources and cannot pull in
+ * panel.h. An env that sets no pitch gets the 14 px default, which is the safe answer.
+ * Two #defines rather than a -D override: the value would need parens and an &, and build_flags
+ * are shell-parsed, so those land as a compile-command SYNTAX ERROR rather than a define. */
+#if defined(PANEL_PX_PER_MM_X100) && PANEL_PX_PER_MM_X100 >= 600
+#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(red_hat_mono_16)
+/** Always set a default font */
+#define LV_FONT_DEFAULT &red_hat_mono_16
+#else
 #define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(red_hat_mono_14)
-
 /** Always set a default font */
 #define LV_FONT_DEFAULT &red_hat_mono_14
+#endif
 
 /** Enable handling large font and/or fonts with a lot of characters.
  *  The limit depends on the font size, font face and bpp.
