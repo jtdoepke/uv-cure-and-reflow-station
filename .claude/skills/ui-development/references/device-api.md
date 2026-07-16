@@ -34,7 +34,7 @@ monitor is unavoidable, use the auto-exiting filter:
 | Endpoint | Effect |
 |---|---|
 | `GET /screenshot.bmp` | Live GRAM readback, streamed row-by-row as a bottom-up 24-bit BMP. No capture step — every GET reads the panel now. **Returns 501 on the 3.5" board**: its panel's SDO is unwired, so readback is all zeros and this would otherwise serve a flawless black PNG that `dev-shot` reports as a success. Use `make sim-shot SIM_PANEL=35` there. |
-| `GET /api/touch/simulate?x=&y=[&ms=]` | Arm an injected touch at screen coords (320×240 landscape, same space as the simulator). `ms` clamped 50–2000, default 150. The LVGL indev callback reports it pressed until expiry. |
+| `GET /api/touch/simulate?x=&y=[&ms=]` | Arm an injected touch at screen coords — **the flashed panel's space**, same as the matching simulator env: 320×480 portrait for `esp32dev_cyd35_uidev` (what `make dev-flash` builds), 320×240 landscape for `esp32dev_cyd_uidev`. `ms` clamped 50–2000, default 150. The LVGL indev callback reports it pressed until expiry. |
 | `GET /api/info` | JSON: ip, rssi, free heap, uptime, panel dimensions. |
 
 ## Serial STATUS protocol
@@ -58,7 +58,7 @@ UPTIME:42
 ## Implementation notes / gotchas
 
 - **Screenshots read the panel's GRAM**, not an LVGL buffer — there is no full
-  framebuffer on this PSRAM-less board (partial 1/10-screen draw buffers only). The
+  framebuffer on this PSRAM-less board (partial `DRAW_BUF_LINES`-scanline draw buffers only). The
   panel is configured readable in its `include/LGFX_CYD*.hpp` (`cfg.readable = true`,
   MISO 12, `freq_read` 16 MHz). If a capture ever comes back garbled, lower
   `freq_read` before suspecting anything else.
@@ -71,4 +71,4 @@ UPTIME:42
   the real `gfx.getTouch()`.
 - No OTA: USB flashing is already a single non-interactive command and the first flash
   needs USB anyway. If the uidev image ever outgrows the default app partition, set
-  `board_build.partitions = huge_app.csv` in the `esp32dev_cyd_uidev` env only.
+  `board_build.partitions = huge_app.csv` in the `*_uidev` envs only.

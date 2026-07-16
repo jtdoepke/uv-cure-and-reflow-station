@@ -73,15 +73,19 @@ sim-shot: sim  ## Render the UI to a PNG: make sim-shot [SIM_PANEL=35] ARGS="cli
 	@mkdir -p $(dir $(SIM_OUT))
 	.pio/build/$(SIM_ENV)/program --out $(SIM_OUT) $(ARGS)
 
-# On-device UI dev loop (esp32dev_cyd35_uidev env; board on Micro-USB, WiFi creds in
-# include/secrets.h — see the ui-development skill).
+# On-device UI dev loop (board on Micro-USB, WiFi creds in include/secrets.h — see the
+# ui-development skill). DEV_ENV picks the board, mirroring SIM_PANEL/CALIB_ENV; the default is
+# the default board. `make dev-shot` only works under DEV_ENV=esp32dev_cyd_uidev — the 3.5"
+# panel's SDO is unwired, so its endpoint returns 501 rather than a black PNG.
+# PORT pins the upload port when more than one board is plugged in (the CYD is the CH340).
+DEV_ENV ?= esp32dev_cyd35_uidev
 DEV_OUT ?= .pio/sim/device.png
 
-dev-flash: ## Flash firmware + UI dev tools, then print the device IP
-	pio run -e esp32dev_cyd35_uidev -t upload
+dev-flash: ## Flash firmware + UI dev tools, print the IP: make dev-flash [DEV_ENV=…] [PORT=/dev/ttyUSB1]
+	pio run -e $(DEV_ENV) -t upload $(if $(PORT),--upload-port $(PORT))
 
 dev-status: ## Query device IP/status over serial (no flash)
-	pio run -e esp32dev_cyd35_uidev -t status
+	pio run -e $(DEV_ENV) -t status
 
 dev-shot:  ## Screenshot the physical display: make dev-shot IP=192.168.x.x
 	tools/cyd-shot.sh $(IP) $(DEV_OUT)

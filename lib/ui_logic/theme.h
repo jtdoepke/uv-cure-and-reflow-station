@@ -63,11 +63,24 @@ constexpr uint32_t TILE_PRESSED = 0x24303d;
 constexpr uint32_t TILE_DISABLED = 0x0a0e12;
 constexpr uint32_t SELECTED = 0x0e3357; // highlighted list row (§23/§24 ▲/▼) — accent-tinted, and
                                         // distinct from every reserved state hue
-constexpr uint32_t TEXT = 0xe3eaf0;     // primary text
-constexpr uint32_t TEXT_DIM = 0x6e7a85; // secondary / disabled text / captions
+constexpr uint32_t TEXT = 0xe3eaf0;     // primary text — 16.6:1 on BG, clears the 7:1 readout floor
+constexpr uint32_t TEXT_DIM = 0x727e89; // secondary / disabled text / captions
 constexpr uint32_t IDLE = 0x35d07f;     // green — safe / normal
 constexpr uint32_t WARN = 0xffb020;     // amber — hot / warning
 constexpr uint32_t FAULT = 0xff3b30;    // red   — danger (reserved)
+
+// Contrast, measured rather than asserted (WCAG ratio, against BG / SURFACE):
+//   TEXT 16.61 / 15.62 · WARN 11.03 / 10.37 · IDLE 10.07 / 9.46
+//   FAULT 5.69 / 5.35 · ACCENT 5.53 / 5.20 · TEXT_DIM 4.86 / 4.57
+// TEXT_DIM is set exactly where it clears the 4.5 body floor on SURFACE, the worse of its two
+// grounds — at its previous #6e7a85 a caption on a panel measured 4.32 and quietly failed.
+//
+// The saturated hues sit at ~5.2-5.7: above the 4.5 floor, below the 7:1 one the design guide
+// wants for critical readouts. That is a property of saturated red/blue on near-black, not an
+// oversight — dragging FAULT to 7:1 turns it #ff6b60, i.e. pink, trading the meaning of "red"
+// for a number. The readouts themselves are TEXT and do clear 7:1; the hues only ever carry
+// state, and state is ALWAYS redundantly coded with a word and a glyph. That redundancy is what
+// makes this safe, which is why it is a rule and not a preference.
 
 // The accent: structure, and "this is the live datum". A fourth, NON-state hue — it must never be
 // readable as green/amber/red, or it stops meaning "look here" and starts meaning "something is
@@ -135,9 +148,9 @@ void apply_list_row(lv_obj_t *obj);       // selectable-list row surface (§23/�
 
 // Line-art — the structure that makes the panel read as instrumentation rather than as an app.
 //
-// All of it is drawn with widget BORDERS, not glyphs: the font carries ASCII + ° + 7 icons and no
-// box-drawing characters (fonts/README.md). Borders also scale with the mm tokens, where a glyph
-// would be frozen at one pixel size.
+// All of it is drawn with widget BORDERS, not glyphs: the fonts carry ASCII + ° + the handful of
+// Font Awesome icons listed in fonts/README.md, and no box-drawing characters. Borders also scale
+// with the mm tokens, where a glyph would be frozen at one pixel size.
 void add_hairline(lv_obj_t *obj); // 1 px accent outline, all four sides
 void add_dot_grid(lv_obj_t *scr); // background dot matrix, drawn behind every panel
 
@@ -159,8 +172,9 @@ void apply_caption(lv_obj_t *label);
 // helpers style the container only: the redundant cue (a ⚠ glyph and a word like "CAUTION") is
 // the caller's job, because ISA-101 forbids colour-only state and no style can enforce that.
 //
-// Glyph note: the ⚠/✓/✗ icons are merged into the 14/16 px fonts ONLY — big_font() carries
-// digits, ✓, ✗ and ⌫. A ⚠ set in big_font() renders as a missing-glyph box (fonts/README.md).
+// Glyph note: big_font() carries ASCII + ° + ✓ ✗ ⌫ — so ordinary words are fine in it, but ⚠, ‹
+// and ▲/▼ are merged into the 14/16 px fonts ONLY. A LV_SYMBOL_WARNING set in big_font() renders
+// as a missing-glyph box (fonts/README.md has the exact ranges and the regeneration recipe).
 
 // A full-width banner: hue-tinted fill, hue edge, hue text. Caution and alarm differ only in hue.
 void apply_alert(lv_obj_t *obj, uint32_t hue);

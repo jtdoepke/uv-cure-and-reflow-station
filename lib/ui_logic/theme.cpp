@@ -88,10 +88,10 @@ static void apply_button_base(lv_obj_t *btn) {
 
   // Cancel lv_theme_default's press "grow" (LV_THEME_DEFAULT_GROW, lv_conf.h): it sets
   // transform_width/height on pressed, and a transform forces LVGL to snapshot the widget to an
-  // intermediate layer before scaling it. On a 320x170 mode tile that is ~54 kB of pixels per
-  // frame on a board with no PSRAM and partial draw buffers — so the press did not merely animate
-  // for its nominal 80 ms, it took visibly longer than that to render. Killing the transform makes
-  // the acknowledgement a pure fill/edge change, which is a plain blit.
+  // intermediate layer before scaling it. A 320x170 mode tile is ~54,000 pixels, i.e. >100 kB at
+  // RGB565, snapshotted per frame on a board with no PSRAM and partial draw buffers — so the press
+  // did not merely animate for its nominal 80 ms, it took visibly longer than that to render.
+  // Killing the transform makes the acknowledgement a pure fill/edge change: a plain blit.
   //
   // Neutralised per-button rather than by flipping LV_THEME_DEFAULT_GROW, for the same reason as
   // recolor_opa above: that switch restyles every widget in LVGL to fix one state of ours.
@@ -113,7 +113,7 @@ static void apply_button_base(lv_obj_t *btn) {
   //
   // And lv_conf.h has LV_THEME_DEFAULT_DARK = 0, so LVGL thinks it is theming a LIGHT UI and its
   // disabled recolor is lv_palette_lighten(GREY, 2) ≈ #EEEEEE. A disabled tile therefore rendered
-  // #7b7d84 — LIGHTER and more eye-catching than the #2a2f3a enabled one, which is precisely
+  // #7b7d84 — LIGHTER and more eye-catching than the TILE-filled enabled one, which is precisely
   // backwards for ISA-101, where a control you cannot use must recede. On the Home screen with no
   // controller attached, that is two big pale slabs filling the display: the whole screen reads
   // washed out, and grepping theme.h for the colour finds nothing, because it is not in there.

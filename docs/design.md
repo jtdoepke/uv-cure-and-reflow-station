@@ -1599,8 +1599,9 @@ Primary job: pick what to do, while making the machine's safety state unmissable
   - **Structure is drawn with widget borders, never glyphs** — a 1 px accent hairline
     outlining every panel (**all four sides**: a rule on the top edge alone reads as an
     underline on whatever sits above it), corner brackets, a faint dot matrix on the canvas.
-    The font carries ASCII + `°` + 7 icons and no box-drawing characters; borders also scale
-    with the mm-authored tokens, where a glyph would be frozen at one pixel size.
+    The fonts carry ASCII + `°` and only the few Font Awesome icons `lib/ui_logic/fonts/README.md`
+    lists — no box-drawing characters; borders also scale with the mm-authored tokens, where a
+    glyph would be frozen at one pixel size.
   - **Buttons are bracketed outlines over the canvas, not filled slabs** — which is what
     gives the dot matrix something to show through, and makes press feedback a *larger*
     delta (outline → filled) than a slab changing shade.
@@ -1631,11 +1632,16 @@ Primary job: pick what to do, while making the machine's safety state unmissable
     border or text, because a blinking word is harder to read.
 - **Alert vocabulary (DECIDED)** — `theme.h`'s `apply_alert` / `apply_pill` /
   `apply_fault_panel` / `alarm_pulse`, so §13's banners and §22's overlay inherit one
-  treatment. A hue-tinted **wash at 10 %** with a full-strength edge and text: the fill
-  only says *which colour the bar is*, and severity is ordered by saturation, not area.
-  Every one pairs colour with a ⚠/✓/✗ glyph **and** a word — never colour alone.
-  Reviewable without hardware via `make sim-shot ARGS=... --screen alerts`, the specimen
-  in `sim/sim_main.cpp`.
+  treatment. `apply_alert` and `apply_pill` are a hue-tinted **wash at 10 %** with a
+  full-strength edge and text: the fill only says *which colour the bar is*, and severity is
+  ordered by **saturation, not area** — a fully-saturated amber bar would out-shout the red
+  one beside it. `apply_fault_panel` is the deliberate exception: **opaque**, with the theme's
+  only above-hairline (2 px) edge, because a modal that let the screen show through would
+  suggest the screen behind it is still live. Every one pairs colour with a ⚠/✓/✗ glyph **and**
+  a word — never colour alone; that redundancy is what carries the state, since a saturated hue
+  on near-black cannot reach the 7:1 critical-readout floor (see `theme.h`'s measured table).
+  Reviewable without hardware: `make sim-shot SIM_PANEL=35 ARGS="--screen alerts"` renders the
+  specimen in `sim/sim_main.cpp`.
 - **Typography (DECIDED):** Red Hat Mono SemiBold, one weight, as the single UI font
   (`LV_FONT_DEFAULT`). A squared/technical monospace face for small-size legibility and
   digit disambiguation on the 320×240 panel — distinct `l 1 I` and a **slashed zero**

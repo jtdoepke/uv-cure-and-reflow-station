@@ -173,8 +173,8 @@ static lv_display_t *sim_disp = nullptr;
 // LV_THEME_DEFAULT_TRANSITION_TIME (80 ms, lv_conf.h) — and our mode tiles change state the
 // moment the link subject moves, because subjects boot at LINK_NONE and the tiles bind
 // LV_STATE_DISABLED to it. Screenshot immediately after `link ok` and you catch the tile
-// mid-blend: it renders #7b7d84 rather than the theme's #2a2f3a, which reads exactly like a
-// washed-out palette bug that isn't there. (Worse, the theme's disabled treatment is a 50%
+// mid-blend: it renders a pale #7b7d84 rather than the theme's dark TILE, which reads exactly like
+// a washed-out palette bug that isn't there. (Worse, the theme's disabled treatment is a 50%
 // `recolor` — a post-process, so it does not even resemble the bg_color the theme sets, and
 // grepping theme.h for the colour you can see finds nothing.)
 //

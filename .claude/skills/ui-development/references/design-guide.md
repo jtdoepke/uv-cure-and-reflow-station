@@ -110,7 +110,13 @@ loop — the UI must stay responsive to Stop at all times.
   critical readouts. White-on-black is ~21:1.
 - Clean sans-serif, open letterforms; no weights below 400 — thin strokes lose contrast
   on a low-res anti-aliased panel.
-- Meaning never rides on color alone; pair with text/icons.
+- Meaning never rides on color alone; pair with text/icons — and on this palette that is
+  structural rather than belt-and-braces. A saturated hue on a near-black canvas **cannot**
+  reach the 7:1 critical floor: `FAULT` measures ~5.7:1 and `ACCENT` ~5.5:1 on `BG`, and
+  dragging red to 7:1 turns it pink, trading the meaning of "red" for a number. The readouts
+  themselves are `TEXT` (~16:1) and clear it comfortably; the hues only ever carry *state*, and
+  the mandatory word+glyph is what actually makes that state readable. `theme.h` carries the
+  measured table — check any new token against **`SURFACE`**, the worse of the two grounds.
 
 ## Color discipline (ISA-101 / IEC 63303 high-performance HMI)
 
@@ -130,6 +136,47 @@ IEC 60204-1 machine conventions:
   blink.
 - Pick one color convention, document it in the style guide, apply it everywhere.
   Blue/white indicators wash out under bright light.
+
+### How this project resolves it: "Azure Instrument" (design.md §14)
+
+Tokens live in `lib/ui_logic/theme.h` and **nowhere else** — a colour literal outside that
+file is a bug, and the hex values are deliberately not repeated here (design.md §14 keeps them
+as a dated decision record; this page explains the reasoning). A **near-black** canvas rather
+than mid-grey, ~90% neutral, the three reserved state hues (`IDLE` green · `WARN` amber ·
+`FAULT` red), and **one non-state accent** — `ACCENT`, an azure blue — carrying structure and
+live data.
+
+The load-bearing insight is that **the cinematic sci-fi/FUI look and the ISA-101 rules are
+the same visual grammar**: near-black base, ~90% neutral, one cool accent, mono numerics,
+thin line-art, red/amber alarm semantics. So the style is a palette and some line-art, not a
+second design fighting the safety rules. The FUI tropes that genuinely conflict — everything
+glowing, ambient motion, tiny thin text, gesture reliance, 3-D clutter, unconfirmed hazardous
+actions — are all things this panel rejects on its own terms anyway. Steal the look, keep the
+discipline.
+
+Consequences worth knowing before changing any of it:
+
+- **An accent is chosen for distance from the state hues, not for looks.** A teal candidate
+  was rejected for sitting near IDLE green: an accent that can be misread as a state stops
+  meaning "look here" and starts meaning "something is wrong". Judge a new one on the
+  `--screen alerts` specimen, where the accent and all three state hues are live at once —
+  never on Home, which only ever shows one state.
+- **The 3.5" glass reads blacks as grey** at every backlight level (design.md §6a), so a
+  near-black canvas has less headroom here than the palette assumes. It was checked on real
+  glass and holds — but no code change can make that glass darker, so if a future palette
+  fails to separate, the fix is to **lift the canvas, not deepen it**. The simulator cannot
+  answer this; only the panel can.
+- **No gradients** — RGB565 bands and LVGL does not dither at this depth. Fake depth with
+  layered flat translucency, not a gradient.
+- **`apply_alert` / `apply_pill` are a ~10% hue wash** with a full-strength edge and text, so
+  severity is ordered by **saturation, not area** — a fully-saturated amber bar would out-shout
+  the red one beside it. **`apply_fault_panel` is the deliberate exception:** opaque, with the
+  theme's only above-hairline (2 px) edge, because a modal that let the screen show through
+  would suggest the screen behind it is still live.
+- **`alarm_pulse` breathes the fill only** — never the border or text, because a blinking word
+  is harder to read and an alarm you cannot read is decoration. It is the only motion at steady
+  state and it is redundant with the ⚠ glyph and the word. **Stopping it is the caller's job**
+  (`lv_anim_delete(obj, nullptr)` when the condition clears) — it is not self-cancelling.
 
 ## Safety-critical interaction design
 
@@ -181,16 +228,37 @@ reversal"):
 - **Gauges sparingly:** space-hungry and low-density; if used, always show the number
   too, color zones only for warning/danger. Usually a bold readout wins at 320×240.
 
+## Photographing motion (the `frame` action)
+
+`shot` settles animations before capturing, so a screenshot never reports a transient blend as
+a resting colour. An **infinite** animation (the §22 alarm pulse) never settles, so `shot`
+waits out its 1 s bound and captures an arbitrary — though deterministic — phase. To show a
+pulse in a still medium, sample `frame` (an unsettled capture) across one full period and
+assemble the PNGs into a GIF. The alarm's 600 ms up + 600 ms back closes exactly on 8 × 150 ms:
+
+```text
+--screen alerts --out /dev/null \
+  frame f0.png wait 150 frame f1.png wait 150 …   # 8 frames = one 1200 ms period
+```
+
+Frame-difference the GIF (only ~6% of pixels move) or it will be ~5× larger than it needs to
+be. Use `frame` for nothing else: settling is what makes `shot` trustworthy.
+
 ## Consistency and the style guide
 
-Consistency is rule #1 for both Nielsen (#4) and Shneiderman. Before building screens,
-fix a one-page style guide (an ISA-101 recommendation) and reuse it everywhere:
+Consistency is rule #1 for both Nielsen (#4) and Shneiderman. The one-page style guide an
+ISA-101 process would have you write **already exists and is executable**: it is
+`lib/ui_logic/theme.h` (the tokens) + design.md §14 (the rules and why). Use it rather than
+re-deciding, and if a screen needs something the theme has no helper for, add the helper
+there — do not style it locally:
 
-- grayscale base palette + the semantic red/amber/green with mandatory text/icon pairing
-- two type sizes (large readout, body) meeting the contrast floors
+- the Azure Instrument palette (above) — near-black base, one non-state accent, semantic
+  red/amber/green with mandatory text/icon pairing
+- two type sizes (`LV_FONT_DEFAULT` body, `theme::big_font()` readout) meeting the contrast
+  floors, sizes picked by panel **pitch** (a font cannot scale with the mm tokens)
 - standard header (title + machine state) and footer (Back + persistent Stop)
-- one button style with a defined pressed state; identical terminology and positions
-  across screens
+- one button treatment with an instant pressed state; brackets only on real touch targets;
+  identical terminology and positions across screens
 
 Match real-world mental models: thermometer/heat for temperature, timer for duration.
 Show current settings and state rather than making the operator remember them

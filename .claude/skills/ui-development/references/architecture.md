@@ -86,13 +86,62 @@ lv_obj_add_event_cb(btn, EventHandler<MyScreen, &MyScreen::onClick>::thunk,
 ## Styles and theming
 
 - **Design tokens first:** palette/spacing/radius as `constexpr` in one
-  `lib/ui_logic/theme` header. One variable change restyles the whole UI.
-- Shared `static lv_style_t` objects, initialized once, applied with
-  `lv_obj_add_style`. Styles must **outlive every widget that references them** — LVGL
-  stores only the pointer, so locals are a use-after-free. Use `LV_STYLE_CONST_INIT`
-  for never-changing styles to keep them in flash (RAM matters on this board).
+  `lib/ui_logic/theme` header. One variable change restyles the whole UI. Screens call its
+  `apply_*`/`add_*` helpers and never write a colour themselves.
+- **This project styles inline, per widget — not through shared `lv_style_t` globals**, and
+  that is deliberate: properties land in each widget's own style list and are freed with it,
+  whereas a process-lifetime `lv_style_t` is stranded by the native tests' repeated
+  `lv_init()`/`lv_deinit()` cycles, which reset LVGL's allocator underneath it. See the
+  `theme.h` file header.
+- If a screen with many repeated widgets ever makes the per-widget copies cost real RAM, a
+  shared `static lv_style_t` + `lv_obj_add_style` is the escape hatch — but it must then
+  **outlive every widget referencing it** (LVGL stores only the pointer, so a local is a
+  use-after-free), and `LV_STYLE_CONST_INIT` keeps never-changing ones in flash.
 - Styles, timers, and animations are *not* owned by widgets — keep them as
-  members/statics or they leak.
+  members/statics or they leak. (`lv_style_transition_dsc_t` is a plain POD rather than an
+  `lv_style_t`, so a `static` one is safe across `lv_deinit` — that is how `theme.cpp` owns
+  the press/release feedback timing.)
+
+## Custom draw callbacks (and the clip-area rule)
+
+Line-art that no widget provides — corner brackets, the background dot matrix — is drawn from a
+`LV_EVENT_DRAW_MAIN_END` callback rather than from child objects. Two reasons: a callback sees
+the object's **live state** for free (a child does not inherit its parent's state, so child
+brackets could not hide themselves on a disabled button), and it lands on the object's outer
+bounds without having to undo the caller's padding.
+
+**A draw callback MUST clip its work to `layer->_clip_area`.** On this board that is
+correctness, not optimisation:
+
+- With no PSRAM the display renders in **partial scanline chunks** (`DRAW_BUF_LINES`, 24 lines —
+  a fixed line count, deliberately *not* a fraction of the screen; see `cyd_board.h` and
+  CLAUDE.md). A callback on the **screen** therefore fires **once per chunk** — ~13 times for a
+  320×480 redraw, ~10 for a 320×240 one.
+- The dot matrix originally queued every dot on the panel on every one of those calls: ~7,200
+  draw tasks per screen instead of ~600. A Home → Settings transition took **~3 s** on real
+  glass. It compounded with the translucent tiles, whose every press forces the canvas beneath
+  them to recomposite and re-run the whole loop.
+- **The simulator will not warn you** — it renders identical pixels on a host CPU. This class of
+  bug is only visible on the device, which is what the device loop is for.
+
+Bound the loop to the intersection of the object's coords and the clip area, and — for a
+repeating pattern — start it on the **lattice**, not the clip edge, or the pattern shifts
+depending on which chunk is redrawing:
+
+```cpp
+lv_area_t clip;
+clip.x1 = LV_MAX(coords.x1, layer->_clip_area.x1);   // intersect by hand: lv_area_intersect()
+clip.y1 = LV_MAX(coords.y1, layer->_clip_area.y1);   // lives in the private lv_area_private.h
+clip.x2 = LV_MIN(coords.x2, layer->_clip_area.x2);
+clip.y2 = LV_MIN(coords.y2, layer->_clip_area.y2);
+if (clip.x1 > clip.x2 || clip.y1 > clip.y2) return;
+const int32_t x0 = coords.x1 + ((clip.x1 - coords.x1) / STEP) * STEP;  // snap to the lattice
+```
+
+Draw-order note: `DRAW_MAIN_END` puts your work on top of the object's own background but under
+its children — which is why the dot matrix sits on the canvas yet is occluded by every opaque
+panel, exactly as a background should be.
+
 - Runtime theme switching (e.g. a dark/high-brightness mode): bind alternate styles with
   `lv_obj_bind_style(obj, &style_dark, sel, &dark_subject, 1)` — flipping one subject
   reskins everything, no per-widget code.
@@ -116,7 +165,7 @@ and everything currently runs there, so it's safe by construction. Keep it that 
 
 No PSRAM (WROOM-32), so common LVGL advice to put canvases/screens in PSRAM does **not** apply here:
 
-- Draw buffers: partial (~1/10 screen) in internal DRAM, period. A
+- Draw buffers: partial (`DRAW_BUF_LINES` = 24 scanlines) in internal DRAM, period. A
   `region dram0_0_seg overflowed` link error means static data grew too big — the fix
   here is heap allocation at `setup()` (as `src_cyd/main.cpp` does for the draw buffer since
   WiFi joined the uidev env), not "move to PSRAM".
