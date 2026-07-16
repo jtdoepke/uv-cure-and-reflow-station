@@ -77,6 +77,20 @@ so taller buffers cut the whole table proportionally. That is the documented def
 - **SPI 40→80 MHz (Opt-12/13): deprioritised to last-resort.** SPI is already fully hidden under
   render; halving it moves the render-bound total by ~10% at most, for a corruption risk that has
   no on-glass detector (dev-shot is 501 here). Not worth it until render is much smaller.
+
+- **esp_lvgl_port Xtensa ASM blenders (LV_DRAW_SW_ASM_CUSTOM): measured DEAD END on this chip.**
+  esp-bsp does ship classic-ESP32 `_esp32.S` fill/copy blenders (not only S3), and they wire in
+  cleanly via the CUSTOM hook (vendored + adapted for 9.5.0's descriptor typedef rename and its
+  wider CUSTOM_INCLUDE fan-out). But on glass they gave **nothing**: plain-RGB565 + C = 120.8 ms,
+  plain-RGB565 + ASM = 121.1 ms (identical). The fill asm fires (no early bail) but cannot beat
+  the C 16-bit replication loop on the LX6, which has no SIMD — the vendor's 5.8×/9.8× figures are
+  ESP32-**S3** (real vector ops). And it only ever hooks the OPAQUE fill/copy paths, not the
+  text/alpha blends that are 38% of our render. Spike reverted.
+  - **Incidental finding worth a later look:** plain RGB565 renders **~8 ms (6%) faster** than
+    RGB565_SWAPPED (120.8 vs ~129 ms) — the swapped path does a per-pixel byte-swap DURING
+    compositing. We use swapped for zero-copy DMA; rendering plain and swapping in the (overlapped)
+    flush would move that 8 ms off the render-bound critical path. Needs its own spike: whether
+    LovyanGFX's swap-on-push stays under the render ceiling. Separate from the ASM question.
 - **The dot grid is the prize.** The host harness shows it is ~80% of Home's draw tasks, render is
   80–90% of the redraw, so cutting grid tasks cuts the thing that actually dominates.
 - **`DISP_DOUBLE_BUFFER=0` to reclaim 15 KB: costs 46 ms/redraw.** Only if RAM-starved.
