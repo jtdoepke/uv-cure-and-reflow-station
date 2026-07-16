@@ -1,4 +1,12 @@
-// control_board.h — the controller's link-UART and console policy (design.md §2, §25).
+// control_board.h — the controller's wiring, timing and console policy (design.md §2, §6, §25).
+//
+// Every pin and hard-coded timeout the controller firmware owns is defined here, so main.cpp is a
+// composition root rather than a board definition and §6's pin inventory has one place to be true.
+// Be honest about the asymmetry with its CYD twin (include/cyd_board.h): that file exists because
+// there are genuinely two HMI boards. There is only one controller, and this file is NOT variant
+// support — it is consolidation, for §6 traceability and for the day the custom PCB moves a pin.
+// Do not grow a [board_*] mechanism here on spec; CONTROL_BENCH below is a *console* choice that
+// happens to move a UART, which is a different thing.
 //
 // design.md §2 pins the production link to UART0 (GPIO1/3): those are the pins the ESP32's ROM
 // serial loader speaks, which §25's CYD-driven reflash needs. On a dev board UART0 is *also*
@@ -47,3 +55,20 @@ inline constexpr uint32_t kLinkBaud = 115200; // §9: 115200 8N1
 // a buffered copy that never comes up short. RX covers a full Recipe landing between poll()s.
 inline constexpr size_t kLinkTxBuf = 2048;
 inline constexpr size_t kLinkRxBuf = 1024;
+
+// The tick cadence is protocol::kLinkTickMs (lib/protocol/link_params.h) — a protocol fact shared
+// with the CYD, not a board one.
+
+// --- Outputs (§4, §6) ---
+// Both are plain outputs: not strapping pins (0/2/5/12/15), not input-only (34-39). Both are
+// pulled DOWN in hardware, which is what makes a crashed, reset, brown-out or bootloader-stuck MCU
+// safe with no firmware action; the adapters' begin() is only the software half of that default.
+// On the bench (A8, §8 step 1) each drives an LED + series resistor instead of the real load.
+inline constexpr int kHeaterPin = 25;    // zero-cross SSR gate
+inline constexpr int kContactorPin = 26; // mains-isolation contactor coil driver
+
+// --- Watchdog (§9) ---
+// Comfortably longer than a worst-case controller loop (LVGL lives on the other MCU; ours is link
+// + control only), short enough that a hang is caught long before it could matter thermally. A4b
+// may tighten this once the real loop's timing is measured.
+inline constexpr uint32_t kWatchdogTimeoutMs = 5000;

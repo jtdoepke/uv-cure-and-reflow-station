@@ -17,6 +17,7 @@
 #include "home_screen.h"            // UI construction lives in lib/ui_logic (host-testable)
 #include "home_viewmodel.h"         // handshake -> LinkState mapper (lib/ui_logic)
 #include "lgfx_display.h"           // LGFX IDisplay + IBacklight adapter (firmware glue)
+#include "link_params.h"            // shared §9 cadences, incl. the FrameLink tick (lib/protocol)
 #include "lgfx_touch.h"             // LGFX ITouch adapter (firmware glue)
 #include "message_router.h"         // frame -> typed message dispatch (lib/protocol)
 #include "null_ambient_light.h"     // IAmbientLight for a board with no LDR (firmware glue)
@@ -351,7 +352,7 @@ void loop() {
   g_link.poll();
   g_cyd_link.service(); // handshake + heartbeat cadence + setup-path retries
   static uint32_t last_link_tick = 0;
-  if (static_cast<uint32_t>(now - last_link_tick) >= kLinkTickMs) {
+  if (static_cast<uint32_t>(now - last_link_tick) >= protocol::kLinkTickMs) {
     last_link_tick = now;
     g_link.tick();
   }

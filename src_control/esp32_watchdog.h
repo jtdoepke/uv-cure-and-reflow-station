@@ -22,13 +22,10 @@
 
 class Esp32Watchdog : public IWatchdog {
 public:
-  // Comfortably longer than a worst-case controller loop (LVGL lives on the other MCU; ours is
-  // link + control only), short enough that a hang is caught long before it could matter
-  // thermally. A4b may tighten this once the real loop's timing is measured.
-  static constexpr uint32_t kTimeoutMs = 5000;
-
-  // Call from setup(), on the same task that will call kick().
-  void begin(uint32_t timeout_ms = kTimeoutMs) {
+  // Call from setup(), on the same task that will call kick(). The timeout is required rather than
+  // defaulted: it is a board/loop-budget decision (control_board.h::kWatchdogTimeoutMs), and a
+  // default here would be a second answer competing with that one.
+  void begin(uint32_t timeout_ms) {
     raw_ = esp_reset_reason();
     cause_ = classify(raw_);
 
@@ -37,6 +34,13 @@ public:
     cfg.idle_core_mask = 0;   // we watch our own loop, not the idle tasks
     cfg.trigger_panic = true; // panic -> reset -> pull-downs -> safe (§11)
     // Arduino-ESP32 may have initialized the TWDT already; adopt our config either way.
+    //
+    // This path logs a bare `E (20) task_wdt: ` with an empty message on every boot. It predates
+    // this file's current shape, it is not a failure, and it is not worth chasing again: the
+    // watchdog is verifiably armed either way — the bench 'h' command hangs the loop on purpose
+    // and the dog bites, with the next boot reporting ResetCause::Watchdog (§8 step 1). Note the
+    // tag itself sometimes arrives corrupted at that point in boot ("task_wd?:"), which is enough
+    // to defeat a grep — do not read one clean-looking log as proof it has gone away.
     if (esp_task_wdt_init(&cfg) == ESP_ERR_INVALID_STATE) {
       esp_task_wdt_reconfigure(&cfg);
     }

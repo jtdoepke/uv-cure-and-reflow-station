@@ -72,10 +72,8 @@ inline constexpr int kLinkTxPin = 27;
 #endif
 inline constexpr uint32_t kLinkBaud = 115200; // §9: 115200 8N1
 
-// TinyFrame's parser-resync timeout is counted in TF_Tick() *calls*, not milliseconds
-// (TF_PARSER_TIMEOUT_TICKS = 10, TF_Config.h), so ticking on a fixed 10 ms cadence turns it into a
-// real ~100 ms — comfortably inside the controller's 750 ms command-timeout.
-inline constexpr uint32_t kLinkTickMs = 10;
+// The tick cadence is protocol::kLinkTickMs (lib/protocol/link_params.h) — a protocol fact shared
+// with the controller, not a board one.
 inline constexpr size_t kLinkRxBuf = 512;  // we receive Telemetry/Ack — modest
 inline constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SENDBUF_LEN (1024)
 

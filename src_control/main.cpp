@@ -11,7 +11,7 @@
 // them within the 750 ms command-timeout. See control_board.h for why the link UART moves.
 #include <Arduino.h>
 
-#include "control_board.h"   // link UART + console policy (§2/§25; CONTROL_BENCH)
+#include "control_board.h"   // this board's pins, timeouts, link UART + console policy (§2/§6/§25)
 #include "controller_link.h" // reliability facade (lib/control_logic)
 #include "esp32_clock.h"
 #include "esp32_contactor.h"
@@ -46,20 +46,14 @@ static protocol::TelemetrySender g_telemetry(g_link, g_clk);
 // --- Outputs (§4) ---
 // Declared above the supervisor that owns them: its constructor drives the fail-safe state, and
 // statics in one translation unit initialize in declaration order.
-static Esp32HeaterSwitch g_heater_sw;
-static Esp32Contactor g_contactor;
+static Esp32HeaterSwitch g_heater_sw(kHeaterPin);
+static Esp32Contactor g_contactor(kContactorPin);
 static HeaterActuator g_heater(g_heater_sw, g_clk);
 static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor);
 
 static Esp32Watchdog g_wdt;
 
 namespace {
-
-// TinyFrame's parser-resync timeout is counted in TF_Tick() *calls*, not milliseconds
-// (TF_PARSER_TIMEOUT_TICKS = 10, TF_Config.h). Ticking on a fixed 10 ms cadence turns that into
-// a real ~100 ms: a half-received frame is abandoned well inside the 750 ms command-timeout,
-// so a truncated frame can never wedge the parser long enough to look like a dead link.
-constexpr uint32_t kLinkTickMs = 10;
 
 #if defined(CONTROL_BENCH)
 const char *causeName(ResetCause c) {
@@ -84,12 +78,14 @@ const char *causeName(ResetCause c) {
 
 void setup() {
   // Outputs to their fail-safe default before anything else can run — §8 step 1's "outputs
-  // default OFF". SafetySupervisor's constructor has already commanded this, but it ran during
-  // static init, before the pins were outputs; these calls are what make it electrical.
+  // default OFF". SafetySupervisor's constructor commanded this already, but it ran during static
+  // init, where a digitalWrite cannot land: the pins are not outputs yet, and the adapters
+  // deliberately drop writes made before begin(). Until this line the hardware pull-downs are the
+  // whole guarantee — which is the point of them. These calls are what make it firmware's.
   g_heater_sw.begin();
   g_contactor.begin();
 
-  g_wdt.begin();
+  g_wdt.begin(kWatchdogTimeoutMs);
 
 #if defined(CONTROL_BENCH)
   Serial.begin(115200); // bench only: UART0 is the console, the link is on UART2
@@ -127,7 +123,7 @@ void loop() {
   g_ctrl.service();
 
   static uint32_t last_tick_ms = 0;
-  if (static_cast<uint32_t>(now - last_tick_ms) >= kLinkTickMs) {
+  if (static_cast<uint32_t>(now - last_tick_ms) >= protocol::kLinkTickMs) {
     last_tick_ms = now;
     g_link.tick();
   }

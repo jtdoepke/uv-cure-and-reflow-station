@@ -20,14 +20,31 @@
 
 class Esp32HeaterSwitch : public IHeaterSwitch {
 public:
-  // Plain output: not a strapping pin (0/2/5/12/15), not input-only (34-39).
-  static constexpr int kPin = 25;
+  // The pin is injected (control_board.h::kHeaterPin) rather than owned here: which GPIO drives
+  // the SSR is a fact about the board, and this class is a fact about Arduino.
+  explicit Esp32HeaterSwitch(int pin) : pin_(pin) {}
 
   // Call first in setup(): OUTPUT + LOW before any logic can command heat.
   void begin() {
-    pinMode(kPin, OUTPUT);
-    digitalWrite(kPin, LOW);
+    pinMode(pin_, OUTPUT);
+    digitalWrite(pin_, LOW);
+    begun_ = true;
   }
 
-  void set(bool on) override { digitalWrite(kPin, on ? HIGH : LOW); }
+  void set(bool on) override {
+    // Before begin(), the pin is high-Z and the hardware pull-down — not us — is holding the SSR
+    // off. A digitalWrite here cannot change that; the Arduino core would only log
+    // "IO N is not set as GPIO". Drop it rather than pretend, and keep begin()'s LOW as the one
+    // definition of the boot state, so no pre-init command can ever be replayed into heat.
+    // This is not hypothetical: SafetySupervisor's constructor commands both outputs safe, and it
+    // runs during static init, before setup() exists to have called begin().
+    if (!begun_) {
+      return;
+    }
+    digitalWrite(pin_, on ? HIGH : LOW);
+  }
+
+private:
+  const int pin_;
+  bool begun_ = false;
 };

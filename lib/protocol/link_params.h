@@ -27,6 +27,18 @@ inline constexpr uint32_t kTelemetryPeriodMs = 250;
 // deliberately more patient. **TBD §10** — both are unmeasured placeholders.
 inline constexpr uint32_t kLinkTimeoutMs = 1000;
 
+// How often each firmware's loop must call FrameLink::tick(). TinyFrame counts its
+// parser-resync timeout in TF_Tick() *calls*, not milliseconds (TF_PARSER_TIMEOUT_TICKS
+// = 10, TF_Config.h), so this cadence is what converts that count into a real ~100 ms:
+// a half-received frame is abandoned well inside kCommandTimeoutMs, and a truncated
+// frame can never wedge the parser long enough to look like a dead link.
+//
+// Lives here rather than in each board header because it is a property of the protocol,
+// not of a board: TF_PARSER_TIMEOUT_TICKS is one number shared by both firmwares, so the
+// cadence that gives it meaning must be too. Both sides tick at the same rate for the
+// same reason — that is one fact, and it gets one definition.
+inline constexpr uint32_t kLinkTickMs = 10;
+
 // Setup path (Recipe/Start): resend interval and retry budget before the sender
 // gives up and surfaces an error. kSetupMaxRetries counts resends *after* the
 // initial send, so a command is transmitted up to 1 + kSetupMaxRetries times.

@@ -22,14 +22,31 @@
 
 class Esp32Contactor : public IContactor {
 public:
-  // Plain output: not a strapping pin (0/2/5/12/15), not input-only (34-39).
-  static constexpr int kPin = 26;
+  // The pin is injected (control_board.h::kContactorPin) rather than owned here: which GPIO drives
+  // the coil is a fact about the board, and this class is a fact about Arduino.
+  explicit Esp32Contactor(int pin) : pin_(pin) {}
 
   // Call first in setup(): OUTPUT + LOW (coil de-energized, mains isolated).
   void begin() {
-    pinMode(kPin, OUTPUT);
-    digitalWrite(kPin, LOW);
+    pinMode(pin_, OUTPUT);
+    digitalWrite(pin_, LOW);
+    begun_ = true;
   }
 
-  void setClosed(bool closed) override { digitalWrite(kPin, closed ? HIGH : LOW); }
+  void setClosed(bool closed) override {
+    // See Esp32HeaterSwitch::set() — same contract, same reason. This adapter is the one that
+    // actually hit it: SafetySupervisor's constructor calls setClosed(false) unconditionally
+    // during static init, which the Arduino core logged once per boot as "IO 26 is not set as
+    // GPIO". The heater escaped only because HeaterActuator::forceOff() de-dupes against its
+    // already-off mirror and never reached the pin — the same latent bug, one output short of
+    // firing it.
+    if (!begun_) {
+      return;
+    }
+    digitalWrite(pin_, closed ? HIGH : LOW);
+  }
+
+private:
+  const int pin_;
+  bool begun_ = false;
 };
