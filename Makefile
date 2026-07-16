@@ -1,5 +1,6 @@
 # Convenience wrappers. PlatformIO remains the source of truth for builds/tests.
 .PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot \
+	perf perf-baseline perf-diff \
 	dev-flash dev-status dev-shot dev-touch touch-calib
 .DEFAULT_GOAL := help
 
@@ -72,6 +73,47 @@ sim:       ## Build the host UI simulator: make sim [SIM_PANEL=35]
 sim-shot: sim  ## Render the UI to a PNG: make sim-shot [SIM_PANEL=35] ARGS="click 160 120"
 	@mkdir -p $(dir $(SIM_OUT))
 	.pio/build/$(SIM_ENV)/program --out $(SIM_OUT) $(ARGS)
+
+# Host UI performance harness (perf/perf_main.cpp). SIM_PANEL=35 picks the 3.5" geometry, same
+# idiom as the sim. One PROCESS PER SCENARIO on purpose: lv_mem_monitor's max_used is a monotonic
+# high-water mark with no public reset, so scenarios sharing a process would contaminate each
+# other's peak.
+#
+# The numbers to trust across machines are the task COUNTS (exact, deterministic); the
+# microseconds only mean something as a before/after on one machine. Ground truth is the device
+# probe, not this.
+PERF_ENV = $(if $(filter 35,$(SIM_PANEL)),native_perf_35,native_perf)
+PERF_PANEL = $(if $(filter 35,$(SIM_PANEL)),35,28)
+PERF_ITERS ?= 50
+# The leak scenario reports one row per rebuild, and its signal is the SLOPE — a dozen rebuilds
+# show it as clearly as fifty and keep the table readable.
+PERF_LEAK_ITERS ?= 12
+PERF_SCENARIOS = home settings list stepper keypad press
+PERF_OUT ?= .pio/perf/$(PERF_PANEL).tsv
+PERF_BASELINE = perf/baseline/$(PERF_PANEL).tsv
+
+perf:      ## Build + run the host perf harness: make perf [SIM_PANEL=35]
+	@pio run -e $(PERF_ENV) >/dev/null
+	@mkdir -p $(dir $(PERF_OUT))
+	@printf '# git=%s\tdirty=%s\tpanel=%s\n' \
+		"$$(git rev-parse --short HEAD)" \
+		"$$(git diff --quiet && echo 0 || echo 1)" "$(PERF_PANEL)" > $(PERF_OUT)
+	@for s in $(PERF_SCENARIOS); do \
+		.pio/build/$(PERF_ENV)/program --scenario $$s --iters $(PERF_ITERS) \
+			| grep -v '^scenario	metric' >> $(PERF_OUT); \
+	done
+	@.pio/build/$(PERF_ENV)/program --scenario leak --iters $(PERF_LEAK_ITERS) \
+		| grep -v '^scenario	metric' >> $(PERF_OUT)
+	@column -t -s'	' $(PERF_OUT)
+	@echo "WROTE $(PERF_OUT)"
+
+perf-baseline: perf  ## Re-record the committed host baseline: make perf-baseline [SIM_PANEL=35]
+	@mkdir -p $(dir $(PERF_BASELINE))
+	@cp $(PERF_OUT) $(PERF_BASELINE)
+	@echo "BASELINE $(PERF_BASELINE) — review the git diff before committing"
+
+perf-diff: perf  ## Diff the current run against the committed baseline [SIM_PANEL=35]
+	@tools/perf-diff.sh $(PERF_BASELINE) $(PERF_OUT)
 
 # On-device UI dev loop (board on Micro-USB, WiFi creds in include/secrets.h — see the
 # ui-development skill). DEV_ENV picks the board, mirroring SIM_PANEL/CALIB_ENV; the default is
