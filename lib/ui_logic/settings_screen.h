@@ -82,6 +82,13 @@ private:
   // Which store field an open editor edits (drives commit routing).
   enum class EditField { None, BrightnessBias, ScreenBrightness, IdleTimeout, UvCap, ReflowCap };
 
+  // What a row of the Display & units panel does. The panel's rows are built conditionally (a
+  // board with no light sensor has no auto-brightness row at all), so the row INDEX no longer
+  // identifies the action — Open must dispatch on what was actually built, not on a number.
+  // Storing the mapping is what stops index 1 meaning "auto-brightness" on one board and
+  // "screen brightness" on another.
+  enum class DisplayRow { Units, AutoBrightness, Brightness };
+
   // Panel builders (each clears `parent_` and lays out its own content). Every actionable panel is
   // a selectable list (scroll + Up/Down + a per-row verb); About is a read-only scrolling column.
   void buildHub();
@@ -122,6 +129,10 @@ private:
   char reflow_value_[16]{};
   char bias_value_[16]{};
   char idle_value_[16]{};
+
+  // Row index -> action for the currently built Display & units panel (see DisplayRow).
+  DisplayRow display_rows_[3]{};
+  int display_row_count_ = 0;
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;

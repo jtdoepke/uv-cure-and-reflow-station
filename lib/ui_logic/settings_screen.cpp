@@ -24,20 +24,28 @@ enum HubIndex {
 };
 
 // A read-only informational row: label left, value/detail right (About; the fixed sleep rules).
+// Same anti-collision rules as the selectable list's rows — see create_selectable_list(). This
+// panel needs them most: About's values are the long ones ("320x480 portrait", a schema hash).
 void build_info_row(lv_obj_t *parent, const char *label, const char *value) {
   lv_obj_t *row = lv_obj_create(parent);
   theme::apply_list_row(row);
   lv_obj_set_width(row, lv_pct(100));
-  lv_obj_set_height(row, theme::LIST_ROW_H);
+  lv_obj_set_height(row, LV_SIZE_CONTENT);
+  lv_obj_set_style_min_height(row, theme::LIST_ROW_H, 0);
+  lv_obj_set_style_pad_ver(row, theme::PAD_S, 0);
   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(row, theme::PAD_M, 0);
   lv_obj_t *name = lv_label_create(row);
   lv_label_set_text(name, label);
+  lv_obj_set_flex_grow(name, 1);
+  lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
   if (value != nullptr) {
     lv_obj_t *val = lv_label_create(row);
     lv_label_set_text(val, value);
     lv_obj_set_style_text_color(val, theme::col(theme::TEXT_DIM), 0);
+    // Natural width, no wrap — see create_selectable_list() on why a max_width here clips.
   }
 }
 
@@ -240,11 +248,21 @@ void SettingsScreen::buildDisplayUnits() {
   // SelectableListModel skips disabled rows for ▲/▼ and refuses to open them — because a row that
   // says "Not fitted" answers the question, while a row that silently vanishes invites someone to
   // go looking for the setting they remember. The stored preference is untouched either way.
+  // Both brightness rows depend on whether this board has a light sensor — a capability that
+  // arrives as DATA (subj_has_ambient_light); this file must never see a board flag.
+  //
+  // With no sensor the auto-brightness row is OMITTED, not shown-and-disabled. It was disabled-
+  // but-visible at first, on the theory that "Not fitted" answers the question a vanished row
+  // invites someone to go looking for. That was wrong for this screen: a settings list is a list
+  // of things you can change, and a row that can never change on this hardware is furniture —
+  // it costs a line of a small screen, it draws the eye, and ▲/▼ skip past it anyway. (Rows that
+  // are merely not-yet-changeable, like the hub's "soon" ones, are a different case: those become
+  // real, so they stay.)
+  //
+  // The brightness row below then swaps meaning rather than disappearing: with a sensor it is a
+  // BIAS (a +/- trim on the ambient reading), without one it is the plain absolute level, because
+  // a trim on a constant is an indirection with no second term.
   const bool has_ldr = lv_subject_get_int(&subj_has_ambient_light) != 0;
-  const char *auto_value = !has_ldr ? "Not fitted" : (store_->autoBrightness() ? "On" : "Off");
-  // The third row follows the same capability. With a sensor it is a BIAS — a +/- trim on the
-  // ambient reading. Without one there is no reading to trim, so the same row becomes the plain
-  // absolute brightness: one control, whichever one is meaningful, never a bias against a constant.
   const char *bright_label = has_ldr ? "Brightness bias" : "Screen brightness";
   if (has_ldr) {
     SettingsStore::brightnessBiasConfig().format(store_->brightnessBias(), bias_value_,
@@ -253,12 +271,20 @@ void SettingsScreen::buildDisplayUnits() {
     SettingsStore::screenBrightnessConfig().format(store_->screenBrightnessPct(), bias_value_,
                                                    sizeof(bias_value_));
   }
-  const SelectableListItem items[3] = {
-      {"Temperature units", units_value, true, "Change"},
-      {"Auto-brightness", auto_value, has_ldr, "Toggle"},
-      {bright_label, bias_value_, true, "Edit"},
-  };
-  list_model_.init(items, 3, /*wrap=*/true);
+
+  SelectableListItem items[3];
+  int n = 0;
+  display_rows_[n] = DisplayRow::Units;
+  items[n++] = {"Temperature units", units_value, true, "Change"};
+  if (has_ldr) {
+    display_rows_[n] = DisplayRow::AutoBrightness;
+    items[n++] = {"Auto-brightness", store_->autoBrightness() ? "On" : "Off", true, "Toggle"};
+  }
+  display_rows_[n] = DisplayRow::Brightness;
+  items[n++] = {bright_label, bias_value_, true, "Edit"};
+  display_row_count_ = n;
+
+  list_model_.init(items, n, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::display_open, this);
   create_selectable_list(parent_, list_model_);
 }
@@ -315,25 +341,26 @@ void SettingsScreen::buildAbout() {
 // --- Per-panel Open dispatchers ---
 
 void SettingsScreen::onDisplayOpen(int index) {
-  switch (index) {
-  case 0: // Temperature units — a two-value enum; Open cycles it (no checkmark, §24).
+  if (index < 0 || index >= display_row_count_) {
+    return;
+  }
+  switch (display_rows_[index]) { // the built row's action, never the raw index — see DisplayRow
+  case DisplayRow::Units:         // a two-value enum; Open cycles it (no checkmark, §24).
     store_->setUnits(store_->units() == TempUnits::Celsius ? TempUnits::Fahrenheit
                                                            : TempUnits::Celsius);
     store_->save();
     publishToSubjects(); // subj_units → Home re-renders the chamber temp in the new unit
-    reselect(0);
+    reselect(index);
     break;
-  case 1: // Auto-brightness — a boolean; Open toggles it.
+  case DisplayRow::AutoBrightness: // a boolean; Open toggles it. Only built when a sensor exists.
     store_->setAutoBrightness(!store_->autoBrightness());
     store_->save();
-    reselect(1);
+    reselect(index);
     break;
-  case 2: // Brightness — a nudge field either way; which one depends on the board's sensor.
+  case DisplayRow::Brightness: // a nudge field either way; which one depends on the sensor.
     openEditor(lv_subject_get_int(&subj_has_ambient_light) != 0 ? EditField::BrightnessBias
                                                                 : EditField::ScreenBrightness,
                SettingsPage::DisplayUnits);
-    break;
-  default:
     break;
   }
 }

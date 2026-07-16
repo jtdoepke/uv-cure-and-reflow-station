@@ -15,10 +15,11 @@
 // cheap no-op between updates.
 //
 // Sleep (§17) is expressed as setAwake(false): the target collapses to 0 and the backlight
-// ramps *off* smoothly; setAwake(true) resumes normal auto behaviour, ramping back up from
-// wherever it is (no wake-flash). While asleep the floor does not apply (0 is intended) — a
-// fault forces a wake first (§22), so the floor is always in force whenever anything must be
-// legible.
+// ramps *off* smoothly. setAwake(true) wakes it **in one update, at full target level** — the
+// asymmetry is deliberate (see update()): a fade-out is the screen leaving on its own, while a
+// fade-in only delays the thing the operator just touched the screen to get. While asleep the
+// floor does not apply (0 is intended) — a fault forces a wake first (§22), so the floor is
+// always in force whenever anything must be legible.
 //
 // The LDR curve, floor/ceiling and filter/ramp time-constants are placeholders to be tuned on
 // real glass via the ui-development device loop (design.md §10 open item).
@@ -169,6 +170,13 @@ private:
 
   void update() {
     int32_t want = targetLevel();
+    // Waking is a step, sleeping is a fade — deliberately asymmetric (§17/§18). Ramping *up* only
+    // delays the thing the operator asked for: they touched a dark screen to see it, and easing
+    // in makes the machine feel slow to answer. Ramping *down* is the opposite — it is the screen
+    // leaving on its own, where a smooth fade reads as intent rather than as a fault, and where a
+    // last glance still catches it going.
+    const bool justWoke = awake_ && !wasAwake_;
+    wasAwake_ = awake_;
     if (!awake_) {
       heldTarget_ = 0; // sleep must reach 0 regardless of hysteresis
     } else {
@@ -181,8 +189,11 @@ private:
         heldTarget_ = want;
       }
     }
-    // Ease toward the held target by at most rampStep.
-    if (current_ < heldTarget_) {
+    // Ease toward the held target by at most rampStep — except on the wake, which lands in one
+    // update. No wake-flash risk: the target is the same level the screen would have eased to.
+    if (justWoke) {
+      current_ = heldTarget_;
+    } else if (current_ < heldTarget_) {
       current_ += cfg_.rampStep;
       if (current_ > heldTarget_) {
         current_ = heldTarget_;
@@ -205,6 +216,9 @@ private:
 
   bool enabled_ = true;
   bool awake_ = true;
+  // Starts TRUE so the very first update() is not mistaken for a wake: boot deliberately keeps
+  // its ramp up from black (current_ = 0), which is a power-on fade, not an answer to a touch.
+  bool wasAwake_ = true;
   int32_t biasPct_ = 0;
 
   bool started_ = false;

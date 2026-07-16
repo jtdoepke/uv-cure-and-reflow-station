@@ -14,6 +14,7 @@
 //     full fresh timeout before sleeping.
 //   - Any activity (a touch wake-tap, a fault, a door-open event) calls noteActivity() to wake
 //     and restart the timer.
+//   - Waking swallows input for wakeGuardMs — see inputGuarded().
 #pragma once
 
 #include <cstdint>
@@ -22,16 +23,46 @@ class SleepController {
 public:
   struct Config {
     uint32_t idleTimeoutMs = 120000; // ~2 min default (§17); configurable in Settings (§24)
+    // How long after waking the display lights but ignores touches. Consuming only the wake tap
+    // itself is not enough on a machine controller: you reach for a dark screen, it lights under
+    // your finger, and the *second* tap — already in flight, aimed at nothing in particular —
+    // lands on whatever the UI just drew there. A beat of dead time means the operator sees the
+    // screen before they can act on it. 1 s is long enough to break the double-tap reflex and
+    // short enough not to feel broken.
+    uint32_t wakeGuardMs = 1000;
   };
 
-  explicit SleepController(Config cfg) : idleTimeoutMs_(cfg.idleTimeoutMs) {}
+  explicit SleepController(Config cfg)
+      : idleTimeoutMs_(cfg.idleTimeoutMs), wakeGuardMs_(cfg.wakeGuardMs) {}
   SleepController() : SleepController(Config{}) {}
 
   // Wake and restart the inactivity timer. Called on any touch, and on a fault/door-open wake
-  // event (§17/§22 — never hide a fault behind a dark screen).
+  // event (§17/§22 — never hide a fault behind a dark screen). A wake (asleep -> awake) also arms
+  // the input guard below; activity while already awake does not, or every touch would be eaten.
   void noteActivity(uint32_t nowMs) {
+    if (!awake_) {
+      guardUntilMs_ = nowMs + wakeGuardMs_;
+      guardArmed_ = true;
+    }
     lastActivityMs_ = nowMs;
     awake_ = true;
+  }
+
+  // True while the screen is lit but must not act on touches (the caller reports them as
+  // RELEASED). Deliberately NOT "was asleep a moment ago": the guard is armed at the wake and
+  // disarms on its own, so a caller cannot forget to close it.
+  //
+  // Signed compare, for the reason spelled out in tick(): millis() wraps, and this must stay
+  // modular arithmetic rather than a timestamp comparison.
+  bool inputGuarded(uint32_t nowMs) {
+    if (!guardArmed_) {
+      return false;
+    }
+    if (static_cast<int32_t>(nowMs - guardUntilMs_) >= 0) {
+      guardArmed_ = false;
+      return false;
+    }
+    return true;
   }
 
   // Pushed from settings each loop (idleTimeoutMin() * 60000).
@@ -70,7 +101,10 @@ public:
 
 private:
   uint32_t idleTimeoutMs_;
+  uint32_t wakeGuardMs_;
   bool awake_ = true;
   bool started_ = false;
   uint32_t lastActivityMs_ = 0;
+  uint32_t guardUntilMs_ = 0;
+  bool guardArmed_ = false; // never armed at boot: nothing woke, so nothing is being guarded
 };

@@ -4,6 +4,7 @@
 // Advanced master toggle and the auto-brightness/units rows flip in place + persist, and a cap/idle
 // edit through the shared editors commits back into the store and republishes the cross-screen
 // subjects.
+#include <cstring>
 #include <unity.h>
 #include <lvgl.h>
 #include "src/debugging/test/lv_test.h"
@@ -116,21 +117,22 @@ void test_auto_brightness_toggle_persists(void) {
   TEST_ASSERT_TRUE(fs.saveCalls > 0);
 }
 
-// A board with no light sensor (the 3.5" panel) publishes subj_has_ambient_light = 0. The row
-// must then be inert rather than absent: opening it must not toggle the stored preference, and
-// must not persist anything. The capability reaches this screen as data — there is deliberately
-// no board flag to test against here.
-void test_auto_brightness_row_inert_without_sensor(void) {
+// A board with no light sensor (the 3.5" panel) publishes subj_has_ambient_light = 0, and the
+// auto-brightness row is then not built at all — a settings list lists things you can change, and
+// a row that can never change on this hardware is furniture. (It was briefly disabled-but-visible
+// showing "Not fitted"; that lost the argument.) The capability reaches this screen as data —
+// there is deliberately no board flag to test against here.
+void test_auto_brightness_row_absent_without_sensor(void) {
   lv_subject_set_int(&subj_has_ambient_light, 0);
   screen.begin(lv_screen_active(), store);
   open_row(ROW_DISPLAY);
   const bool before = store.autoBrightness();
 
-  // The model refuses to select a disabled row, so the toggle is unreachable — note this is NOT
-  // open_row(1): that would select(1) (refused, leaving row 0 selected) and then Open row 0,
-  // cycling the temperature units instead. The row being unselectable is the whole contract.
-  screen.listModel().select(1);
-  TEST_ASSERT_NOT_EQUAL_INT(1, screen.listModel().selected());
+  // Two rows only: units, then the absolute brightness. No auto row under any index.
+  TEST_ASSERT_EQUAL_INT(2, screen.listModel().count());
+  for (int i = 0; i < screen.listModel().count(); i++) {
+    TEST_ASSERT_NOT_EQUAL_INT(0, strcmp(screen.listModel().item(i).label, "Auto-brightness"));
+  }
 
   // The stored preference is left alone rather than clamped: it is a user preference, and it is
   // meaningful again the moment this firmware runs on a board that has a sensor.
@@ -138,12 +140,15 @@ void test_auto_brightness_row_inert_without_sensor(void) {
   TEST_ASSERT_EQUAL_INT(0, fs.saveCalls);
 }
 
-// The other half of the contract: with a sensor present (the default), the row is selectable.
-// Without this, the test above would still pass if the row were disabled unconditionally.
-void test_auto_brightness_row_selectable_with_sensor(void) {
+// The other half of the contract: with a sensor present (the default), the row IS built and
+// selectable. Without this, the test above would still pass if the row had simply been deleted
+// for every board.
+void test_auto_brightness_row_present_with_sensor(void) {
   lv_subject_set_int(&subj_has_ambient_light, 1);
   screen.begin(lv_screen_active(), store);
   open_row(ROW_DISPLAY);
+  TEST_ASSERT_EQUAL_INT(3, screen.listModel().count());
+  TEST_ASSERT_EQUAL_STRING("Auto-brightness", screen.listModel().item(1).label);
   screen.listModel().select(1);
   TEST_ASSERT_EQUAL_INT(1, screen.listModel().selected());
 }
@@ -186,10 +191,10 @@ void test_no_sensor_swaps_bias_for_absolute_brightness(void) {
   screen.begin(lv_screen_active(), store);
   open_row(ROW_DISPLAY);
 
-  // Row 2 is now "Screen brightness", is enabled (unlike the sensor-dependent auto row), and its
-  // editor edits the brightness — not the bias.
-  TEST_ASSERT_EQUAL_STRING("Screen brightness", screen.listModel().item(2).label);
-  open_row(2);
+  // With the auto row gone, the brightness is row 1 — and Open must still route by what was
+  // BUILT, not by a hard-coded index (that mapping is exactly what DisplayRow exists to keep).
+  TEST_ASSERT_EQUAL_STRING("Screen brightness", screen.listModel().item(1).label);
+  open_row(1);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Editor), static_cast<int>(screen.page()));
   TEST_ASSERT_TRUE(screen.isEditingScreenBrightness());
   TEST_ASSERT_FALSE(screen.isEditingBrightnessBias());
@@ -221,8 +226,8 @@ int main(int, char **) {
   RUN_TEST(test_open_categories_and_back);
   RUN_TEST(test_back_from_hub_calls_exit);
   RUN_TEST(test_advanced_master_toggle);
-  RUN_TEST(test_auto_brightness_row_inert_without_sensor);
-  RUN_TEST(test_auto_brightness_row_selectable_with_sensor);
+  RUN_TEST(test_auto_brightness_row_absent_without_sensor);
+  RUN_TEST(test_auto_brightness_row_present_with_sensor);
   RUN_TEST(test_no_sensor_swaps_bias_for_absolute_brightness);
   RUN_TEST(test_sensor_keeps_the_bias_row);
   RUN_TEST(test_units_cycle_persists_and_publishes);

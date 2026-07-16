@@ -216,11 +216,13 @@ static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
   // injector, and either way it is an ITouch (see injected_touch.h).
   int x = 0, y = 0;
   if (g_touch.getTouch(&x, &y)) { // already calibrated screen coords
-    // A touch always counts as activity. If it woke the screen, consume it: the wake tap lights
-    // the display without also actuating the control beneath it (§17).
-    bool wasAsleep = !g_sleep.awake();
-    g_sleep.noteActivity(millis());
-    if (wasAsleep) {
+    // A touch always counts as activity — including a guarded one, since someone is plainly
+    // there. But for the first second after a wake the screen only lights: it does not actuate
+    // whatever it just drew under the finger (§17). SleepController owns that window and arms it
+    // at the wake itself, so this reads as one rule rather than "was it asleep a moment ago".
+    const uint32_t touch_ms = millis();
+    g_sleep.noteActivity(touch_ms);
+    if (g_sleep.inputGuarded(touch_ms)) {
       data->state = LV_INDEV_STATE_RELEASED;
       return;
     }

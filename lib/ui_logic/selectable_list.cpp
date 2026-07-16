@@ -196,21 +196,39 @@ SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &mod
 
   for (int i = 0; i < model.count(); i++) {
     const SelectableListItem &it = model.item(i);
+    // Label left, value right — and they must never collide. Two content-sized labels in a
+    // SPACE_BETWEEN row simply overrun each other once the text is wider than the row: LVGL does
+    // not shrink them, it overlaps them, so a long label runs straight under its own value. The
+    // label therefore GROWS into the space the value leaves and WRAPS inside it, and the row's
+    // height follows its content (never below LIST_ROW_H, so short rows keep their touch size and
+    // the list still looks regular). Cheaper than eliding: on a 320 px panel these labels are the
+    // words the operator navigates by, and "Temperature li..." is not one of them.
     lv_obj_t *row = lv_obj_create(ui.list);
     theme::apply_list_row(row);
     lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, theme::LIST_ROW_H);
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(row, theme::LIST_ROW_H, 0);
+    lv_obj_set_style_pad_ver(row, theme::PAD_S, 0); // content-sized now, so it needs its own gap
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, theme::PAD_M, 0); // and a gap they cannot close
     lv_obj_set_user_data(row, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
 
     lv_obj_t *label = lv_label_create(row);
     lv_label_set_text(label, it.label);
+    lv_obj_set_flex_grow(label, 1);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     if (it.value != nullptr) {
       lv_obj_t *value = lv_label_create(row);
       lv_label_set_text(value, it.value);
       lv_obj_set_style_text_color(value, theme::col(theme::TEXT_DIM), 0);
+      // The value keeps its NATURAL width and does not wrap, so the label is the one that yields.
+      // Deliberately no max_width on it: a max_width clamps the box without re-flowing the text,
+      // so LV_LABEL_LONG_WRAP never fires and the tail is silently CLIPPED — trading an overlap
+      // for lost characters, which is worse. Wrapping needs a definite width, which is exactly
+      // what flex-grow gives the label above. Values here are short by design ("On", "100 %",
+      // "soon"); a settings value long enough to need wrapping is a value that wants shortening.
     }
 
     if (it.enabled) {

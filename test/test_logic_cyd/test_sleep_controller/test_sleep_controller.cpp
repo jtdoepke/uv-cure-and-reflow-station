@@ -92,8 +92,39 @@ void test_survives_millis_wrap(void) {
   TEST_ASSERT_FALSE(sc.awake());
 }
 
+// A wake tap lights the screen and then the UI must ignore touches briefly, so the second tap of
+// a reach-and-double-tap does not actuate whatever the UI just drew under the finger (§17).
+void test_wake_guards_input_for_a_beat(void) {
+  SleepController s(SleepController::Config{1000, 1000}); // 1 s idle, 1 s guard
+  s.tick(0, true);
+  s.tick(2000, true);
+  TEST_ASSERT_FALSE(s.awake()); // slept
+
+  s.noteActivity(2000); // the wake tap
+  TEST_ASSERT_TRUE(s.awake());
+  TEST_ASSERT_TRUE(s.inputGuarded(2000));  // the tap that woke it
+  TEST_ASSERT_TRUE(s.inputGuarded(2500));  // and a second one mid-guard
+  TEST_ASSERT_TRUE(s.inputGuarded(2999));  // right up to the edge
+  TEST_ASSERT_FALSE(s.inputGuarded(3000)); // then input works again
+
+  // Touching while already awake must NOT re-arm the guard, or every tap would be swallowed.
+  s.noteActivity(3100);
+  TEST_ASSERT_FALSE(s.inputGuarded(3100));
+}
+
+// Nothing woke, so nothing is guarded: a freshly booted screen is usable immediately.
+void test_boot_is_not_guarded(void) {
+  SleepController s;
+  s.tick(0, true);
+  TEST_ASSERT_TRUE(s.awake());
+  TEST_ASSERT_FALSE(s.inputGuarded(0));
+  TEST_ASSERT_FALSE(s.inputGuarded(500));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
+  RUN_TEST(test_wake_guards_input_for_a_beat);
+  RUN_TEST(test_boot_is_not_guarded);
   RUN_TEST(test_sleeps_after_timeout_when_idle);
   RUN_TEST(test_never_sleeps_while_not_allowed);
   RUN_TEST(test_activity_wakes_and_resets_timer);

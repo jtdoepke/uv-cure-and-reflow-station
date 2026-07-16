@@ -116,10 +116,12 @@ void test_sleep_ramps_backlight_off(void) {
   }
   TEST_ASSERT_EQUAL_UINT8(0, ab.level()); // fully off (floor bypassed while asleep)
 
-  // Waking resumes auto brightness, ramping back up from black.
+  // Waking resumes auto brightness at full level in ONE update — it does not ease back up from
+  // black. Asymmetric on purpose: see update(). (This line used to expect 16, i.e. a single
+  // rampStep, when waking faded in over ~4 s.)
   ab.setAwake(true);
   ab.tick(60U * 250U);
-  TEST_ASSERT_EQUAL_UINT8(16, ab.level());
+  TEST_ASSERT_EQUAL_UINT8(255, ab.level());
 }
 
 void test_bias_shifts_target_but_floor_always_wins(void) {
@@ -208,6 +210,32 @@ void test_manual_percent_still_cannot_defeat_the_safety_floor(void) {
   TEST_ASSERT_EQUAL_UINT8(48, ab.level());
 }
 
+// Waking must land at full level in ONE update, not ease in over ~1 s of rampStep=16 increments
+// (255/16 = 16 updates x 250 ms). The fade-OUT stays — the two directions are not symmetric.
+void test_wake_snaps_to_full_but_sleep_still_fades(void) {
+  FakeAmbientLight ldr;
+  FakeBacklight bl;
+  ldr.value = 0; // bright room -> target 255
+  AutoBrightness ab(ldr, bl);
+  settle(ab);
+  TEST_ASSERT_EQUAL_UINT8(255, ab.level());
+
+  // Sleep: still a smooth ramp down, and one update must NOT reach 0.
+  ab.setAwake(false);
+  ab.tick(6000);
+  TEST_ASSERT_TRUE(ab.level() > 0);   // eased, not snapped off
+  TEST_ASSERT_TRUE(ab.level() < 255); // but moving
+  for (int i = 1; i <= 24; i++) {
+    ab.tick(6000 + static_cast<uint32_t>(i) * 250U);
+  }
+  TEST_ASSERT_EQUAL_UINT8(0, ab.level()); // ...and it gets all the way there
+
+  // Wake: one update, straight to the target. This is the assertion that fails on a ramp.
+  ab.setAwake(true);
+  ab.tick(20000);
+  TEST_ASSERT_EQUAL_UINT8(255, ab.level());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_floor_respected_in_darkness);
@@ -217,6 +245,7 @@ int main(int, char **) {
   RUN_TEST(test_single_sample_spike_is_smoothed);
   RUN_TEST(test_sub_threshold_drift_is_held_by_hysteresis);
   RUN_TEST(test_sleep_ramps_backlight_off);
+  RUN_TEST(test_wake_snaps_to_full_but_sleep_still_fades);
   RUN_TEST(test_bias_shifts_target_but_floor_always_wins);
   RUN_TEST(test_disabled_holds_manual_nominal_with_bias);
   RUN_TEST(test_manual_percent_sets_the_level_exactly);
