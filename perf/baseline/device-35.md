@@ -180,3 +180,37 @@ across `lv_obj_clean` (see the Phase-0 commit):
 repaint a single frame. This is the same defect the host `leak_regression` reports as +800
 tasks/visit; here it is felt directly by a hand on the glass. `tasks_growth` must reach 0 after
 the fix, and Home redraw must return to the flat ~144 ms.
+
+## Screen caching (Home): a WIN — landed (2026-07-16)
+
+Nav cost decomposes into BUILD (`lv_obj_clean` + widget recreation) and RENDER (`lv_refr_now`,
+unavoidable with no framebuffer). Measured the split per transition on glass:
+
+| transition | build | render |
+|---|--:|--:|
+| → Settings | 62 ms | 178 ms |
+| → Home (rebuild) | 38 ms | 163 ms |
+
+Home is stateless and fully subject-bound, so it can be built ONCE and kept resident; returning to
+it becomes `lv_screen_load` instead of clean+rebuild. Measured result:
+
+| return-to-home | rebuild | **cached** |
+|---|--:|--:|
+| build | 38 ms | **2.6 ms** |
+| render | 163 ms | **112 ms** |
+| **total** | **203 ms** | **114 ms (−44%)** |
+
+The build saving is expected; the render saving is the real find — **a rebuilt screen's flex layout
+is invalid, so the first refresh after clean+create pays the layout recompute inside the render; a
+cached screen keeps its computed layout valid**, so the render is pixel work only (~50 ms of the
+163 ms was layout, not compositing). The `n` leak burst confirms it: nav Home redraw is now FLAT at
+~112 ms across 12 trips (was ~169 ms flat post-leak-fix), no rise. RAM: both trees resident is
+22 kB of the 62.9 kB LVGL pool (Home ~13.5 kB, Settings ~8.5 kB incremental) — well within budget.
+
+Pixel identity is by-construction (same tree, same subject-bound values, same geometry) and was
+confirmed on glass: with the bench controller (`esp32dev_control_bench`) connected/disconnected, the
+cached Home's link indicator + "Controller not responding" banner track `subj_link_state` correctly
+— the resident tree updates live through its observers. Settings is NOT cached (stateful: scroll /
+sub-page / working values — a cached instance would not be pixel-identical to a rebuild). Landed in
+`src_cyd/main.cpp` (`g_home_scr`); the general cacheability rule is in the ui-development
+architecture.md. Next lever for Settings would be a ScreenRouter + reset-on-show.

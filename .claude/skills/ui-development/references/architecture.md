@@ -76,6 +76,19 @@ lv_obj_add_event_cb(btn, EventHandler<MyScreen, &MyScreen::onClick>::thunk,
   **create-on-demand** (`lv_obj_delete()` on leave; less RAM, small switch latency).
   On this PSRAM-less board, default to **create-on-demand** and only pin a screen in
   memory if switch latency is actually felt.
+- **Home is the one pinned (cached) screen** — the realized exception to create-on-demand.
+  It is the always-returned-to hub and its rebuild was measured at ~89 ms on the 3.5"
+  (widget creation + the flex-layout recompute the first render pays after `lv_obj_clean`);
+  keeping it resident makes return-to-home a screen swap (`lv_screen_load`), 203 → 114 ms,
+  for ~9–14 kB of the 64 kB LVGL pool. See `src_cyd/main.cpp` (`g_home_scr`) and
+  `perf/baseline/device-35.md`.
+  - **A screen is safe to cache only if a resident instance re-shown renders pixels
+    identical to a fresh rebuild.** Two tests: (1) every runtime-changing value is
+    subject-bound (observers fire off-screen, so nothing goes stale — no imperative
+    one-shot sets of live data); (2) it holds no view-state a rebuild would reset (scroll,
+    selection/focus, sub-page, in-progress input, mid-flight animation). Home passes both;
+    Settings and the value editors fail (2). A failing screen becomes cacheable only behind
+    a **reset-on-show** step that forces that view-state back to the rebuild default.
 - Pass state between screens **through subjects, not constructor args** — a recreated
   screen re-reads current state for free, and hub-and-spoke navigation (design guide)
   stays stateless.
