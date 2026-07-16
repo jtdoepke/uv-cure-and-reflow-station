@@ -64,9 +64,30 @@ Home full redraw isolated by short-circuiting each element (`-D PERF_NO_GRID` / 
 | dot grid | ~13 ms | 10% |
 | (of which alpha blending, translucent tiles + hairlines) | ~11 ms | — |
 
-Render is **compositing-bound**: it is drawing the design's elements, each at ~40 cycles/pixel
-because the SW renderer runs unaccelerated from flash (LV_USE_DRAW_SW_ASM is NONE — no Xtensa
-backend — and IRAM placement overflows). None of the four has a pixel-safe cheaper path; each is
+### No bit-twiddling headroom left in the pixel loops (researched 2026-07-16)
+
+Checked whether SWAR / clever-blend tricks could speed the per-pixel math. They can't — LVGL 9.5
+already implements all of them in `lv_draw_sw_blend_to_rgb565_swapped.c`:
+
+- opaque fill: 32-bit stores (2 px/write), 8× unrolled (16 px/iteration), with alignment handling.
+- opaque copy: `lv_memcpy`.
+- mask/text (A4 glyph) blend: 2-px unrolled, reads the mask 16 bits at a time, and **skips
+  fully-opaque runs** (`mask16==0xFFFF` → straight copy) so the multiply-mix runs only on the thin
+  AA edges.
+
+The one unimplemented trick is the two-pixel SWAR *blend* (lvgl#5015) for those residual AA-edge
+and translucent-tile mixes (~38% of render is mask/alpha, but the mix is a small slice of that
+once the skip-paths fire). It was **never merged, does not preserve rounding** (so not
+pixel-identical), and needs the CUSTOM hook. A pixel-safe alternative for text specifically is a
+16-entry alpha LUT per (fg,bg) pair — but it needs a custom letter draw path and a constant
+background, which only holds for text on solid panels. Both are ~10 ms for real correctness risk.
+
+Render is **compositing-bound**, and specifically DISPATCH/per-chunk-overhead-bound, not
+pixel-math-bound: the DRAW_BUF_LINES sweep cut render 34% with identical pixels, i.e. ~44 ms was
+pure per-chunk overhead in LVGL 9's draw-task pipeline (a ~37% v8→v9 regression is reported
+upstream, lvgl#5459, closed not-planned). Each element is also ~40 cycles/pixel because the SW
+renderer runs unaccelerated from flash (LV_USE_DRAW_SW_ASM is NONE — no Xtensa backend that
+helps — and IRAM placement overflows). None of the four has a pixel-safe cheaper path; each is
 core to the design. The one systemic lever that cuts across all of them without touching pixels
 is **fewer, taller chunks** (DRAW_BUF_LINES) — a widget crossing chunks is re-drawn per chunk,
 so taller buffers cut the whole table proportionally. That is the documented deferred win
