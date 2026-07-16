@@ -769,10 +769,23 @@ is no OTA, and OTA is the controller's only field-reflash path once the oven is 
   rather than serving a perfectly-encoded black PNG — a tool that lies is worse than one that
   refuses. The simulator (`make sim-shot SIM_PANEL=35`) covers layout; the device loop is
   `dev-touch` + the serial trace.
+- **A custom draw callback MUST clip to `layer->_clip_area`** — on this hardware that is a
+  correctness rule, not an optimisation. With no PSRAM the display renders in **partial
+  scanline chunks** (`DRAW_BUF_LINES`), so a `LV_EVENT_DRAW_MAIN_*` callback on the screen
+  fires **once per chunk**, ~a dozen times per full redraw. §14's dot matrix originally
+  queued every dot on the panel each time: ~7,200 draw tasks per screen instead of ~600, and
+  a Home → Settings transition took **~3 s** on real glass. It also compounded with the
+  translucent tiles, whose every press forces the canvas beneath them to recomposite. The
+  simulator will not warn you — it renders the same pixels, just on a host CPU.
 - **The 3.5"'s contrast is a real design input, not a defect to tune out.** Its blacks sit grey
-  at every backlight level, which is a property of the glass. The ISA-101 dark theme (§23) is
-  built on colour against near-black, so it has less headroom here than the palette assumes —
-  **open (§10)**: re-check the palette on this glass before the enclosure is finalized.
+  at every backlight level, which is a property of the glass, and the §14 palette is built on
+  colour against near-black — so it has less headroom here than the palette assumes.
+  **CHECKED ON GLASS (2026-07-16) — the near-black canvas holds.** The "Azure Instrument"
+  palette (§14) was flashed to this panel and reviewed by eye: the azure accent separates
+  cleanly from the canvas, the 1 px hairlines and 2 px corner brackets both survive, and the
+  dot matrix reads. The hedge — lifting the canvas rather than deepening it, since no code
+  change can make this glass darker — was **not** needed and is not in the tree. Re-check if
+  the panel is ever swapped or filtered.
 
 ## 7. Persistence & configuration
 
@@ -1563,9 +1576,66 @@ Primary job: pick what to do, while making the machine's safety state unmissable
   (idle; unreachable during a run per the navigation lock) — and Run/Monitor,
   whose footer is the full-width STOP with no Back. Here, secondary actions live
   in the bottom row instead.
-- Grayscale base; **colour only for state** (green idle · amber heating/hot · red
-  fault); mode tiles neutral; danger-red reserved.
+- **Colour only for state** (green idle · amber heating/hot · red fault); mode tiles
+  neutral; danger-red reserved. See the palette below — the base is near-black rather
+  than grey, but the ~90 %-neutral discipline is unchanged.
 - Big-numbers-first readouts.
+- **Palette + line-art (DECIDED — "Azure Instrument", chosen from a rendered variant
+  sweep):** a **near-black canvas** (`#05070a`) with one **non-state accent**, azure
+  `#0a84ff`, carrying structure and live data; the three reserved state hues
+  (`#35d07f` green · `#ffb020` amber · `#ff3b30` red) appear for nothing else. Tokens
+  live in `lib/ui_logic/theme.h`; nothing outside it holds a colour.
+
+  The **sci-fi look and the ISA-101 discipline are the same visual grammar** — near-black
+  base, ~90 % neutral, one cool accent, mono numerics, thin line-art, red/amber alarm
+  semantics — which is why this cost a palette and some line-art rather than a redesign.
+  The FUI tropes that *do* conflict (everything glowing, ambient motion, tiny thin text,
+  gesture reliance, 3-D clutter, unconfirmed hazardous actions) are all things this panel
+  rejects anyway. Concretely adopted:
+  - **Accent hue is chosen for maximal distance from the state hues, not for looks.** Azure
+    beat cyan/teal candidates because a teal accent sits close enough to `IDLE` green to be
+    confusable at a glance through a glove. An accent that can be misread as a state stops
+    meaning "look here" and starts meaning "something is wrong".
+  - **Structure is drawn with widget borders, never glyphs** — a 1 px accent hairline
+    outlining every panel (**all four sides**: a rule on the top edge alone reads as an
+    underline on whatever sits above it), corner brackets, a faint dot matrix on the canvas.
+    The font carries ASCII + `°` + 7 icons and no box-drawing characters; borders also scale
+    with the mm-authored tokens, where a glyph would be frozen at one pixel size.
+  - **Buttons are bracketed outlines over the canvas, not filled slabs** — which is what
+    gives the dot matrix something to show through, and makes press feedback a *larger*
+    delta (outline → filled) than a slab changing shade.
+  - **Corner brackets mean "this is a touch target" — nothing else (DECIDED).** They are
+    2 px (twice the hairline) and sit on the object's outer bounds, so the hairline's ring
+    falls inside them and a corner reads as a *thickening of the outline*, not a second mark
+    beside it. The rule is enforced by construction: `theme.cpp` draws them from
+    `LV_OBJ_FLAG_CLICKABLE` — the same flag the click routing reads — so the affordance
+    cannot drift from the behaviour. Home binds that flag to the controller link, so a
+    dropped link strips the mode tiles of brackets *and* edge in the same frame, with no
+    code in the theme knowing what a link is.
+    - **Not everything that consumes a tap is a touch target.** A profile/settings list row
+      is *selected*, and the control you press to act on it is the footer's Open button —
+      so rows get no brackets. Spending the signal there puts it on the wrong widget and
+      makes a list of them read as noise.
+    - Disabled controls lose their edge *and* their brackets and recede into the canvas —
+      the opposite of LVGL's default, which brightens them.
+  - **Press acknowledgement is instant; only the release animates** (0 ms in, ~120 ms
+    ease-out). A press is a fact, not a transition, and the surest way never to miss the
+    100 ms budget is not to animate it. `lv_theme_default`'s press *grow* is cancelled
+    per-button: a `transform` forces LVGL to snapshot the widget to an intermediate layer,
+    which on a big tile is far more expensive than the fill change it decorates.
+  - **No gradients** (RGB565 bands, no dithering) and **no full-screen `lv_canvas`** (a
+    320×480 RGB565 buffer is ~300 kB and there is no PSRAM) — the dot matrix is a
+    draw-event that costs only the dirty region.
+  - **Motion only at power-on and for abnormality** (the ISA-101 rule): the sole
+    steady-state animation is the §22 alarm banner's *fill* pulsing 10 %→40 %; never its
+    border or text, because a blinking word is harder to read.
+- **Alert vocabulary (DECIDED)** — `theme.h`'s `apply_alert` / `apply_pill` /
+  `apply_fault_panel` / `alarm_pulse`, so §13's banners and §22's overlay inherit one
+  treatment. A hue-tinted **wash at 10 %** with a full-strength edge and text: the fill
+  only says *which colour the bar is*, and severity is ordered by saturation, not area.
+  Every one pairs colour with a ⚠/✓/✗ glyph **and** a word — never colour alone.
+  Reviewable without hardware via `make sim-shot ARGS=... --screen alerts`, the specimen
+  in `sim/sim_main.cpp`.
 - **Typography (DECIDED):** Red Hat Mono SemiBold, one weight, as the single UI font
   (`LV_FONT_DEFAULT`). A squared/technical monospace face for small-size legibility and
   digit disambiguation on the 320×240 panel — distinct `l 1 I` and a **slashed zero**

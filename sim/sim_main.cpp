@@ -4,8 +4,8 @@
 // rasterizer as the firmware), optionally injects scripted pointer events, and writes
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
-// Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings] [ACTION...]
-//   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH
+// Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings|alerts] [ACTION...]
+//   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
 // machine/link state (the real firmware fills these from telemetry; here we set them by hand).
@@ -36,7 +36,115 @@
 #include "selectable_list.h"
 #include "settings_screen.h"
 #include "subjects.h"
+#include "theme.h"
 #include "value_stepper.h"
+
+// --- `--screen alerts`: a STYLE SPECIMEN, not a product screen -------------------------------
+//
+// Shows the whole caution/alarm/fault vocabulary on one canvas so the reserved hues can be judged
+// against each other and against the accent — the thing you cannot see on Home, where only one
+// state is ever live at a time. The real fault overlay (design.md §22) has a taxonomy, an
+// acknowledge path and subjects behind it; this is its palette, not its behaviour.
+//
+// Lives here rather than in lib/ui_logic for exactly that reason: the STYLING it demonstrates is
+// in theme.cpp (apply_alert / apply_pill / apply_fault_panel), so §22 will inherit it. Only the
+// arrangement is sim-only.
+static void build_alert_specimen(lv_obj_t *scr) {
+  theme::apply_screen(scr);
+  theme::add_dot_grid(scr);
+  lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(scr, theme::PAD_S, 0);
+  lv_obj_set_style_pad_row(scr, theme::GAP, 0);
+  lv_obj_add_flag(scr, LV_OBJ_FLAG_SCROLLABLE); // the 2.8" panel cannot hold the whole vocabulary
+
+  auto caption = [&](const char *text) {
+    lv_obj_t *l = lv_label_create(scr);
+    lv_label_set_text(l, text);
+    theme::apply_caption(l);
+  };
+
+  // Status pills — the at-a-glance machine state (§14). Each is glyph + word + colour, so it
+  // survives being read by the ~1-in-12 men with red-green colour deficiency, or in greyscale.
+  caption("STATUS PILLS");
+  lv_obj_t *pills = lv_obj_create(scr);
+  theme::apply_row(pills);
+  lv_obj_set_width(pills, lv_pct(100));
+  lv_obj_set_height(pills, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
+
+  struct PillSpec {
+    const char *text;
+    uint32_t hue;
+  };
+  const PillSpec pill_specs[] = {
+      {LV_SYMBOL_OK " READY", theme::IDLE},
+      {LV_SYMBOL_WARNING " HOT", theme::WARN},
+      {LV_SYMBOL_CLOSE " FAULT", theme::FAULT},
+  };
+  for (const PillSpec &spec : pill_specs) {
+    lv_obj_t *p = lv_obj_create(pills);
+    theme::apply_pill(p, spec.hue);
+    lv_obj_set_size(p, LV_SIZE_CONTENT, theme::SECONDARY_H / 2);
+    lv_obj_t *t = lv_label_create(p);
+    lv_label_set_text(t, spec.text);
+    lv_obj_center(t);
+  }
+
+  // Caution (amber) — abnormal but not dangerous; the run continues.
+  caption("CAUTION - AMBER, STEADY");
+  lv_obj_t *caution = lv_obj_create(scr);
+  theme::apply_alert(caution, theme::WARN);
+  lv_obj_set_width(caution, lv_pct(100));
+  lv_obj_set_height(caution, LV_SIZE_CONTENT);
+  lv_obj_t *ct = lv_label_create(caution);
+  lv_label_set_text(ct, LV_SYMBOL_WARNING "  CAUTION - Door open");
+  lv_obj_center(ct);
+
+  // Alarm (red) — dangerous, live, and the one thing on the panel allowed to move.
+  caption("ALARM - RED, PULSING FILL");
+  lv_obj_t *alarm = lv_obj_create(scr);
+  theme::apply_alert(alarm, theme::FAULT);
+  lv_obj_set_width(alarm, lv_pct(100));
+  lv_obj_set_height(alarm, LV_SIZE_CONTENT);
+  lv_obj_t *at = lv_label_create(alarm);
+  lv_label_set_text(at, LV_SYMBOL_WARNING "  ALARM - Over-temperature");
+  lv_obj_center(at);
+  theme::alarm_pulse(alarm);
+
+  // The modal danger panel (§22): big plain-language cause first, code second, ack target last.
+  caption("FAULT OVERLAY - THE MODAL");
+  lv_obj_t *fault = lv_obj_create(scr);
+  theme::apply_fault_panel(fault);
+  lv_obj_set_width(fault, lv_pct(100));
+  lv_obj_set_height(fault, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(fault, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(fault, theme::PAD_S, 0);
+
+  lv_obj_t *ftag = lv_label_create(fault);
+  // ⚠ stays at the DEFAULT font size: big_font() carries digits/✓/✗/⌫ only, so a warning glyph
+  // set in it would render as a missing-glyph box.
+  lv_label_set_text(ftag, LV_SYMBOL_WARNING " FAULT");
+  lv_obj_set_style_text_color(ftag, theme::col(theme::FAULT), 0);
+
+  lv_obj_t *fcause = lv_label_create(fault);
+  lv_label_set_text(fcause, "Chamber over-temp");
+  lv_obj_set_width(fcause, lv_pct(100));
+  lv_label_set_long_mode(fcause, LV_LABEL_LONG_WRAP); // §22's causes are a table, not authored here
+  lv_obj_set_style_text_font(fcause, &theme::big_font(), 0);
+  lv_obj_set_style_text_color(fcause, theme::col(theme::TEXT), 0);
+
+  lv_obj_t *fcode = lv_label_create(fault);
+  lv_label_set_text(fcode, "Heater and UV are off.\nCode 3 - OVER_TEMP");
+  theme::apply_caption(fcode);
+
+  lv_obj_t *ack = lv_button_create(fault);
+  theme::apply_secondary(ack);
+  lv_obj_set_width(ack, lv_pct(100));
+  lv_obj_set_height(ack, theme::TOUCH_MIN); // the design guide's 10 mm floor, not a token guess
+  lv_obj_t *acklbl = lv_label_create(ack);
+  lv_label_set_text(acklbl, "Acknowledge");
+  lv_obj_center(acklbl);
+}
 
 // Non-persistent in-memory storage so the sim can build a SettingsStore (layout review only —
 // nothing is saved across runs).
@@ -84,8 +192,16 @@ static void settle(uint32_t max_ms = 1000) {
 // Render pending changes, then encode the display's full-frame buffer as a 24-bit PNG.
 // The test display runs in DIRECT render mode; we set its color format to RGB565 so the
 // rasterizer output matches the firmware exactly, and expand to RGB888 only here.
-static bool write_png(const char *path) {
-  settle();
+// `do_settle=false` is the `frame` action: capture RIGHT NOW, mid-animation. It exists only to
+// photograph motion — an infinite animation (the §22 alarm pulse) never settles, so `shot` waits
+// out its 1 s bound and captures whatever phase that lands on. Sampling a sequence of `frame`s
+// across a known period is the only honest way to show a pulse in a still medium. Everything
+// else must keep using `shot`: settling is what stops a screenshot reporting a transient blend
+// as a resting colour.
+static bool write_png(const char *path, bool do_settle = true) {
+  if (do_settle) {
+    settle();
+  }
   lv_refr_now(nullptr);
   lv_draw_buf_t *frame = lv_display_get_buf_active(sim_disp);
   if (frame == nullptr || frame->header.cf != LV_COLOR_FORMAT_RGB565) {
@@ -143,8 +259,10 @@ static bool parse_i32(const char *s, int32_t *out) {
 
 static int usage(const char *argv0) {
   std::fprintf(stderr,
-               "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings] [ACTION...]\n"
+               "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings|alerts]\n"
+               "          [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
+               "         frame PATH (unsettled capture - for photographing animation)\n"
                "         temp N | state idle|hot|running|fault | link ok|none|schema\n"
                "         sensor on|off (ambient-light sensor fitted; off = the 3.5\" board)\n",
                argv0);
@@ -215,6 +333,8 @@ int main(int argc, char **argv) {
     // temp cap, 60–250 °C, default 100.
     keypad_vm.init(NumericFieldConfig{60, 250, 1, 100, "°C", nullptr}, 100);
     create_numeric_keypad(lv_screen_active(), keypad_vm, "Target temp");
+  } else if (screen == "alerts") {
+    build_alert_specimen(lv_screen_active());
   } else if (screen == "home") {
     create_home_screen(lv_screen_active());
   } else {
@@ -259,6 +379,12 @@ int main(int argc, char **argv) {
       if (i >= tokens.size())
         return usage(argv[0]);
       if (!write_png(tokens[i++].c_str()))
+        return 2;
+    } else if (op == "frame") {
+      // Unsettled capture — see write_png. For photographing animation only.
+      if (i >= tokens.size())
+        return usage(argv[0]);
+      if (!write_png(tokens[i++].c_str(), false))
         return 2;
     } else if (op == "temp") {
       if (i >= tokens.size() || !parse_i32(tokens[i++].c_str(), &x))

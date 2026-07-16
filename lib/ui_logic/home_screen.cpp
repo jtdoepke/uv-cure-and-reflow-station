@@ -38,7 +38,9 @@ void on_chamber_changed(lv_observer_t *observer, lv_subject_t *) {
   int celsius = lv_subject_get_int(&subj_chamber_temp);
   bool fahrenheit = lv_subject_get_int(&subj_units) != 0;
   int shown = fahrenheit ? celsius * 9 / 5 + 32 : celsius;
-  lv_label_set_text_fmt(label, "Chamber %d %s", shown, fahrenheit ? "°F" : "°C");
+  // The word "CHAMBER" is a separate dim caption widget above this one (the FUI labelled-numeric
+  // column), so the value label carries the number alone.
+  lv_label_set_text_fmt(label, "%d %s", shown, fahrenheit ? "°F" : "°C");
 }
 
 // Build a labelled button and route its click to the view model. `on_click` is a captureless
@@ -67,6 +69,7 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   ui.root = parent;
 
   theme::apply_screen(parent);
+  theme::add_dot_grid(parent);
   lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(parent, theme::PAD_S, 0);
   lv_obj_set_style_pad_row(parent, theme::GAP, 0);
@@ -74,6 +77,7 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   // --- Header: title (left) + link indicator (right) ---
   lv_obj_t *header = lv_obj_create(parent);
   theme::apply_panel(header);
+  theme::add_hairline(header);
   lv_obj_set_width(header, lv_pct(100));
   lv_obj_set_height(header, theme::HEADER_H);
   lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
@@ -89,6 +93,8 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   // --- Status band: state badge (dot + word) left, live chamber temp right ---
   lv_obj_t *band = lv_obj_create(parent);
   theme::apply_panel(band);
+  // Outline only — a status band is not pressable, so it gets no brackets (§14).
+  theme::add_hairline(band);
   lv_obj_set_width(band, lv_pct(100));
   lv_obj_set_height(band, theme::BAND_H);
   lv_obj_set_flex_flow(band, LV_FLEX_FLOW_ROW);
@@ -112,17 +118,35 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   ui.state_label = lv_label_create(badge);
   lv_subject_add_observer_obj(&subj_run_state, on_state_label_changed, ui.state_label, nullptr);
 
-  ui.chamber_label = lv_label_create(band);
+  // The right-hand column: a dim "CHAMBER" caption over the live value — the FUI
+  // labelled-numeric column (§14).
+  lv_obj_t *chamber_col = lv_obj_create(band);
+  theme::apply_row(chamber_col);
+  lv_obj_set_size(chamber_col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(chamber_col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(chamber_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+  lv_obj_set_style_pad_gap(chamber_col, 0, 0);
+
+  lv_obj_t *chamber_caption = lv_label_create(chamber_col);
+  lv_label_set_text(chamber_caption, "CHAMBER");
+  theme::apply_caption(chamber_caption);
+
+  ui.chamber_label = lv_label_create(chamber_col);
   lv_subject_add_observer_obj(&subj_chamber_temp, on_chamber_changed, ui.chamber_label, nullptr);
   lv_subject_add_observer_obj(&subj_units, on_chamber_changed, ui.chamber_label, nullptr);
 
   // --- Banner: shown only when the link is unhealthy ---
-  ui.banner = lv_label_create(parent);
-  lv_label_set_text(ui.banner, LV_SYMBOL_WARNING " Controller not responding");
-  lv_obj_set_style_text_color(ui.banner, theme::col(theme::WARN), 0);
+  // The shared caution treatment (amber wash + amber edge + amber text), so this reads as the same
+  // kind of object as every other abnormal-state banner (§13/§22) rather than as loose amber text.
+  ui.banner = lv_obj_create(parent);
+  theme::apply_alert(ui.banner, theme::WARN);
   lv_obj_set_width(ui.banner, lv_pct(100));
-  lv_obj_set_style_pad_hor(ui.banner, theme::PAD_S, 0);
+  lv_obj_set_height(ui.banner, theme::BANNER_H);
   lv_obj_bind_flag_if_eq(ui.banner, &subj_link_state, LV_OBJ_FLAG_HIDDEN, LINK_OK);
+
+  lv_obj_t *banner_text = lv_label_create(ui.banner);
+  lv_label_set_text(banner_text, LV_SYMBOL_WARNING " Controller not responding");
+  lv_obj_center(banner_text);
 
   // --- Mode tiles: UV CURE / REFLOW. Big, neutral, and gated on a healthy link ---
   // The tiles stack in portrait and sit side by side in landscape. Gated on panel::kPortrait —

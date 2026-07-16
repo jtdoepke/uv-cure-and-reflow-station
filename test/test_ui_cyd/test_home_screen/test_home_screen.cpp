@@ -138,8 +138,12 @@ void test_state_and_temp_drive_the_band(void) {
   lv_subject_set_int(&subj_run_state, RUN_HOT);
   TEST_ASSERT_EQUAL_STRING("HOT", lv_label_get_text(ui.state_label));
 
+  // The band's readout carries the VALUE only: "CHAMBER" is a separate dim caption widget beside
+  // it (§14's labelled-numeric column). The unit stays on the value — it is part of the datum, not
+  // part of the label, and a number whose unit lives in a different widget is a misreading waiting
+  // to happen.
   lv_subject_set_int(&subj_chamber_temp, 118);
-  TEST_ASSERT_EQUAL_STRING("Chamber 118 °C", lv_label_get_text(ui.chamber_label));
+  TEST_ASSERT_EQUAL_STRING("118 °C", lv_label_get_text(ui.chamber_label));
 }
 
 // The chamber readout follows the units setting (§24): changing subj_units re-renders it in °F,
@@ -147,11 +151,11 @@ void test_state_and_temp_drive_the_band(void) {
 void test_chamber_follows_units_setting(void) {
   HomeScreen ui = create_home_screen(lv_screen_active());
   lv_subject_set_int(&subj_chamber_temp, 100);
-  TEST_ASSERT_EQUAL_STRING("Chamber 100 °C", lv_label_get_text(ui.chamber_label));
+  TEST_ASSERT_EQUAL_STRING("100 °C", lv_label_get_text(ui.chamber_label));
   lv_subject_set_int(&subj_units, 1); // °F: 100 °C -> 212 °F
-  TEST_ASSERT_EQUAL_STRING("Chamber 212 °F", lv_label_get_text(ui.chamber_label));
+  TEST_ASSERT_EQUAL_STRING("212 °F", lv_label_get_text(ui.chamber_label));
   lv_subject_set_int(&subj_units, 0); // back to °C
-  TEST_ASSERT_EQUAL_STRING("Chamber 100 °C", lv_label_get_text(ui.chamber_label));
+  TEST_ASSERT_EQUAL_STRING("100 °C", lv_label_get_text(ui.chamber_label));
 }
 
 int main(int, char **) {

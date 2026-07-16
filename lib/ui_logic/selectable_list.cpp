@@ -237,6 +237,13 @@ SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &mod
       lv_subject_add_observer_obj(sel, on_selection_changed, row, nullptr);
     } else {
       // "Coming soon": greyed, not selectable, not part of the highlight cycle.
+      //
+      // REMOVE, not merely "don't add": lv_obj_create sets LV_OBJ_FLAG_CLICKABLE on every object
+      // (lv_obj.c, `obj->flags = LV_OBJ_FLAG_CLICKABLE`), so the add_flag above is a no-op and a
+      // "soon" row was silently left clickable — swallowing presses it has no handler for, and
+      // claiming an affordance it does not have. The theme now draws its corner brackets from
+      // exactly this flag, so the lie had become visible.
+      lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_set_style_text_color(row, theme::col(theme::TEXT_DIM), 0);
       lv_obj_set_style_bg_color(row, theme::col(theme::TILE_DISABLED), 0);
     }

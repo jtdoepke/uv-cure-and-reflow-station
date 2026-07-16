@@ -1,9 +1,13 @@
-// theme — the single place the UI's visual language is defined. Follows the ISA-101 /
-// IEC 63303 high-performance-HMI discipline (see the ui-development design guide): a neutral
-// grayscale base with colour reserved for machine state (green idle · amber hot · red fault),
-// never decorative. Screens read colours/geometry from the constexpr tokens and style their
-// widgets through the apply_* helpers, so every screen looks the same and one edit here
-// restyles the whole UI.
+// theme — the single place the UI's visual language is defined ("Azure Instrument", design.md
+// §14). Follows the ISA-101 / IEC 63303 high-performance-HMI discipline (see the ui-development
+// design guide): a neutral near-black base, ~90% of the screen neutral, colour reserved for
+// machine state (green idle · amber hot · red fault) and never decorative, plus ONE non-state
+// accent carrying structure and live data. Screens read colours/geometry from the constexpr
+// tokens and style their widgets through the apply_*/add_* helpers, so every screen looks the
+// same and one edit here restyles the whole UI.
+//
+// The sci-fi look and the ISA-101 rules are the same visual grammar, which is why this is a
+// palette plus some line-art rather than a second, competing design.
 //
 // LVGL-only (no <Arduino.h>, no LovyanGFX): compiles for the firmware and the native_ui_cyd /
 // native_sim host targets alike.
@@ -46,19 +50,33 @@ inline const lv_font_t &big_font() {
   return THEME_BIG_FONT;
 }
 
-// Palette — neutral grayscale base + three reserved state colours (never used decoratively).
-constexpr uint32_t BG = 0x101216;      // screen background
-constexpr uint32_t SURFACE = 0x1b1f27; // header / status-band surface
-constexpr uint32_t TILE = 0x2a2f3a;    // neutral mode / secondary buttons
-constexpr uint32_t TILE_PRESSED = 0x3a414f;
-constexpr uint32_t TILE_DISABLED = 0x191c22;
-constexpr uint32_t SELECTED = 0x35507a; // highlighted list row (§23/§24 ▲/▼ selection) — a
-                                        // desaturated blue, distinct from the reserved state hues
-constexpr uint32_t TEXT = 0xeceff4;     // primary text
-constexpr uint32_t TEXT_DIM = 0x8a93a3; // secondary / disabled text
-constexpr uint32_t IDLE = 0x3fae6b;     // green — safe / normal
-constexpr uint32_t WARN = 0xe0a52b;     // amber — hot / warning
-constexpr uint32_t FAULT = 0xd94f3d;    // red   — danger (reserved)
+// Palette — "Azure Instrument" (chosen 2026-07-15 from a rendered variant sweep; design.md §14).
+//
+// A near-black canvas with ~90% of the screen neutral, one non-state accent carrying structure and
+// live data, and three reserved state hues that appear for nothing else. This is the ISA-101
+// discipline and the cinematic-FUI look at the same time — they are the same visual grammar, which
+// is why the restyle cost a palette and some line-art rather than a redesign.
+constexpr uint32_t BG = 0x05070a;      // near-black canvas
+constexpr uint32_t SURFACE = 0x0c1116; // header / status-band surface
+constexpr uint32_t TILE = 0x161d26; // mode / secondary buttons (drawn as outlines, see theme.cpp)
+constexpr uint32_t TILE_PRESSED = 0x24303d;
+constexpr uint32_t TILE_DISABLED = 0x0a0e12;
+constexpr uint32_t SELECTED = 0x0e3357; // highlighted list row (§23/§24 ▲/▼) — accent-tinted, and
+                                        // distinct from every reserved state hue
+constexpr uint32_t TEXT = 0xe3eaf0;     // primary text
+constexpr uint32_t TEXT_DIM = 0x6e7a85; // secondary / disabled text / captions
+constexpr uint32_t IDLE = 0x35d07f;     // green — safe / normal
+constexpr uint32_t WARN = 0xffb020;     // amber — hot / warning
+constexpr uint32_t FAULT = 0xff3b30;    // red   — danger (reserved)
+
+// The accent: structure, and "this is the live datum". A fourth, NON-state hue — it must never be
+// readable as green/amber/red, or it stops meaning "look here" and starts meaning "something is
+// wrong". Azure is a true blue rather than a cyan precisely because it is the furthest of the
+// candidates from all three state hues; a teal accent sat close enough to IDLE green to be
+// confusable at a glance through a glove, which is the failure this rule exists to prevent.
+constexpr uint32_t ACCENT = 0x0a84ff;
+constexpr uint32_t ACCENT_DIM = 0x14456f; // the accent, receded — for rules that must not shout
+constexpr uint32_t GRID = 0x24384e;       // background dot matrix; barely-there by construction
 
 // Geometry, authored in MILLIMETRES and converted at compile time from the panel's pixel pitch
 // (lib/panel/panel.h, set per board in platformio.ini). The design guide's rules are physical —
@@ -80,6 +98,15 @@ constexpr int32_t KEYPAD_RAIL_W = panel::pxFromMmX10(171); // keypad's OK/back r
 // List rows (§23/§24) are navigated by the big ▲/▼ footer, so they need not be touch targets and
 // can be compact.
 constexpr int32_t LIST_ROW_H = panel::pxFromMmX10(71);
+
+// Line-art geometry (the FUI structure). Not covered by the static_asserts below: these are new
+// tokens, so there is no 2.8" original for them to drift from.
+constexpr int32_t HAIRLINE = 1;  // px: a rule is a rendering detail, like RADIUS
+constexpr int32_t BRACKET_W = 2; // px, likewise — and deliberately 2x HAIRLINE, so a bracket reads
+                                 // as a thickening of the outline it sits on rather than a
+                                 // separate mark beside it
+constexpr int32_t BRACKET = panel::pxFromMmX10(20);   // corner-bracket arm length
+constexpr int32_t GRID_STEP = panel::pxFromMmX10(25); // dot-matrix pitch
 
 // The mm figures above were reverse-engineered from the 2.8" board's hand-derived px literals, so
 // on THAT panel they must still produce exactly the old numbers — otherwise this conversion
@@ -105,5 +132,49 @@ void apply_secondary(lv_obj_t *btn);      // secondary-row button
 void apply_stepper_button(lv_obj_t *btn); // large −/+ button, big glyph (value-stepper, §24)
 void apply_keypad_key(lv_obj_t *btn);     // keypad digit/control key, big glyph (keypad, §26)
 void apply_list_row(lv_obj_t *obj);       // selectable-list row surface (§23/§24)
+
+// Line-art — the structure that makes the panel read as instrumentation rather than as an app.
+//
+// All of it is drawn with widget BORDERS, not glyphs: the font carries ASCII + ° + 7 icons and no
+// box-drawing characters (fonts/README.md). Borders also scale with the mm tokens, where a glyph
+// would be frozen at one pixel size.
+void add_hairline(lv_obj_t *obj); // 1 px accent outline, all four sides
+void add_dot_grid(lv_obj_t *scr); // background dot matrix, drawn behind every panel
+
+// Corner brackets — the "this is a touch target" mark, and the ONLY thing that carries it.
+// Self-policing: it draws only while the object has LV_OBJ_FLAG_CLICKABLE and is not disabled,
+// which is the same flag the click routing reads, so a bracket cannot outlive the press it
+// promises. Do not spend it on things that merely consume a tap (a selectable list row is
+// selected; the control you press is the footer's Open) — see design.md §14.
+void add_brackets(lv_obj_t *obj);
+
+// The dim, tracked caption of the FUI "labelled numeric column" — the label BESIDE or ABOVE a
+// value. (Its partner, a big-mono readout role, waits for Run/Monitor (§15), the first screen
+// with a datum worth that much of the panel.)
+void apply_caption(lv_obj_t *label);
+
+// --- Alert vocabulary (§13 cross-cutting overlays, §22 fault overlay) --------------------------
+//
+// `hue` is a reserved STATE colour — WARN for caution, FAULT for alarm — never ACCENT. These
+// helpers style the container only: the redundant cue (a ⚠ glyph and a word like "CAUTION") is
+// the caller's job, because ISA-101 forbids colour-only state and no style can enforce that.
+//
+// Glyph note: the ⚠/✓/✗ icons are merged into the 14/16 px fonts ONLY — big_font() carries
+// digits, ✓, ✗ and ⌫. A ⚠ set in big_font() renders as a missing-glyph box (fonts/README.md).
+
+// A full-width banner: hue-tinted fill, hue edge, hue text. Caution and alarm differ only in hue.
+void apply_alert(lv_obj_t *obj, uint32_t hue);
+
+// A status pill — rounded, hue-tinted, hue-edged. Pair with a glyph + word ("✓ READY").
+void apply_pill(lv_obj_t *obj, uint32_t hue);
+
+// The §22 modal danger panel: a heavy FAULT edge over an opaque ground, so it reads as a thing
+// that has taken over the screen rather than a thing drawn on it.
+void apply_fault_panel(lv_obj_t *obj);
+
+// Infinite fill-opacity pulse for an ACTIVE alarm — the one steady-state motion ISA-101 permits,
+// and only ever redundant with the icon + word + colour already on the banner. Call
+// lv_anim_delete(obj, nullptr) when the condition clears.
+void alarm_pulse(lv_obj_t *obj);
 
 } // namespace theme
