@@ -53,6 +53,24 @@ public:
   void setEnabled(bool on) { enabled_ = on; }
   void setBias(int32_t percent) { biasPct_ = percent; }
 
+  // The level used while auto is OFF, as a percent of full scale — the whole setting on a board
+  // with no light sensor, where a bias would be a trim on a constant (§18). Percent because that
+  // is what the user is shown and what SettingsStore persists; levels stop at this boundary.
+  //
+  // The floor still applies downstream in targetLevel(), and that is deliberate: it is the
+  // non-defeatable safety minimum, not this field's business to escape. SCREEN_BRIGHTNESS_MIN_PCT
+  // is pitched above it so the two never fight — see settings_defaults.h.
+  void setManualPercent(int32_t percent) {
+    int32_t level = percent * 255 / 100;
+    if (level < 0) {
+      level = 0;
+    }
+    if (level > 255) {
+      level = 255;
+    }
+    cfg_.manualNominal = static_cast<uint8_t>(level);
+  }
+
   // Sleep/wake gate (§17): false => ramp the backlight off; true => resume auto brightness.
   void setAwake(bool awake) { awake_ = awake; }
 

@@ -10,6 +10,7 @@
 
 #include "helpers/fake_settings_storage.h"
 #include "settings_defaults.h"
+#include "auto_brightness.h" // the safety floor this field must stay clear of
 #include "settings_store.h"
 
 void setUp(void) {}
@@ -25,6 +26,8 @@ void test_defaults_on_blank_device(void) {
   TEST_ASSERT_TRUE(store.autoBrightness());
   TEST_ASSERT_FALSE(store.advancedUnlocked());
   TEST_ASSERT_EQUAL_INT32(settings_defaults::BRIGHTNESS_BIAS_DEFAULT, store.brightnessBias());
+  TEST_ASSERT_EQUAL_INT32(settings_defaults::SCREEN_BRIGHTNESS_DEFAULT_PCT,
+                          store.screenBrightnessPct());
   TEST_ASSERT_EQUAL_INT32(settings_defaults::IDLE_TIMEOUT_DEFAULT_MIN, store.idleTimeoutMin());
   TEST_ASSERT_EQUAL_INT32(settings_defaults::UV_CAP_DEFAULT, store.uvMaxCap());
   TEST_ASSERT_EQUAL_INT32(settings_defaults::REFLOW_CAP_DEFAULT, store.reflowMaxCap());
@@ -41,6 +44,7 @@ void test_save_load_round_trip(void) {
     store.setAutoBrightness(false);
     store.setAdvancedUnlocked(true);
     store.setBrightnessBias(15);
+    store.setScreenBrightnessPct(60);
     store.setIdleTimeoutMin(7);
     store.setUvMaxCap(110);
     store.setReflowMaxCap(240);
@@ -55,6 +59,7 @@ void test_save_load_round_trip(void) {
   TEST_ASSERT_FALSE(reloaded.autoBrightness());
   TEST_ASSERT_TRUE(reloaded.advancedUnlocked());
   TEST_ASSERT_EQUAL_INT32(15, reloaded.brightnessBias());
+  TEST_ASSERT_EQUAL_INT32(60, reloaded.screenBrightnessPct()); // survives a restart (§18)
   TEST_ASSERT_EQUAL_INT32(7, reloaded.idleTimeoutMin());
   TEST_ASSERT_EQUAL_INT32(110, reloaded.uvMaxCap());
   TEST_ASSERT_EQUAL_INT32(240, reloaded.reflowMaxCap());
@@ -158,11 +163,37 @@ void test_restore_defaults(void) {
 void test_field_configs_route_to_expected_editor(void) {
   TEST_ASSERT_TRUE(SettingsStore::idleTimeoutConfig().usesStepper());
   TEST_ASSERT_TRUE(SettingsStore::brightnessBiasConfig().usesStepper());
+  TEST_ASSERT_TRUE(SettingsStore::screenBrightnessConfig().usesStepper());
   TEST_ASSERT_FALSE(SettingsStore::uvCapConfig().usesStepper());     // wide range -> keypad
   TEST_ASSERT_FALSE(SettingsStore::reflowCapConfig().usesStepper()); // wide range -> keypad
   // The cap editors' ceiling is the hard-max, so the keypad refuses anything above it by design.
   TEST_ASSERT_EQUAL_INT32(settings_defaults::UV_HARD_MAX, SettingsStore::uvCapConfig().max);
   TEST_ASSERT_EQUAL_INT32(settings_defaults::REFLOW_HARD_MAX, SettingsStore::reflowCapConfig().max);
+}
+
+// The screen-brightness floor is the reason this field exists in the shape it does: it must be
+// impossible to set the screen so dark you cannot find the control that brightens it again.
+// Pinned here rather than trusted to the editor, because the store clamps a hand-written or
+// downgraded blob too.
+void test_screen_brightness_cannot_go_dark(void) {
+  FakeSettingsStorage fs;
+  SettingsStore store(fs);
+  store.load();
+
+  store.setScreenBrightnessPct(0);
+  TEST_ASSERT_EQUAL_INT32(settings_defaults::SCREEN_BRIGHTNESS_MIN_PCT,
+                          store.screenBrightnessPct());
+  store.setScreenBrightnessPct(-50);
+  TEST_ASSERT_EQUAL_INT32(settings_defaults::SCREEN_BRIGHTNESS_MIN_PCT,
+                          store.screenBrightnessPct());
+  store.setScreenBrightnessPct(500);
+  TEST_ASSERT_EQUAL_INT32(settings_defaults::SCREEN_BRIGHTNESS_MAX_PCT,
+                          store.screenBrightnessPct());
+
+  // And the floor must stay clear of AutoBrightness's non-defeatable safety floor (48/255), or the
+  // bottom of the range would silently clamp against it and those steps would do nothing at all.
+  const int32_t min_level = settings_defaults::SCREEN_BRIGHTNESS_MIN_PCT * 255 / 100;
+  TEST_ASSERT_GREATER_THAN_INT32(AutoBrightness::Config{}.floorLevel, min_level);
 }
 
 int main(int, char **) {
@@ -175,5 +206,6 @@ int main(int, char **) {
   RUN_TEST(test_short_blob_falls_back_to_defaults);
   RUN_TEST(test_restore_defaults);
   RUN_TEST(test_field_configs_route_to_expected_editor);
+  RUN_TEST(test_screen_brightness_cannot_go_dark);
   return UNITY_END();
 }

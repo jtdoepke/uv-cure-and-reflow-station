@@ -61,6 +61,14 @@ public:
   }
   int32_t liveBrightnessBias() { return stepper_vm_.value(); }
 
+  // The same live-preview seam for the absolute screen-brightness field a no-sensor board shows
+  // instead (§18). Preview matters more here than for the bias: this control IS the brightness, so
+  // without it you would be dialling a number and hoping.
+  bool isEditingScreenBrightness() const {
+    return page_ == SettingsPage::Editor && editing_ == EditField::ScreenBrightness;
+  }
+  int32_t liveScreenBrightness() { return stepper_vm_.value(); }
+
   // Exit seam: fired when Back is pressed on the hub. Home is the caller's to rebuild.
   void setExitHandler(void (*cb)(void *user_data), void *user_data);
 
@@ -72,7 +80,7 @@ public:
 
 private:
   // Which store field an open editor edits (drives commit routing).
-  enum class EditField { None, BrightnessBias, IdleTimeout, UvCap, ReflowCap };
+  enum class EditField { None, BrightnessBias, ScreenBrightness, IdleTimeout, UvCap, ReflowCap };
 
   // Panel builders (each clears `parent_` and lays out its own content). Every actionable panel is
   // a selectable list (scroll + Up/Down + a per-row verb); About is a read-only scrolling column.

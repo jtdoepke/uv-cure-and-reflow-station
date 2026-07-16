@@ -177,6 +177,44 @@ void test_idle_timeout_edit_uses_stepper(void) {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::SleepWake), static_cast<int>(screen.page()));
 }
 
+// A board with no light sensor swaps the bias row for a plain absolute brightness control: a bias
+// is a trim on an ambient reading, and with no reading it would be a trim on a constant. The
+// capability arrives as DATA (subj_has_ambient_light) — there is deliberately no board flag for
+// this screen to test against.
+void test_no_sensor_swaps_bias_for_absolute_brightness(void) {
+  lv_subject_set_int(&subj_has_ambient_light, 0);
+  screen.begin(lv_screen_active(), store);
+  open_row(ROW_DISPLAY);
+
+  // Row 2 is now "Screen brightness", is enabled (unlike the sensor-dependent auto row), and its
+  // editor edits the brightness — not the bias.
+  TEST_ASSERT_EQUAL_STRING("Screen brightness", screen.listModel().item(2).label);
+  open_row(2);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Editor), static_cast<int>(screen.page()));
+  TEST_ASSERT_TRUE(screen.isEditingScreenBrightness());
+  TEST_ASSERT_FALSE(screen.isEditingBrightnessBias());
+
+  const int32_t before_bias = store.brightnessBias();
+  screen.stepperVm().onMinus();                               // 100 -> 90
+  TEST_ASSERT_EQUAL_INT32(90, screen.liveScreenBrightness()); // live preview, pre-commit
+  screen.stepperVm().onSave();
+  TEST_ASSERT_EQUAL_INT32(90, store.screenBrightnessPct());
+  TEST_ASSERT_EQUAL_INT32(before_bias, store.brightnessBias()); // the bias is left alone
+  TEST_ASSERT_TRUE(fs.saveCalls > 0);                           // persisted -> survives a restart
+}
+
+// The other half: with a sensor the row is still the bias, so the test above cannot pass by the
+// screen having simply dropped the bias field.
+void test_sensor_keeps_the_bias_row(void) {
+  lv_subject_set_int(&subj_has_ambient_light, 1);
+  screen.begin(lv_screen_active(), store);
+  open_row(ROW_DISPLAY);
+  TEST_ASSERT_EQUAL_STRING("Brightness bias", screen.listModel().item(2).label);
+  open_row(2);
+  TEST_ASSERT_TRUE(screen.isEditingBrightnessBias());
+  TEST_ASSERT_FALSE(screen.isEditingScreenBrightness());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_shows_hub);
@@ -185,6 +223,8 @@ int main(int, char **) {
   RUN_TEST(test_advanced_master_toggle);
   RUN_TEST(test_auto_brightness_row_inert_without_sensor);
   RUN_TEST(test_auto_brightness_row_selectable_with_sensor);
+  RUN_TEST(test_no_sensor_swaps_bias_for_absolute_brightness);
+  RUN_TEST(test_sensor_keeps_the_bias_row);
   RUN_TEST(test_units_cycle_persists_and_publishes);
   RUN_TEST(test_auto_brightness_toggle_persists);
   RUN_TEST(test_uv_cap_edit_commits_and_publishes);

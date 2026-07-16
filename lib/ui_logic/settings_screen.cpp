@@ -241,12 +241,21 @@ void SettingsScreen::buildDisplayUnits() {
   // go looking for the setting they remember. The stored preference is untouched either way.
   const bool has_ldr = lv_subject_get_int(&subj_has_ambient_light) != 0;
   const char *auto_value = !has_ldr ? "Not fitted" : (store_->autoBrightness() ? "On" : "Off");
-  SettingsStore::brightnessBiasConfig().format(store_->brightnessBias(), bias_value_,
-                                               sizeof(bias_value_));
+  // The third row follows the same capability. With a sensor it is a BIAS — a +/- trim on the
+  // ambient reading. Without one there is no reading to trim, so the same row becomes the plain
+  // absolute brightness: one control, whichever one is meaningful, never a bias against a constant.
+  const char *bright_label = has_ldr ? "Brightness bias" : "Screen brightness";
+  if (has_ldr) {
+    SettingsStore::brightnessBiasConfig().format(store_->brightnessBias(), bias_value_,
+                                                 sizeof(bias_value_));
+  } else {
+    SettingsStore::screenBrightnessConfig().format(store_->screenBrightnessPct(), bias_value_,
+                                                   sizeof(bias_value_));
+  }
   const SelectableListItem items[3] = {
       {"Temperature units", units_value, true, "Change"},
       {"Auto-brightness", auto_value, has_ldr, "Toggle"},
-      {"Brightness bias", bias_value_, true, "Edit"},
+      {bright_label, bias_value_, true, "Edit"},
   };
   list_model_.init(items, 3, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::display_open, this);
@@ -313,8 +322,10 @@ void SettingsScreen::onDisplayOpen(int index) {
     store_->save();
     reselect(1);
     break;
-  case 2: // Brightness bias — a nudge field; Open edits it.
-    openEditor(EditField::BrightnessBias, SettingsPage::DisplayUnits);
+  case 2: // Brightness — a nudge field either way; which one depends on the board's sensor.
+    openEditor(lv_subject_get_int(&subj_has_ambient_light) != 0 ? EditField::BrightnessBias
+                                                                : EditField::ScreenBrightness,
+               SettingsPage::DisplayUnits);
     break;
   default:
     break;
@@ -342,6 +353,11 @@ void SettingsScreen::openEditor(EditField field, SettingsPage return_page) {
     cfg = SettingsStore::brightnessBiasConfig();
     title = "Brightness bias";
     initial = store_->brightnessBias();
+    break;
+  case EditField::ScreenBrightness:
+    cfg = SettingsStore::screenBrightnessConfig();
+    title = "Screen brightness";
+    initial = store_->screenBrightnessPct();
     break;
   case EditField::IdleTimeout:
     cfg = SettingsStore::idleTimeoutConfig();
@@ -385,6 +401,9 @@ void SettingsScreen::commitEditor(int32_t value) {
   switch (editing_) {
   case EditField::BrightnessBias:
     store_->setBrightnessBias(value);
+    break;
+  case EditField::ScreenBrightness:
+    store_->setScreenBrightnessPct(value);
     break;
   case EditField::IdleTimeout:
     store_->setIdleTimeoutMin(value);

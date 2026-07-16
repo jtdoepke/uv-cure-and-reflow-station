@@ -167,6 +167,47 @@ void test_disabled_holds_manual_nominal_with_bias(void) {
   TEST_ASSERT_EQUAL_INT(0, ldr.reads);      // LDR not sampled while auto is off
 }
 
+// setManualPercent is the whole brightness control on a board with no light sensor (§18): the
+// stored Screen brightness is pushed in as the manual level every loop, so it must land exactly,
+// not approximately, and must keep working when re-set live (the editor's preview re-pushes it on
+// every tick while the user dials).
+void test_manual_percent_sets_the_level_exactly(void) {
+  FakeAmbientLight ldr;
+  FakeBacklight bl;
+  AutoBrightness ab(ldr, bl);
+  ab.setEnabled(false);
+  ab.setBias(0);
+
+  ab.setManualPercent(100);
+  settle(ab);
+  TEST_ASSERT_EQUAL_UINT8(255, ab.level());
+
+  ab.setManualPercent(60); // 60% of 255 = 153
+  settle(ab);
+  TEST_ASSERT_EQUAL_UINT8(153, ab.level());
+
+  TEST_ASSERT_EQUAL_INT(0, ldr.reads); // still never samples a sensor that is not there
+}
+
+// The safety floor is not this field's to escape: below it, the level clamps. The settings floor
+// (SCREEN_BRIGHTNESS_MIN_PCT = 20%) is pitched above it precisely so the user never meets this
+// clamp — but if someone lowers that constant, this is the behaviour they would be shipping.
+void test_manual_percent_still_cannot_defeat_the_safety_floor(void) {
+  FakeAmbientLight ldr;
+  FakeBacklight bl;
+  AutoBrightness ab(ldr, bl);
+  ab.setEnabled(false);
+  ab.setBias(0);
+
+  ab.setManualPercent(20); // the settings minimum: 51 > floor 48, so it lands untouched
+  settle(ab);
+  TEST_ASSERT_EQUAL_UINT8(51, ab.level());
+
+  ab.setManualPercent(0); // below the floor -> clamped, NOT black
+  settle(ab);
+  TEST_ASSERT_EQUAL_UINT8(48, ab.level());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_floor_respected_in_darkness);
@@ -178,5 +219,7 @@ int main(int, char **) {
   RUN_TEST(test_sleep_ramps_backlight_off);
   RUN_TEST(test_bias_shifts_target_but_floor_always_wins);
   RUN_TEST(test_disabled_holds_manual_nominal_with_bias);
+  RUN_TEST(test_manual_percent_sets_the_level_exactly);
+  RUN_TEST(test_manual_percent_still_cannot_defeat_the_safety_floor);
   return UNITY_END();
 }

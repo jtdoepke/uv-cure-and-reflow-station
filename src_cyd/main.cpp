@@ -71,13 +71,11 @@ static Esp32AmbientLight g_ambient(kAmbientPin);
 #else
 static NullAmbientLight g_ambient;
 #endif
-// Everything but the manual level stays AutoBrightness's own policy (§18); the level a board
-// without a sensor sits at is a fact about that board's panel, so it comes from cyd_board.h.
-static AutoBrightness g_auto_brightness(g_ambient, g_display, [] {
-  AutoBrightness::Config c;
-  c.manualNominal = kManualBacklight;
-  return c;
-}());
+// Stock config (§18). A board with no sensor does not need a board-specific manual level here: the
+// loop pushes the user's stored Screen brightness in as the manual level every iteration, before
+// the first tick(), so anything set at construction would be overwritten before it ever lit a
+// pixel. Its default lives with the other settings defaults, where the user can move it.
+static AutoBrightness g_auto_brightness(g_ambient, g_display);
 static SleepController g_sleep;
 
 // CYD <-> controller link (§9). The UART, its pins and its buffer sizing live in cyd_board.h —
@@ -393,12 +391,27 @@ void loop() {
   // pin the backlight at maximum. The setting is left stored rather than clamped — it is a user
   // preference, and it is correct again the moment this firmware runs on a board that has an LDR.
   g_auto_brightness.setEnabled(kHasAmbientLight && g_settings.autoBrightness());
-  // Brightness bias: normally the stored value, but while the bias stepper is open, preview the
-  // in-progress value live so the screen brightens/dims as you dial it (§18/§24).
-  int32_t bias = g_settings_screen.isEditingBrightnessBias()
-                     ? g_settings_screen.liveBrightnessBias()
-                     : g_settings.brightnessBias();
-  g_auto_brightness.setBias(bias);
+  // Each board gets the one brightness control that means something, and the same live-preview
+  // rule: while its stepper is open, drive the backlight from the IN-PROGRESS value rather than
+  // the stored one, so the screen changes as you dial it and you are never typing a number blind
+  // (§18/§24). The preview ends the instant the editor commits or cancels.
+  // knob_pct is whichever of the two this board actually offers, kept for the trace below so the
+  // log reports the control the user has rather than a field that cannot move.
+  int32_t knob_pct = 0;
+  if constexpr (kHasAmbientLight) {
+    // A +/- trim on the ambient reading.
+    knob_pct = g_settings_screen.isEditingBrightnessBias() ? g_settings_screen.liveBrightnessBias()
+                                                           : g_settings.brightnessBias();
+    g_auto_brightness.setBias(knob_pct);
+  } else {
+    // No reading to trim, so the setting IS the level: push it as the manual nominal and leave the
+    // bias at zero, or the two would stack into one brightness with two owners.
+    knob_pct = g_settings_screen.isEditingScreenBrightness()
+                   ? g_settings_screen.liveScreenBrightness()
+                   : g_settings.screenBrightnessPct();
+    g_auto_brightness.setManualPercent(knob_pct);
+    g_auto_brightness.setBias(0);
+  }
   g_auto_brightness.tick(now);
 
   // On-glass curve tuning trace (1 Hz): the raw LDR vs the resulting backlight. On a board with
@@ -410,10 +423,14 @@ void loop() {
   static uint32_t last_ldr_log = 0;
   if (static_cast<uint32_t>(now - last_ldr_log) >= 1000U) {
     last_ldr_log = now;
-    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n",
+    // The knob is labelled for the board: "bias" is a +/- trim on the ambient reading, "bright" is
+    // the absolute Screen brightness a sensorless board sets instead. Printing one under the other
+    // one's name would misread a 90% brightness as a +90% trim.
+    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d %s=%ld%% awake=%d\n",
                   g_auto_brightness.lastRaw(), g_auto_brightness.level(),
                   static_cast<int>(kHasAmbientLight && g_settings.autoBrightness()),
-                  static_cast<long>(bias), static_cast<int>(g_sleep.awake()));
+                  kHasAmbientLight ? "bias" : "bright", static_cast<long>(knob_pct),
+                  static_cast<int>(g_sleep.awake()));
     // Link state (§9), on the CYD's own USB console — which is free precisely because §2 put
     // the link on other pins. matched=0 with sawPeer=1 is a schema skew; sawPeer=0 means we
     // are still announcing into silence. peer= is the controller's boot nonce, so a change

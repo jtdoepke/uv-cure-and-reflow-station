@@ -33,6 +33,23 @@ constexpr int32_t REFLOW_CAP_DEFAULT = 250;
 constexpr int32_t IDLE_TIMEOUT_DEFAULT_MIN = 2;
 constexpr int32_t BRIGHTNESS_BIAS_DEFAULT = 0;
 
+// Screen brightness (§18), as a percent of full scale. This is the setting a board with NO light
+// sensor offers *instead of* the brightness bias: a bias is a trim on an ambient reading, so with
+// nothing to read it is a trim on a constant — an indirection with no second term. The board's
+// capability picks which row appears, as data (subj_has_ambient_light), never as an #if in the UI.
+//
+// The 20% floor is the load-bearing part. It exists so the control can always be found again: set
+// the screen black and the only way back is a reflash. It is deliberately pitched ABOVE
+// AutoBrightness::Config::floorLevel (48/255 = 19%), the non-defeatable safety minimum that keeps
+// HOT / UV ON / fault legible in a dark shop — 20% lands at level 51, so every step of this field
+// actually moves the panel. Lower the floor here and the bottom of the range silently clamps
+// against that safety floor instead: a dead control, which is exactly the failure the bias field's
+// own comment already records. If floorLevel ever moves, re-check this number against it.
+constexpr int32_t SCREEN_BRIGHTNESS_MIN_PCT = 20;
+constexpr int32_t SCREEN_BRIGHTNESS_MAX_PCT = 100;
+constexpr int32_t SCREEN_BRIGHTNESS_STEP_PCT = 10; // 8 steps -> the stepper, not the keypad
+constexpr int32_t SCREEN_BRIGHTNESS_DEFAULT_PCT = 100;
+
 // Per-mode caution shown when a cap is raised above its default (design.md:2237-2244). The
 // wording is honest per mode: the L0 hardware fuse sits at reflow level, so at cure/UV temps
 // only firmware + high-limit protect — do not claim the fuse governs there. ASCII only (the UI

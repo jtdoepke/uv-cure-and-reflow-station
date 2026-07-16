@@ -6,7 +6,7 @@
 //
 // Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH
-//   temp N | state idle|hot|running|fault | link ok|none|schema
+//   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
 // machine/link state (the real firmware fills these from telemetry; here we set them by hand).
 // --screen picks which lib/ui_logic screen to render (default: home); `stepper` shows a demo
@@ -144,7 +144,8 @@ static int usage(const char *argv0) {
   std::fprintf(stderr,
                "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings] [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
-               "         temp N | state idle|hot|running|fault | link ok|none|schema\n",
+               "         temp N | state idle|hot|running|fault | link ok|none|schema\n"
+               "         sensor on|off (ambient-light sensor fitted; off = the 3.5\" board)\n",
                argv0);
   return 1;
 }
@@ -269,6 +270,20 @@ int main(int argc, char **argv) {
         return usage(argv[0]);
       }
       lv_subject_set_int(&subj_run_state, s);
+    } else if (op == "sensor") {
+      // Board capability, as data: `sensor off` is how a board with no LDR reaches the UI
+      // (subj_has_ambient_light). Without this the sim could only ever render the fitted case, so
+      // the sensorless Settings rows — a disabled "Not fitted" auto row and an absolute Screen
+      // brightness in place of the bias — could not be reviewed at all. A panel reads this when it
+      // is BUILT, so put `sensor off` before the clicks that open the panel you want to see.
+      if (i >= tokens.size())
+        return usage(argv[0]);
+      const std::string v = tokens[i++];
+      if (v != "on" && v != "off") {
+        std::fprintf(stderr, "Unknown sensor: %s (want on|off)\n", v.c_str());
+        return usage(argv[0]);
+      }
+      lv_subject_set_int(&subj_has_ambient_light, v == "on" ? 1 : 0);
     } else if (op == "link") {
       if (i >= tokens.size())
         return usage(argv[0]);

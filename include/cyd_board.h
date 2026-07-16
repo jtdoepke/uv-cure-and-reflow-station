@@ -95,20 +95,10 @@ inline constexpr int kAmbientPin = 34; // on-board LDR, ADC1 (reads fine with Wi
 #endif
 inline constexpr bool kHasAmbientLight = CYD_HAS_AMBIENT_LIGHT;
 inline constexpr adc_attenuation_t kAmbientAtten = ADC_11db; // full ~0-3.3 V LDR swing (§18)
-
-// Backlight level when auto-brightness is off, before the user's bias (§18). A board fact, not a
-// policy default: it depends on the panel fitted and whether anything can dial it automatically.
-#if defined(CYD_BOARD_3248S035)
-// Full. Bench-observed: this panel's blacks sit grey at every backlight level — a contrast
-// limitation of the glass that no backlight setting fixes. Dimming therefore buys nothing back
-// (it lifts nothing, it only loses the whites) and there is no LDR here to raise it again when
-// the room gets bright, so the honest default is maximum legibility.
-inline constexpr uint8_t kManualBacklight = 255;
-#else
-// The 2.8" defaults to auto-brightness ON, so this is only the fallback for a user who turns it
-// off; its panel has usable contrast and an LDR to ride the room, so leave the long-standing 160.
-inline constexpr uint8_t kManualBacklight = 160;
-#endif
+// There is deliberately no manual-backlight constant here. A board with no LDR gets a user-facing
+// "Screen brightness" setting instead (settings_defaults.h), which the loop pushes into
+// AutoBrightness every iteration — a board constant would be dead the moment settings loaded, and
+// the level a user stares at is their call, not the board's.
 
 // --- GRAM readback ---
 // Whether the panel can be read back, i.e. whether its SDO is wired. Mirrors cfg.readable in the
