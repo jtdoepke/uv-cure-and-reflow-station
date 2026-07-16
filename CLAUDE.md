@@ -52,6 +52,22 @@ Built with PlatformIO + Arduino.
   `make sim-shot SIM_PANEL=35`.
 - **Upload over the Micro-USB port** — the USB-C port lacks CC resistors and won't
   enumerate on many hosts.
+- **Identify a board by its ESP32 MAC, never by `ttyUSBn`** — with multiple devkits attached
+  the `ttyUSB0`/`ttyUSB1` numbering is assigned in random plug order, and **both CYDs use the
+  same CH340 bridge** (`1a86:7523`) so USB VID:PID / `/dev/serial/by-id` can't tell them apart
+  (only the controller's CP2102 `10c4:ea60` is distinguishable that way). `esptool.py -p
+  <port> read_mac` is read-only — it reads the eFuse MAC and reboots into the existing
+  firmware, never writing flash — so run it before any upload. Known MACs (unit-specific;
+  update this line if a board is swapped): `8c:94:df:92:21:e4` = **2.8" CYD** (`esp32dev_cyd`),
+  `b0:cb:d8:03:5c:d8` = **3.5" CYD** (`esp32dev_cyd35`, default), `c0:cd:d6:cb:e7:e4` =
+  **controller** (`esp32dev_control`). Map every port at once, then pass the confirmed device
+  as `PORT=`:
+
+  ```sh
+  for d in /dev/ttyUSB*; do mac=$(esptool.py -p "$d" read_mac 2>/dev/null | awk '/^MAC:/{print $2; exit}'); echo "$d $mac"; done
+  # 8c:94:df:92:21:e4=CYD2.8  b0:cb:d8:03:5c:d8=CYD3.5  c0:cd:d6:cb:e7:e4=controller
+  ```
+
 - **No PSRAM on either board**: partial LVGL draw buffers, never full-frame. Sized in
   **scanlines** (`DRAW_BUF_LINES`, `cyd_board.h`), not as a fraction of the screen — a
   fraction would double the DRAM cost on the bigger panel, which is the wrong invariant.

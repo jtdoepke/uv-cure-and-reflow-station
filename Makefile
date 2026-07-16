@@ -116,26 +116,31 @@ perf-diff: perf  ## Diff the current run against the committed baseline [SIM_PAN
 	@tools/perf-diff.sh $(PERF_BASELINE) $(PERF_OUT)
 
 # On-glass perf probe (esp32dev_cyd35_perf). Flashes, then drives the serial workload and prints
-# the CPU-render vs SPI-flush split. PORT pins the board when several are plugged in (the CYD is
-# the CH340). The _perf_sb twin (DISP_DOUBLE_BUFFER=0) gives the ground-truth SPI wall time.
+# the CPU-render vs SPI-flush split. When one board is plugged in it's auto-selected; with several
+# attached, tools/resolve-port.sh makes you pass PORT=/dev/ttyUSBn (both CYDs are CH340, so only
+# the MAC tells them apart). The _perf_sb twin (DISP_DOUBLE_BUFFER=0) gives the ground-truth SPI
+# wall time.
 PERF_DEVICE_ENV ?= esp32dev_cyd35_perf
 PERF_DEVICE_CMD ?= a
 
-perf-device: ## Flash + run the on-glass perf probe: make perf-device [PORT=/dev/ttyUSB1] [PERF_DEVICE_CMD=a]
-	pio run -e $(PERF_DEVICE_ENV) -t upload $(if $(PORT),--upload-port $(PORT))
-	@echo "-- driving probe (cmd=$(PERF_DEVICE_CMD)) --"
-	@tools/perf-device.py $(if $(PORT),$(PORT),/dev/ttyUSB1) $(PERF_DEVICE_CMD)
+perf-device: ## Flash + run the on-glass perf probe: make perf-device [PORT=/dev/ttyUSBn] [PERF_DEVICE_CMD=a]
+	@port=$$(tools/resolve-port.sh $(PORT)) || exit 1; \
+	pio run -e $(PERF_DEVICE_ENV) -t upload --upload-port $$port; \
+	echo "-- driving probe (cmd=$(PERF_DEVICE_CMD)) --"; \
+	tools/perf-device.py $$port $(PERF_DEVICE_CMD)
 
 # On-device UI dev loop (board on Micro-USB, WiFi creds in include/secrets.h — see the
 # ui-development skill). DEV_ENV picks the board, mirroring SIM_PANEL/CALIB_ENV; the default is
 # the default board. `make dev-shot` only works under DEV_ENV=esp32dev_cyd_uidev — the 3.5"
 # panel's SDO is unwired, so its endpoint returns 501 rather than a black PNG.
-# PORT pins the upload port when more than one board is plugged in (the CYD is the CH340).
+# One board plugged in is auto-selected; with several attached, tools/resolve-port.sh makes you
+# pass PORT=/dev/ttyUSBn (both CYDs are CH340, so only the MAC tells them apart).
 DEV_ENV ?= esp32dev_cyd35_uidev
 DEV_OUT ?= .pio/sim/device.png
 
-dev-flash: ## Flash firmware + UI dev tools, print the IP: make dev-flash [DEV_ENV=…] [PORT=/dev/ttyUSB1]
-	pio run -e $(DEV_ENV) -t upload $(if $(PORT),--upload-port $(PORT))
+dev-flash: ## Flash firmware + UI dev tools, print the IP: make dev-flash [DEV_ENV=…] [PORT=/dev/ttyUSBn]
+	@port=$$(tools/resolve-port.sh $(PORT)) || exit 1; \
+	pio run -e $(DEV_ENV) -t upload --upload-port $$port
 
 dev-status: ## Query device IP/status over serial (no flash)
 	pio run -e $(DEV_ENV) -t status
@@ -150,7 +155,8 @@ dev-touch: ## Inject a touch on the device: make dev-touch IP=192.168.x.x X=160 
 # values into that board's LGFX header. CALIB_ENV picks the board.
 CALIB_ENV ?= touch_calib_cyd35
 
-touch-calib: ## Calibrate touch on a board: make touch-calib [CALIB_ENV=touch_calib_cyd] [PORT=/dev/ttyUSB1]
-	pio run -e $(CALIB_ENV) -t upload $(if $(PORT),--upload-port $(PORT))
-	@echo "Tap the 15 targets, then read the CALIB lines:"
-	pio device monitor -e $(CALIB_ENV) $(if $(PORT),--port $(PORT))
+touch-calib: ## Calibrate touch on a board: make touch-calib [CALIB_ENV=touch_calib_cyd] [PORT=/dev/ttyUSBn]
+	@port=$$(tools/resolve-port.sh $(PORT)) || exit 1; \
+	pio run -e $(CALIB_ENV) -t upload --upload-port $$port; \
+	echo "Tap the 15 targets, then read the CALIB lines:"; \
+	pio device monitor -e $(CALIB_ENV) --port $$port
