@@ -181,21 +181,58 @@ void test_cancel_fires_seam(void) {
   TEST_ASSERT_TRUE(cancel_called);
 }
 
+// Asserts what the user sees (is the caution legible?), not how it is achieved. The mechanism is
+// deliberately text opacity rather than LV_OBJ_FLAG_HIDDEN: a hidden child leaves the flex layout
+// and the rail reflows around it, which is what used to move Cancel mid-typing (see
+// test_cancel_does_not_move_when_the_caution_appears).
+static bool caution_visible(const NumericKeypad &ui) {
+  return lv_obj_get_style_text_opa(ui.caution_label, LV_PART_MAIN) != LV_OPA_TRANSP;
+}
+
 void test_caution_shows_only_above_default(void) {
   vm.init(NumericFieldConfig{60, 250, 1, 100, "°C", "Above default"}, 100);
   NumericKeypad ui = create_numeric_keypad(lv_screen_active(), vm, "UV cure max");
 
-  // At default (100): hidden.
-  TEST_ASSERT_TRUE(lv_obj_has_flag(ui.caution_label, LV_OBJ_FLAG_HIDDEN));
+  // At default (100): not shown.
+  TEST_ASSERT_FALSE(caution_visible(ui));
   // Type 150 (> default) → shown with the configured string.
   long_press(ui.btn_backspace);
   type_digits(ui, "150");
-  TEST_ASSERT_FALSE(lv_obj_has_flag(ui.caution_label, LV_OBJ_FLAG_HIDDEN));
+  TEST_ASSERT_TRUE(caution_visible(ui));
   TEST_ASSERT_EQUAL_STRING("Above default", lv_label_get_text(ui.caution_label));
-  // Back to default (100) → hidden again.
+  // Back to default (100) → not shown again.
   long_press(ui.btn_backspace);
   type_digits(ui, "100");
-  TEST_ASSERT_TRUE(lv_obj_has_flag(ui.caution_label, LV_OBJ_FLAG_HIDDEN));
+  TEST_ASSERT_FALSE(caution_visible(ui));
+}
+
+// Cancel must not move when the caution appears. It used to: the rail is a flex column and the
+// caution label carried flex_grow(1) to push Cancel to the foot — but that label starts HIDDEN,
+// and LVGL skips hidden children when laying out flex, so the grow only did its job once the
+// value went above default. Cancel therefore SLID DOWN THE RAIL mid-typing, on the two real
+// fields that configure a caution (SettingsStore::uvCapConfig/reflowCapConfig) — a control
+// changing place under the finger about to press it. The grow now lives on the always-present
+// info block, which is also what lets the same tree lay out as a top strip in portrait.
+void test_cancel_does_not_move_when_the_caution_appears(void) {
+  vm.init(NumericFieldConfig{60, 250, 1, 100, "°C", "Above default"}, 100);
+  NumericKeypad ui = create_numeric_keypad(lv_screen_active(), vm, "UV cure max");
+  lv_obj_update_layout(lv_screen_active());
+
+  lv_area_t before;
+  lv_obj_get_coords(ui.btn_cancel, &before);
+  TEST_ASSERT_FALSE(caution_visible(ui));
+
+  long_press(ui.btn_backspace);
+  type_digits(ui, "150"); // > default → the caution appears and the rail reflows
+  lv_obj_update_layout(lv_screen_active());
+  TEST_ASSERT_TRUE(caution_visible(ui));
+
+  lv_area_t after;
+  lv_obj_get_coords(ui.btn_cancel, &after);
+  TEST_ASSERT_EQUAL_INT32(before.x1, after.x1);
+  TEST_ASSERT_EQUAL_INT32(before.y1, after.y1);
+  TEST_ASSERT_EQUAL_INT32(before.x2, after.x2);
+  TEST_ASSERT_EQUAL_INT32(before.y2, after.y2);
 }
 
 int main(int, char **) {
@@ -210,5 +247,6 @@ int main(int, char **) {
   RUN_TEST(test_ok_out_of_range_does_not_commit);
   RUN_TEST(test_cancel_fires_seam);
   RUN_TEST(test_caution_shows_only_above_default);
+  RUN_TEST(test_cancel_does_not_move_when_the_caution_appears);
   return UNITY_END();
 }

@@ -60,14 +60,18 @@ build:     ## Firmware compile-check (both MCUs + both bench envs + the on-targe
 
 # Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
 # ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".
+# SIM_PANEL=35 renders the 3.5" 320x480 portrait panel instead of the 2.8" 320x240 landscape —
+# the two geometries are different layouts (theme tokens scale, flows flip), so a screenshot is
+# only evidence about the panel it was rendered for.
 SIM_OUT ?= .pio/sim/ui.png
+SIM_ENV = $(if $(filter 35,$(SIM_PANEL)),native_sim_35,native_sim)
 
-sim:       ## Build the host UI simulator (env native_sim)
-	pio run -e native_sim
+sim:       ## Build the host UI simulator: make sim [SIM_PANEL=35]
+	pio run -e $(SIM_ENV)
 
-sim-shot: sim  ## Render the UI to a PNG: make sim-shot ARGS="click 160 120 wait 300"
+sim-shot: sim  ## Render the UI to a PNG: make sim-shot [SIM_PANEL=35] ARGS="click 160 120"
 	@mkdir -p $(dir $(SIM_OUT))
-	.pio/build/native_sim/program --out $(SIM_OUT) $(ARGS)
+	.pio/build/$(SIM_ENV)/program --out $(SIM_OUT) $(ARGS)
 
 # On-device UI dev loop (esp32dev_cyd_uidev env; board on Micro-USB, WiFi creds in
 # include/secrets.h — see the ui-development skill).

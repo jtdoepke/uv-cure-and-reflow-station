@@ -3,6 +3,7 @@
 #include <initializer_list>
 
 #include "home_viewmodel.h"
+#include "panel.h" // geometry (portrait vs landscape) — never a board identity
 #include "subjects.h"
 #include "theme.h"
 
@@ -124,17 +125,27 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   lv_obj_bind_flag_if_eq(ui.banner, &subj_link_state, LV_OBJ_FLAG_HIDDEN, LINK_OK);
 
   // --- Mode tiles: UV CURE / REFLOW. Big, neutral, and gated on a healthy link ---
+  // The tiles stack in portrait and sit side by side in landscape. Gated on panel::kPortrait —
+  // the GEOMETRY — and never on a board flag: this file must keep working for any panel, and
+  // "which way the long axis runs" is the only thing the decision actually depends on. Splitting
+  // the long axis is what keeps a tile roughly square either way; side-by-side on a 320x480 panel
+  // gives two 23x45 mm slivers, which is a landscape idea surviving into a shape that punishes it.
   lv_obj_t *modes = lv_obj_create(parent);
   theme::apply_row(modes);
   lv_obj_set_width(modes, lv_pct(100));
   lv_obj_set_flex_grow(modes, 1);
-  lv_obj_set_flex_flow(modes, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_flow(modes, panel::kPortrait ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
 
   ui.btn_cure = make_tile(modes, "UV CURE", theme::apply_mode_tile, HOME_INTENT(onCurePressed));
   ui.btn_reflow = make_tile(modes, "REFLOW", theme::apply_mode_tile, HOME_INTENT(onReflowPressed));
   for (lv_obj_t *tile : {ui.btn_cure, ui.btn_reflow}) {
     lv_obj_set_flex_grow(tile, 1);
-    lv_obj_set_height(tile, lv_pct(100));
+    // Fill the cross axis, whichever axis that now is.
+    if (panel::kPortrait) {
+      lv_obj_set_width(tile, lv_pct(100));
+    } else {
+      lv_obj_set_height(tile, lv_pct(100));
+    }
     // Clickable only with a healthy link; DISABLED state also greys the tile (§14 / §9 gate).
     lv_obj_bind_flag_if_eq(tile, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
     lv_obj_bind_state_if_not_eq(tile, &subj_link_state, LV_STATE_DISABLED, LINK_OK);

@@ -58,10 +58,33 @@ extern "C" void lodepng_free(void *ptr) {
 
 static lv_display_t *sim_disp = nullptr;
 
+// Run LVGL until nothing is animating, so a screenshot shows a settled UI.
+//
+// This is not a nicety. LVGL's default theme ANIMATES style changes over
+// LV_THEME_DEFAULT_TRANSITION_TIME (80 ms, lv_conf.h) — and our mode tiles change state the
+// moment the link subject moves, because subjects boot at LINK_NONE and the tiles bind
+// LV_STATE_DISABLED to it. Screenshot immediately after `link ok` and you catch the tile
+// mid-blend: it renders #7b7d84 rather than the theme's #2a2f3a, which reads exactly like a
+// washed-out palette bug that isn't there. (Worse, the theme's disabled treatment is a 50%
+// `recolor` — a post-process, so it does not even resemble the bg_color the theme sets, and
+// grepping theme.h for the colour you can see finds nothing.)
+//
+// A screenshot tool that renders a transient state is a tool that lies, and `make sim-shot`
+// exists to be believed. Settle rather than make every caller remember `wait`.
+static void settle(uint32_t max_ms = 1000) {
+  uint32_t waited = 0;
+  while (lv_anim_count_running() > 0 && waited < max_ms) {
+    lv_test_wait(20);
+    waited += 20;
+  }
+  lv_test_wait(20); // one more frame so the settled values are actually rendered
+}
+
 // Render pending changes, then encode the display's full-frame buffer as a 24-bit PNG.
 // The test display runs in DIRECT render mode; we set its color format to RGB565 so the
 // rasterizer output matches the firmware exactly, and expand to RGB888 only here.
 static bool write_png(const char *path) {
+  settle();
   lv_refr_now(nullptr);
   lv_draw_buf_t *frame = lv_display_get_buf_active(sim_disp);
   if (frame == nullptr || frame->header.cf != LV_COLOR_FORMAT_RGB565) {
@@ -190,7 +213,7 @@ int main(int argc, char **argv) {
     return usage(argv[0]);
   }
   lv_obj_update_layout(lv_screen_active());
-  lv_test_wait(50); // let creation-time timers/animations settle
+  settle(); // creation-time timers/animations (the old fixed 50 ms was under the 80 ms transition)
 
   size_t i = 0;
   auto take2 = [&](int32_t *x, int32_t *y) {

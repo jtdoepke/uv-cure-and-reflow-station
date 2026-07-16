@@ -45,6 +45,26 @@ static void apply_button_base(lv_obj_t *btn) {
   lv_obj_set_style_bg_color(btn, col(TILE_PRESSED), LV_STATE_PRESSED);
   lv_obj_set_style_bg_color(btn, col(TILE_DISABLED), LV_STATE_DISABLED);
   lv_obj_set_style_text_color(btn, col(TEXT_DIM), LV_STATE_DISABLED);
+
+  // Switch off LVGL's own state tinting, which otherwise overrules both lines above.
+  //
+  // lv_theme_default gives its pressed/disabled styles a `recolor` (lv_theme_default.c: 35/255
+  // toward grey when pressed, LV_OPA_50 when disabled). recolor is a POST-PROCESS: it blends the
+  // finished pixels, so it does not lose to a local bg_color the way an ordinary style property
+  // would — setting TILE_DISABLED does not evict it, it just gets blended.
+  //
+  // And lv_conf.h has LV_THEME_DEFAULT_DARK = 0, so LVGL thinks it is theming a LIGHT UI and its
+  // disabled recolor is lv_palette_lighten(GREY, 2) ≈ #EEEEEE. A disabled tile therefore rendered
+  // #7b7d84 — LIGHTER and more eye-catching than the #2a2f3a enabled one, which is precisely
+  // backwards for ISA-101, where a control you cannot use must recede. On the Home screen with no
+  // controller attached, that is two big pale slabs filling the display: the whole screen reads
+  // washed out, and grepping theme.h for the colour finds nothing, because it is not in there.
+  //
+  // Neutralising recolor_opa (rather than flipping LV_THEME_DEFAULT_DARK, which would restyle
+  // every widget in LVGL to fix two states of ours) leaves TILE_PRESSED/TILE_DISABLED as the
+  // exact, only answer — which is what this file claims to be.
+  lv_obj_set_style_recolor_opa(btn, LV_OPA_TRANSP, LV_STATE_PRESSED);
+  lv_obj_set_style_recolor_opa(btn, LV_OPA_TRANSP, LV_STATE_DISABLED);
 }
 
 void apply_mode_tile(lv_obj_t *btn) {

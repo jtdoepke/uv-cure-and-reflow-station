@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "panel.h" // geometry (portrait vs landscape) — never a board identity
 #include "theme.h"
 
 namespace {
@@ -36,14 +37,17 @@ void on_ok_state(lv_observer_t *observer, lv_subject_t *subject) {
 
 // Amber caution shown only while the typed value sits above the field default (§24/§26) — for a
 // temp cap this is the honest per-mode note in the rail. Bound to the value.
+//
+// Shown/hidden by TEXT OPACITY, not LV_OBJ_FLAG_HIDDEN, so the label keeps its place in the flex
+// layout at all times and appearing costs nothing around it. LVGL drops hidden children from flex
+// entirely, so the flag made the rail reflow mid-typing and slid Cancel out from under the finger
+// reaching for it — 38 px in landscape, 12 px in portrait (test_keypad pins both). The label's
+// text is fixed at creation, so the space it reserves never changes size either.
 void on_caution_changed(lv_observer_t *observer, lv_subject_t *subject) {
   lv_obj_t *label = lv_observer_get_target_obj(observer);
   auto *vm = static_cast<NumericKeypadViewModel *>(lv_observer_get_user_data(observer));
-  if (vm->config().cautionActive(lv_subject_get_int(subject))) {
-    lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
-  }
+  const bool active = vm->config().cautionActive(lv_subject_get_int(subject));
+  lv_obj_set_style_text_opa(label, active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 }
 
 // Event → intent thunk for the parameterless control keys (an lv_event_cb_t can't be a member).
@@ -91,16 +95,32 @@ NumericKeypad create_numeric_keypad(lv_obj_t *parent, NumericKeypadViewModel &vm
   lv_subject_t *value = vm.valueSubject();
   lv_subject_t *valid = vm.validSubject();
 
+  // Landscape puts the rail down the right-hand side and the grid left of it; portrait lays the
+  // rail across the top with the grid beneath. Gated on panel::kPortrait — the GEOMETRY — never a
+  // board flag. A side rail is a landscape idea: on a 320 px-wide panel it leaves ~111 px, which
+  // wraps "Target temp" onto two lines, wraps the big "100 °C" readout, and still strands empty
+  // space under Cancel — all while squeezing the keys it was supposed to sit beside.
+  //
+  // Both orientations keep the SAME widget tree (rail > info + cancel); only flow and the
+  // main/cross sizes flip. That is the point: one branch per screen, so there is one keypad to
+  // reason about and the view model, observers and tests cannot tell the two apart.
+  const bool portrait = panel::kPortrait;
+
   theme::apply_screen(parent);
-  lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_flow(parent, portrait ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
   lv_obj_set_style_pad_all(parent, theme::PAD_S, 0);
   lv_obj_set_style_pad_column(parent, theme::GAP, 0);
+  lv_obj_set_style_pad_row(parent, theme::GAP, 0);
 
-  // --- Left: the 3×4 digit grid (fills the width the rail leaves). ---
+  // --- The 3×4 digit grid (fills whatever the rail leaves). ---
   lv_obj_t *grid = lv_obj_create(parent);
   theme::apply_row(grid);
   lv_obj_set_flex_grow(grid, 1);
-  lv_obj_set_height(grid, lv_pct(100));
+  if (portrait) {
+    lv_obj_set_width(grid, lv_pct(100));
+  } else {
+    lv_obj_set_height(grid, lv_pct(100));
+  }
   lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(grid, theme::PAD_S, 0);
 
@@ -132,21 +152,48 @@ NumericKeypad create_numeric_keypad(lv_obj_t *parent, NumericKeypadViewModel &vm
   lv_obj_add_event_cb(ui.btn_ok, KEYPAD_INTENT(onOk), LV_EVENT_CLICKED, &vm);
   lv_subject_add_observer_obj(valid, on_ok_state, ui.btn_ok, &vm);
 
-  // --- Right rail: field name, live value, range, caution, ✕ Cancel. ---
+  // --- Rail: field name, live value, range, caution, ✕ Cancel. Right side in landscape, a strip
+  // across the top in portrait (created after the grid either way, then moved into place). ---
   lv_obj_t *rail = lv_obj_create(parent);
   theme::apply_panel(rail);
-  lv_obj_set_width(rail, theme::KEYPAD_RAIL_W);
-  lv_obj_set_height(rail, lv_pct(100));
-  lv_obj_set_flex_flow(rail, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_flow(rail, portrait ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(rail, theme::PAD_S, 0);
+  lv_obj_set_style_pad_column(rail, theme::PAD_S, 0);
+  if (portrait) {
+    lv_obj_set_width(rail, lv_pct(100));
+    lv_obj_set_height(rail, LV_SIZE_CONTENT); // only as tall as the text needs — the grid gets rest
+    lv_obj_set_flex_align(rail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_move_to_index(rail, 0); // flex order is creation order; the strip belongs on top
+  } else {
+    lv_obj_set_width(rail, theme::KEYPAD_RAIL_W);
+    lv_obj_set_height(rail, lv_pct(100));
+  }
 
-  ui.title_label = lv_label_create(rail);
+  // The text block. Carries the flex-grow that pushes Cancel to the rail's far end — the foot of
+  // the column in landscape, the right-hand end of the strip in portrait. Previously the caution
+  // label held that grow, which only worked while the rail was a column.
+  lv_obj_t *info = lv_obj_create(rail);
+  theme::apply_row(info);
+  lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_grow(info,
+                       1); // takes the rail's main axis: width in portrait, height in landscape
+  lv_obj_set_style_pad_row(info, theme::PAD_S, 0);
+  // The CROSS axis must be pinned explicitly. Leaving it at the default size-to-content makes the
+  // children's lv_pct(100) widths resolve against a width derived from those same children, and
+  // the labels then render past the rail's edge instead of wrapping inside it.
+  if (portrait) {
+    lv_obj_set_height(info, LV_SIZE_CONTENT);
+  } else {
+    lv_obj_set_width(info, lv_pct(100));
+  }
+
+  ui.title_label = lv_label_create(info);
   lv_label_set_text(ui.title_label, title);
   lv_obj_set_width(ui.title_label, lv_pct(100));
   lv_label_set_long_mode(ui.title_label, LV_LABEL_LONG_WRAP);
 
   // Big value + units; wraps if "<value> <units>" overruns the narrow rail. Colour tracks valid.
-  ui.value_label = lv_label_create(rail);
+  ui.value_label = lv_label_create(info);
   lv_obj_set_width(ui.value_label, lv_pct(100));
   lv_obj_set_style_text_font(ui.value_label, &red_hat_mono_28, 0);
   lv_label_set_long_mode(ui.value_label, LV_LABEL_LONG_WRAP);
@@ -155,7 +202,7 @@ NumericKeypad create_numeric_keypad(lv_obj_t *parent, NumericKeypadViewModel &vm
 
   // Range: always shown, dim (§26). ASCII hyphen — the font carries 0x20-0x7F + °.
   const NumericFieldConfig &cfg = vm.config();
-  ui.range_label = lv_label_create(rail);
+  ui.range_label = lv_label_create(info);
   lv_obj_set_width(ui.range_label, lv_pct(100));
   lv_label_set_long_mode(ui.range_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_color(ui.range_label, theme::col(theme::TEXT_DIM), 0);
@@ -167,20 +214,20 @@ NumericKeypad create_numeric_keypad(lv_obj_t *parent, NumericKeypadViewModel &vm
   }
   lv_label_set_text(ui.range_label, range_buf);
 
-  // Amber caution, shown only above default; grows to push Cancel to the rail's foot.
-  ui.caution_label = lv_label_create(rail);
+  // Amber caution, revealed only above default. It always holds its slot in the layout (see
+  // on_caution_changed) — the space is reserved from creation, so nothing shifts when it appears.
+  ui.caution_label = lv_label_create(info);
   lv_label_set_text(ui.caution_label, cfg.caution != nullptr ? cfg.caution : "");
   lv_obj_set_style_text_color(ui.caution_label, theme::col(theme::WARN), 0);
   lv_obj_set_width(ui.caution_label, lv_pct(100));
-  lv_obj_set_flex_grow(ui.caution_label, 1);
   lv_label_set_long_mode(ui.caution_label, LV_LABEL_LONG_WRAP);
-  lv_obj_add_flag(ui.caution_label, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_style_text_opa(ui.caution_label, LV_OPA_TRANSP, 0);
   lv_subject_add_observer_obj(value, on_caution_changed, ui.caution_label, &vm);
 
   // ✕ Cancel — discard, return the old value (§26). Big glyph, clears the 56 px floor.
   ui.btn_cancel = lv_button_create(rail);
   theme::apply_keypad_key(ui.btn_cancel);
-  lv_obj_set_width(ui.btn_cancel, lv_pct(100));
+  lv_obj_set_width(ui.btn_cancel, portrait ? theme::TOUCH_MIN : lv_pct(100));
   lv_obj_set_height(ui.btn_cancel, theme::TOUCH_MIN);
   lv_obj_t *cancel_label = lv_label_create(ui.btn_cancel);
   lv_label_set_text(cancel_label, LV_SYMBOL_CLOSE);
