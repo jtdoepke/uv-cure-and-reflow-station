@@ -57,11 +57,48 @@ void test_timeout_is_configurable(void) {
   TEST_ASSERT_FALSE(sc.awake());
 }
 
+// Regression (found on the 3.5" panel): the waking touch is recorded from inside
+// lv_timer_handler(), which main.cpp's loop runs AFTER it sampled `now` — so noteActivity()
+// routinely carries a timestamp a few ms LATER than the nowMs of the tick() that follows it.
+// Subtracting those unsigned wrapped to ~4.29e9, cleared any timeout instantly, and put the
+// screen back to sleep on the very next tick after every wake. The 2.8" board hid this for as
+// long as it did because its flush usually returns inside the same millisecond; the 3.5" has
+// twice the pixels and crosses a millisecond boundary nearly every iteration.
+void test_activity_timestamped_after_now_stays_awake(void) {
+  SleepController sc;
+  sc.tick(0, true);
+  sc.noteActivity(17050); // stamped inside the LVGL callback...
+  sc.tick(17000, true);   // ...while the loop's `now` predates it
+  TEST_ASSERT_TRUE(sc.awake());
+  sc.tick(17100, true);
+  TEST_ASSERT_TRUE(sc.awake());
+  // And the timeout still runs from the activity, not from the skewed tick.
+  sc.tick(17050 + 119999, true);
+  TEST_ASSERT_TRUE(sc.awake());
+  sc.tick(17050 + 120000, true);
+  TEST_ASSERT_FALSE(sc.awake());
+}
+
+// The skew guard must not cost us wrap-safety: millis() rolls over every ~49 days, and the oven
+// is a machine that can sit powered for months.
+void test_survives_millis_wrap(void) {
+  SleepController sc;
+  const uint32_t near_wrap = 0xFFFFFF00u;
+  sc.tick(near_wrap, true);
+  sc.noteActivity(near_wrap);
+  sc.tick(near_wrap + 119999u, true); // wraps through zero
+  TEST_ASSERT_TRUE(sc.awake());
+  sc.tick(near_wrap + 120000u, true);
+  TEST_ASSERT_FALSE(sc.awake());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_sleeps_after_timeout_when_idle);
   RUN_TEST(test_never_sleeps_while_not_allowed);
   RUN_TEST(test_activity_wakes_and_resets_timer);
   RUN_TEST(test_timeout_is_configurable);
+  RUN_TEST(test_activity_timestamped_after_now_stays_awake);
+  RUN_TEST(test_survives_millis_wrap);
   return UNITY_END();
 }

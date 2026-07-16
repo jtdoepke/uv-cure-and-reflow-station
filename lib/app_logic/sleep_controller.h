@@ -50,7 +50,18 @@ public:
       lastActivityMs_ = nowMs; // hold the timer reset while a run/HOT/fault keeps us awake
       return;
     }
-    if (awake_ && static_cast<uint32_t>(nowMs - lastActivityMs_) >= idleTimeoutMs_) {
+    // Signed elapsed, deliberately. Two things must both hold:
+    //   - millis() wraps every ~49 days and this machine can sit powered for months, so the
+    //     subtraction must stay modular (never compare timestamps directly).
+    //   - noteActivity() can legitimately carry a timestamp LATER than this nowMs: main.cpp
+    //     samples `now` at the top of its loop, then lv_timer_handler() runs the touch callback,
+    //     which stamps the wake with a fresh millis(). Unsigned, that few-ms skew wrapped to
+    //     ~4.29e9 and instantly satisfied any timeout — waking, then sleeping again on the very
+    //     next tick. Signed, the same subtraction simply reads as a small negative and no
+    //     timeout has elapsed, which is the truth.
+    // int32_t is wide enough: idleTimeoutMs_ is minutes (§24 caps it at 10), not weeks.
+    const int32_t elapsed = static_cast<int32_t>(nowMs - lastActivityMs_);
+    if (awake_ && elapsed >= static_cast<int32_t>(idleTimeoutMs_)) {
       awake_ = false;
     }
   }
