@@ -1,6 +1,6 @@
 # Convenience wrappers. PlatformIO remains the source of truth for builds/tests.
 .PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot \
-	perf perf-baseline perf-diff \
+	perf perf-baseline perf-diff perf-device \
 	dev-flash dev-status dev-shot dev-touch touch-calib
 .DEFAULT_GOAL := help
 
@@ -114,6 +114,17 @@ perf-baseline: perf  ## Re-record the committed host baseline: make perf-baselin
 
 perf-diff: perf  ## Diff the current run against the committed baseline [SIM_PANEL=35]
 	@tools/perf-diff.sh $(PERF_BASELINE) $(PERF_OUT)
+
+# On-glass perf probe (esp32dev_cyd35_perf). Flashes, then drives the serial workload and prints
+# the CPU-render vs SPI-flush split. PORT pins the board when several are plugged in (the CYD is
+# the CH340). The _perf_sb twin (DISP_DOUBLE_BUFFER=0) gives the ground-truth SPI wall time.
+PERF_DEVICE_ENV ?= esp32dev_cyd35_perf
+PERF_DEVICE_CMD ?= a
+
+perf-device: ## Flash + run the on-glass perf probe: make perf-device [PORT=/dev/ttyUSB1] [PERF_DEVICE_CMD=a]
+	pio run -e $(PERF_DEVICE_ENV) -t upload $(if $(PORT),--upload-port $(PORT))
+	@echo "-- driving probe (cmd=$(PERF_DEVICE_CMD)) --"
+	@tools/perf-device.py $(if $(PORT),$(PORT),/dev/ttyUSB1) $(PERF_DEVICE_CMD)
 
 # On-device UI dev loop (board on Micro-USB, WiFi creds in include/secrets.h — see the
 # ui-development skill). DEV_ENV picks the board, mirroring SIM_PANEL/CALIB_ENV; the default is

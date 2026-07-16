@@ -33,6 +33,11 @@
 #include "ui_dev_tools.h"   // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
 #endif
 
+#if defined(PERF_PROBE)
+#include <esp_timer.h>  // esp_timer_get_time() — us clock for the flush/render split
+#include "perf_probe.h" // on-glass CPU/SPI split (esp32dev_cyd35_perf env only)
+#endif
+
 static LGFX gfx;
 
 // Partial draw buffers, RGB565 — sized and explained in cyd_board.h. Heap-allocated in setup()
@@ -185,6 +190,9 @@ static void on_run_state(lv_observer_t *, lv_subject_t *subject) {
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   int32_t w = area->x2 - area->x1 + 1;
   int32_t h = area->y2 - area->y1 + 1;
+#if defined(PERF_PROBE)
+  int64_t perf_flush_t0 = esp_timer_get_time();
+#endif
 #if DISP_DOUBLE_BUFFER
   // Async DMA: hold one write session open across the frame's chunks and push via
   // DMA without waiting. With two buffers LVGL renders the next chunk while this one
@@ -197,17 +205,31 @@ static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px
   }
   gfx.pushImageDMA(area->x1, area->y1, w, h, reinterpret_cast<lgfx::swap565_t *>(px_map));
   if (lv_display_flush_is_last(disp)) {
+#if defined(PERF_PROBE)
+    int64_t perf_ew_t0 = esp_timer_get_time();
     gfx.endWrite(); // waits out the final DMA, closes the session
+    perf_probe::note_endwrite(esp_timer_get_time() - perf_ew_t0);
+#else
+    gfx.endWrite(); // waits out the final DMA, closes the session
+#endif
   }
   lv_display_flush_ready(disp);
+#if defined(PERF_PROBE)
+  perf_probe::note_flush(esp_timer_get_time() - perf_flush_t0);
+#endif
 #else
   // Original single-buffer synchronous path: CPU-driven SPI with a runtime RGB565
-  // byte-swap (the `true`). Blocks until the whole area is pushed.
+  // byte-swap (the `true`). Blocks until the whole area is pushed — which is exactly why the
+  // perf_sb calibration build uses it: here flush_sum is TRUE SPI wall time, not the async
+  // enqueue cost the double-buffered path measures.
   gfx.startWrite();
   gfx.setAddrWindow(area->x1, area->y1, w, h);
   gfx.pushPixels((uint16_t *)px_map, w * h, true);
   gfx.endWrite();
   lv_display_flush_ready(disp);
+#if defined(PERF_PROBE)
+  perf_probe::note_flush(esp_timer_get_time() - perf_flush_t0);
+#endif
 #endif
 }
 
@@ -349,6 +371,15 @@ void setup() {
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_begin(gfx);
 #endif
+
+#if defined(PERF_PROBE)
+  // Drive nav from the same static functions the UI uses, so a measured round trip is the real
+  // one. to_settings() publishes the intent on_nav_request observes; to_home() is build_home.
+  perf_probe::begin(perf_probe::NavHooks{
+      []() { lv_subject_set_int(&subj_nav_request, NAV_SETTINGS); },
+      []() { build_home(); },
+  });
+#endif
 }
 
 void loop() {
@@ -452,6 +483,9 @@ void loop() {
 
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_loop();
+#endif
+#if defined(PERF_PROBE)
+  perf_probe::service(); // runs a measurement burst when a command arrives on Serial (blocking)
 #endif
   delay(5);
 }
