@@ -51,10 +51,17 @@ static void ensure_feedback_transitions() {
   if (ready) {
     return;
   }
-  // Entering pressed: INSTANT. The design guide's budget is a visible reaction within 100 ms, and
-  // the surest way never to miss it is not to animate the acknowledgement at all — a press is a
-  // fact, not a transition. lv_theme_default would otherwise fade it in over 80 ms.
-  lv_style_transition_dsc_init(&g_press_tr, kFeedbackProps, lv_anim_path_linear, 0, 0, nullptr);
+  // Entering pressed: as good as INSTANT, but NOT a literal 0 ms transition. A 0 ms LVGL style
+  // transition never repaints its end value: lv_map() with duration 0 resolves the anim path to
+  // the START value on its single tick, then trans_anim_completed_cb removes the transition
+  // override WITHOUT invalidating — so the pressed style becomes computed-active but the widget is
+  // never marked dirty, and on a static screen the fill isn't redrawn until the next unrelated
+  // invalidation (the release). On the device that read as "the tile only lights up after you lift
+  // your finger"; the simulator hid it because its screenshot force-refreshes before capture.
+  // 1 ms is enough: the anim survives its first tick and applies+invalidates the pressed value on
+  // the next (~one frame, ~16-33 ms) — no visible fade-in, still well inside the 100 ms budget,
+  // and it overrides lv_theme_default's 80 ms press fade the same way a 0 ms one did.
+  lv_style_transition_dsc_init(&g_press_tr, kFeedbackProps, lv_anim_path_linear, 1, 0, nullptr);
   // Releasing: a short ease-out so the control doesn't snap. Free — the finger has already gone,
   // and nothing is waiting on it.
   lv_style_transition_dsc_init(&g_release_tr, kFeedbackProps, lv_anim_path_ease_out, 120, 0,

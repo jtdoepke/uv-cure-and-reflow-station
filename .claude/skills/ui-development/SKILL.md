@@ -161,9 +161,13 @@ standards, and patterns: `references/design-guide.md`. The hard rules:
   immediately; >1 s operations show a working indicator; >10 s (heating, curing) show a
   countdown or percent. A tap with no visible reaction within 100 ms is a defect.
   **A press is a fact, not a transition** — `theme.cpp` enters the pressed state with a
-  0 ms transition and eases back out over ~120 ms, and cancels `lv_theme_default`'s press
-  *grow* per-button (a `transform` makes LVGL snapshot the widget to an intermediate layer,
-  which on a big tile costs far more than the fill change it decorates).
+  near-instant 1 ms transition (NOT literally 0 ms: a 0 ms LVGL style transition resolves to the
+  *start* value and completes without invalidating, so the pressed fill never repaints until the
+  next unrelated invalidation — on a static screen that's the release, and the tile only lights up
+  after the finger lifts; see the `ensure_feedback_transitions` comment) and eases back out over
+  ~120 ms, and cancels `lv_theme_default`'s press *grow* per-button (a `transform` makes LVGL
+  snapshot the widget to an intermediate layer, which on a big tile costs far more than the fill
+  change it decorates).
 - **Neutral base, color = "look here now"** (ISA-101/IEC 63303). Red = danger/alarm
   (hot surface, UV on, fault); amber = warning (heating, door open); green sparingly.
   **Never color alone** — always pair with a word or icon ("UV ON", "HOT 210 °C"). This is not
