@@ -23,6 +23,7 @@
 #include "message_router.h"         // frame -> typed message dispatch (lib/protocol)
 #include "null_ambient_light.h"     // IAmbientLight for a board with no LDR (firmware glue)
 #include "nvs_settings_storage.h"   // NVS-backed ISettingsStorage adapter (firmware glue)
+#include "screen_router.h"          // hub-and-spoke screen manager + cache policy (lib/ui_logic)
 #include "settings_screen.h"        // Settings hub + panels (§24)
 #include "settings_store.h"         // typed device settings (lib/app_logic)
 #include "sleep_controller.h"       // idle sleep/wake policy (lib/app_logic, §17)
@@ -152,46 +153,44 @@ static void bench_link_stimulus() {
 }
 #endif // CYD_BENCH_LINK
 
-static void build_home();
+// Hub-and-spoke navigation via a ScreenRouter (lib/ui_logic/screen_router). Home is CACHED — built
+// once and kept resident, so returning to it is an lv_screen_load, not an lv_obj_clean + rebuild.
+// This is a deliberate exception to the "create-on-demand, delete on leave" rule (architecture.md):
+// Home is the always-returned-to hub, it is stateless and fully subject-bound (a cached instance
+// stays current — its observers fire even while off-screen — and renders identically to a fresh
+// build), and rebuilding it is expensive. Measured on the 3.5" (perf/baseline/device-35.md):
+// return-to-home 203 -> 114 ms — the rebuild is gone (38 -> 3 ms) AND the first render no longer
+// recomputes the flex layout the clean+rebuild invalidated (163 -> 112 ms). Keeping it resident
+// costs ~9-14 kB of the 64 kB LVGL pool. Settings stays create-on-demand: it is stateful (scroll /
+// drill-down / selection), so a cached instance would NOT be pixel-identical to a rebuild — caching
+// it would need a reset-on-show hook (ScreenRouter supports one) and is low-ROI (rarely revisited).
+enum : int { SCREEN_HOME = 0, SCREEN_SETTINGS = 1 };
+static ScreenRouter g_router;
 
-// Home is CACHED: built once into its own screen and kept resident, so returning to it is a
-// screen swap (lv_screen_load), not an lv_obj_clean + full rebuild. This is a deliberate exception
-// to the "create-on-demand, delete on leave" rule (architecture.md): Home is the always-returned-to
-// hub, it is stateless and fully subject-bound (so a cached instance stays current and renders
-// identically to a fresh build — its observers fire even while it is off-screen), and rebuilding it
-// is expensive. Measured on the 3.5" (perf/baseline/device-35.md): return-to-home 203 -> 114 ms —
-// the rebuild is gone (38 -> 3 ms) AND the first render no longer recomputes the flex layout the
-// clean+rebuild invalidated (163 -> 112 ms). Keeping it resident costs ~9-14 kB of the 64 kB LVGL
-// pool (both trees resident peak ~22 kB).
-// Settings stays rebuild-on-demand: it is stateful (scroll / drill-down / selection), so a cached
-// instance would NOT be pixel-identical to a rebuild.
-static lv_obj_t *g_home_scr = nullptr;
-static lv_obj_t *g_settings_scr = nullptr;
+static void go_home() {
+  lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping Settings re-triggers
+  g_router.show(SCREEN_HOME);
+}
 
-// Home ‹ Settings navigation. There is no global screen manager yet (C4/C6); Home publishes a
-// NAV_SETTINGS intent on its Settings tile, this observer swaps the active screen to the Settings
-// hub, and the hub's Back returns here. The observer lives on the subject (not a widget), so it
-// survives each screen rebuild.
+// Home publishes a NAV_SETTINGS intent on its Settings tile; this observer (on the subject, so it
+// survives screen swaps) routes to the Settings hub, whose Back fires on_settings_exit -> go_home.
 static void on_settings_exit(void *) {
-  build_home();
+  go_home();
 }
 
 static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
   if (lv_subject_get_int(subject) == NAV_SETTINGS) {
-    g_settings_scr = lv_obj_create(nullptr);
-    g_settings_screen.setExitHandler(on_settings_exit, nullptr);
-    g_settings_screen.begin(g_settings_scr, g_settings);
-    lv_screen_load(g_settings_scr);
+    g_router.show(SCREEN_SETTINGS);
   }
 }
 
-static void build_home() {
-  lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping Settings re-triggers
-  lv_screen_load(g_home_scr);                      // cached — no rebuild
-  if (g_settings_scr != nullptr) {
-    lv_obj_delete(g_settings_scr);
-    g_settings_scr = nullptr;
-  }
+static void build_home_screen_cb(void *, lv_obj_t *scr) {
+  create_home_screen(scr);
+}
+
+static void build_settings_screen_cb(void *, lv_obj_t *scr) {
+  g_settings_screen.setExitHandler(on_settings_exit, nullptr);
+  g_settings_screen.begin(scr, g_settings);
 }
 
 // Wake the display the instant the machine leaves idle — a HOT chamber, a run start, or a
@@ -358,8 +357,9 @@ void setup() {
   g_settings.load();
   settings_publish_subjects(g_settings);
 
-  g_home_scr = lv_screen_active();
-  create_home_screen(g_home_scr);
+  g_router.define(SCREEN_HOME, build_home_screen_cb, nullptr, /*cached=*/true);
+  g_router.define(SCREEN_SETTINGS, build_settings_screen_cb, nullptr, /*cached=*/false);
+  g_router.show(SCREEN_HOME);
   // Watch for the Home → Settings navigation intent (persists across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);
   // Wake immediately on any non-idle machine state (HOT / running / fault) — §17/§22.
@@ -393,10 +393,10 @@ void setup() {
 
 #if defined(PERF_PROBE)
   // Drive nav from the same static functions the UI uses, so a measured round trip is the real
-  // one. to_settings() publishes the intent on_nav_request observes; to_home() is build_home.
+  // one. to_settings() publishes the intent on_nav_request observes; to_home() is go_home().
   perf_probe::begin(perf_probe::NavHooks{
       []() { lv_subject_set_int(&subj_nav_request, NAV_SETTINGS); },
-      []() { build_home(); },
+      []() { go_home(); },
   });
 #endif
 }
