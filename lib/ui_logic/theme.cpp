@@ -9,6 +9,10 @@ void apply_screen(lv_obj_t *scr) {
   lv_obj_set_style_border_width(scr, 0, 0);
   lv_obj_set_style_radius(scr, 0, 0);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+  // The dot matrix is a property of the canvas — every screen carries it (design.md §14). Making
+  // that structural here, rather than a call each screen must remember, is also what closes the
+  // callback leak: add_dot_grid is idempotent, so this runs on every rebuild yet attaches once.
+  add_dot_grid(scr);
 }
 
 void apply_panel(lv_obj_t *obj) {
@@ -278,6 +282,20 @@ static void grid_draw_cb(lv_event_t *e) {
 }
 
 void add_dot_grid(lv_obj_t *scr) {
+  // Idempotent: attach grid_draw_cb at most once per object. This is load-bearing, not tidiness.
+  // The firmware reuses ONE screen object (lv_screen_active()) for every screen and rebuilds it
+  // with lv_obj_clean, which deletes the object's CHILDREN but never its own event list
+  // (lv_obj_tree.c). apply_screen runs on every rebuild, so without this guard each navigation
+  // would append another grid_draw_cb — and since every duplicate re-queues ~600 opaque dot draw
+  // tasks, the redraw grows without bound until reboot (measured: +800 tasks and ~+20 ms per
+  // Home visit on glass; perf/baseline/device-35.md). Collapsing N identical callbacks to one is
+  // pixel-identical, because they draw the same opaque dots in the same places.
+  uint32_t n = lv_obj_get_event_count(scr);
+  for (uint32_t i = 0; i < n; ++i) {
+    if (lv_event_dsc_get_cb(lv_obj_get_event_dsc(scr, i)) == grid_draw_cb) {
+      return;
+    }
+  }
   // MAIN_END, not MAIN: the dots sit on top of the screen's background fill but under every
   // panel, so panels occlude them exactly as opaque surfaces should.
   lv_obj_add_event_cb(scr, grid_draw_cb, LV_EVENT_DRAW_MAIN_END, nullptr);

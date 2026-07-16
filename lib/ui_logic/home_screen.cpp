@@ -68,8 +68,7 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   HomeScreen ui{};
   ui.root = parent;
 
-  theme::apply_screen(parent);
-  theme::add_dot_grid(parent);
+  theme::apply_screen(parent); // includes the dot-matrix background (every screen carries it)
   lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(parent, theme::PAD_S, 0);
   lv_obj_set_style_pad_row(parent, theme::GAP, 0);

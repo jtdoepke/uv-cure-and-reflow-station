@@ -50,8 +50,7 @@
 // in theme.cpp (apply_alert / apply_pill / apply_fault_panel), so §22 will inherit it. Only the
 // arrangement is sim-only.
 static void build_alert_specimen(lv_obj_t *scr) {
-  theme::apply_screen(scr);
-  theme::add_dot_grid(scr);
+  theme::apply_screen(scr); // includes the dot-matrix background
   lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(scr, theme::PAD_S, 0);
   lv_obj_set_style_pad_row(scr, theme::GAP, 0);
