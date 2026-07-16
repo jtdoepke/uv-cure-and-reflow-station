@@ -7,6 +7,7 @@
 #include <lvgl.h>
 
 #include "perf_stats.h"
+#include "theme.h" // for the 'b' blank-screen breakdown measurement
 
 namespace perf_probe {
 namespace {
@@ -104,6 +105,15 @@ void run(char cmd) {
     break;
   case 'n':
     nav_burst(12);
+    break;
+  case 'b':
+    // Breakdown: wipe the screen to just apply_screen (background + dot grid, no content) and
+    // measure. Home render minus this is the cost of all the panels/tiles/text. DESTRUCTIVE (the
+    // UI is gone until reflash) — a diagnostic, run last.
+    lv_obj_clean(lv_screen_active());
+    theme::apply_screen(lv_screen_active());
+    lv_obj_update_layout(lv_screen_active());
+    burst("blank", 30);
     break;
   case 'a':
     burst("home", 30);

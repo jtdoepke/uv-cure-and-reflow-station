@@ -125,6 +125,25 @@ inline constexpr bool kPanelReadable = true;
 // WiFi build already sits near the malloc cliff. Lines hold both the DMA chunk size and the DRAM
 // cost constant across panels; a denser panel simply takes more chunks per full refresh, which
 // costs approximately nothing on a UI that redraws small dirty regions.
+// Taller buffers are a large, pixel-safe responsiveness win, and the biggest single lever the
+// perf work found — bigger than any draw-task change. A widget that spans several chunks has its
+// fill/border/text draw work RE-QUEUED once per chunk it crosses, so fewer, taller chunks cut that
+// redundancy across every element at once. Measured on the 3.5" panel (Home full redraw, on glass;
+// each buffer is 320 x LINES x 2 B, doubled for DISP_DOUBLE_BUFFER):
+//
+//     LINES   chunks   both buffers   Home render
+//        24       20         30 KB       130 ms   (historical 2.8" size)
+//        40       12         51 KB       103 ms   -21%   <-- current
+//        48       10         61 KB        94 ms   -28%
+//        60        8         77 KB        86 ms   -34%
+//        96        4        123 KB       fails to allocate (malloc cliff, boot-loops)
+//
+// Kept at 24 FOR NOW, deliberately: taller buffers trade DRAM the planned OTA path (§21/§25) will
+// need — the buffers are heap-allocated precisely because WiFi and these compete for the same
+// internal DRAM, and the true WiFi headroom is not known until the feature set is complete. Revisit
+// then: bumping this is the biggest, cheapest, pixel-safe responsiveness win available (a bigger
+// default, or a per-env -D override — big for no-WiFi, small for the WiFi builds). Still
+// #ifndef-guarded so an env can override without a patch. The table above is the measured menu.
 #ifndef DRAW_BUF_LINES
 #define DRAW_BUF_LINES 24 // 320 x 24 x 2 B = 15360 B/buffer — the 2.8" board's long-standing size
 #endif
