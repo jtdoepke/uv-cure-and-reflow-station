@@ -2306,8 +2306,13 @@ rows** (≥56–67 px, the whole row is the target, not an inline `[ON]`);
   each edited on the keypad (§26 — their ranges exceed the >20-step rule). The one
   safety-relevant panel.
 - **Sleep & wake** — **idle timeout** (~1–2 min default, §17; → the shared value-stepper
-  editor). The **never-sleep-during-a-run** and **stay-awake-while-HOT** rules are **not**
-  user-disableable (§17) — shown as fixed, not toggles.
+  editor), and nothing else. The **never-sleep-during-a-run** and **stay-awake-while-HOT**
+  rules are **not** user-disableable (§17) and are therefore **not shown here at all**: a
+  settings list is a list of things you can change, so a permanently-fixed rule listed among
+  them is furniture — it costs a line of a small screen and draws the eye to a dead end.
+  (They were briefly rendered as disabled "fixed" rows. Same reasoning retired the
+  auto-brightness row on a board with no light sensor, §6a. Rows for features that are merely
+  *not yet* changeable — the hub's "soon" entries — stay, because those become real.)
 - **Network (WiFi)** — enable toggle; join / status + IP → the **Connectivity & data view**
   (§27). All WiFi services are **idle-only** (§21). SSID/password use a **large-key
   on-screen keyboard** (the necessary free-text exception, like the profile name §12 — not

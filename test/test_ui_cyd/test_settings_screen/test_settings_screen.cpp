@@ -220,6 +220,17 @@ void test_sensor_keeps_the_bias_row(void) {
   TEST_ASSERT_FALSE(screen.isEditingScreenBrightness());
 }
 
+// Sleep & wake lists only what you can change. The never-sleep-during-a-run and
+// stay-awake-while-HOT rules are fixed policy (§17), not settings, and are not rendered — the
+// same rule that removed the auto-brightness row on a sensorless board.
+void test_sleep_panel_lists_only_changeable_settings(void) {
+  screen.begin(lv_screen_active(), store);
+  open_row(ROW_SLEEP);
+  TEST_ASSERT_EQUAL_INT(1, screen.listModel().count());
+  TEST_ASSERT_EQUAL_STRING("Idle timeout", screen.listModel().item(0).label);
+  TEST_ASSERT_TRUE(screen.listModel().item(0).enabled); // and it is genuinely actionable
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_shows_hub);
@@ -234,5 +245,6 @@ int main(int, char **) {
   RUN_TEST(test_auto_brightness_toggle_persists);
   RUN_TEST(test_uv_cap_edit_commits_and_publishes);
   RUN_TEST(test_idle_timeout_edit_uses_stepper);
+  RUN_TEST(test_sleep_panel_lists_only_changeable_settings);
   return UNITY_END();
 }

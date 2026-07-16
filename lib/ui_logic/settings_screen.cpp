@@ -309,14 +309,15 @@ void SettingsScreen::buildSleepWake() {
   buildHeader("Sleep & wake");
   SettingsStore::idleTimeoutConfig().format(store_->idleTimeoutMin(), idle_value_,
                                             sizeof(idle_value_));
-  // The never-sleep-during-a-run / stay-awake-while-HOT rules are fixed, not user-disableable
-  // (§17): shown as disabled rows so Up/Down skip them and Open can't act on them.
-  const SelectableListItem items[3] = {
+  // Only the idle timeout is here, because it is the only thing on this panel you can change.
+  // The never-sleep-during-a-run and stay-awake-while-HOT rules (§17) are fixed policy, and they
+  // used to sit here as disabled "fixed" rows — but a settings list is a list of settings, and a
+  // rule that can never be toggled is not one. They are also the two rules a machine's behaviour
+  // states plainly by itself: the screen does not go dark mid-run.
+  const SelectableListItem items[1] = {
       {"Idle timeout", idle_value_, true, "Edit"},
-      {"Never sleeps during a run", "fixed", false},
-      {"Stays awake while HOT", "fixed", false},
   };
-  list_model_.init(items, 3, /*wrap=*/true);
+  list_model_.init(items, 1, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::sleep_open, this);
   create_selectable_list(parent_, list_model_);
 }
