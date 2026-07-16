@@ -84,14 +84,31 @@ inline constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SE
 // auto-brightness row lives in lib/ui_logic and must never see a board flag. A board without an
 // LDR gets a null adapter and a disabled AutoBrightness — one firmware shape, no dead branches,
 // and the constant folds away.
+// A macro as well as the constant, because the two uses genuinely differ: main.cpp must pick
+// *which adapter type to instantiate* (a preprocessor job — Esp32AmbientLight takes a pin,
+// NullAmbientLight takes nothing), while everything else just reads the value. One source, the
+// constant derived from it, so they cannot disagree.
 #if defined(CYD_BOARD_3248S035)
-inline constexpr bool kHasAmbientLight = false; // TODO(HW): unverified on this board
+#define CYD_HAS_AMBIENT_LIGHT 0 // verified on the bench: no LDR fitted to this board
 inline constexpr int kAmbientPin = -1;
 #else
-inline constexpr bool kHasAmbientLight = true;
+#define CYD_HAS_AMBIENT_LIGHT 1
 inline constexpr int kAmbientPin = 34; // on-board LDR, ADC1 (reads fine with WiFi on)
 #endif
+inline constexpr bool kHasAmbientLight = CYD_HAS_AMBIENT_LIGHT;
 inline constexpr adc_attenuation_t kAmbientAtten = ADC_11db; // full ~0-3.3 V LDR swing (§18)
+
+// --- GRAM readback ---
+// Whether the panel can be read back, i.e. whether its SDO is wired. Mirrors cfg.readable in the
+// board's LGFX header; kept here because UI_DEV_TOOLS' /screenshot.bmp is the only thing that
+// depends on it, and it must refuse rather than serve a screenshot of nothing. On the 3.5" board
+// readback returns all zeros, so dev-shot silently wrote a perfectly black 320x480 PNG — a
+// convincing lie, which is the failure mode worth spending a constant to avoid.
+#if defined(CYD_BOARD_3248S035)
+inline constexpr bool kPanelReadable = false;
+#else
+inline constexpr bool kPanelReadable = true;
+#endif
 
 // --- LVGL draw buffers ---
 // No PSRAM on any CYD, so partial buffers only — sized in SCANLINES rather than as a fraction of

@@ -10,6 +10,7 @@ lv_subject_t subj_units;
 lv_subject_t subj_uv_cap;
 lv_subject_t subj_reflow_cap;
 lv_subject_t subj_advanced;
+lv_subject_t subj_has_ambient_light;
 
 void ui_subjects_init() {
   lv_subject_init_int(&subj_chamber_temp, 22);
@@ -24,4 +25,8 @@ void ui_subjects_init() {
   lv_subject_init_int(&subj_uv_cap, settings_defaults::UV_CAP_DEFAULT);
   lv_subject_init_int(&subj_reflow_cap, settings_defaults::REFLOW_CAP_DEFAULT);
   lv_subject_init_int(&subj_advanced, 0);
+  // Assume fitted; the firmware corrects this from cyd_board.h at boot. Defaulting to "present"
+  // keeps the sim and the UI tests on the interesting path — a row that is greyed out by default
+  // is a row nobody ever looks at.
+  lv_subject_init_int(&subj_has_ambient_light, 1);
 }

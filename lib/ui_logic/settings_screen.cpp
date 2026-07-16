@@ -235,12 +235,17 @@ void SettingsScreen::buildDisplayUnits() {
   configParent();
   buildHeader("Display & units");
   const char *units_value = store_->units() == TempUnits::Fahrenheit ? "Fahrenheit" : "Celsius";
-  const char *auto_value = store_->autoBrightness() ? "On" : "Off";
+  // Auto-brightness needs a sensor. On a board with none the row stays visible but disabled —
+  // SelectableListModel skips disabled rows for ▲/▼ and refuses to open them — because a row that
+  // says "Not fitted" answers the question, while a row that silently vanishes invites someone to
+  // go looking for the setting they remember. The stored preference is untouched either way.
+  const bool has_ldr = lv_subject_get_int(&subj_has_ambient_light) != 0;
+  const char *auto_value = !has_ldr ? "Not fitted" : (store_->autoBrightness() ? "On" : "Off");
   SettingsStore::brightnessBiasConfig().format(store_->brightnessBias(), bias_value_,
                                                sizeof(bias_value_));
   const SelectableListItem items[3] = {
       {"Temperature units", units_value, true, "Change"},
-      {"Auto-brightness", auto_value, true, "Toggle"},
+      {"Auto-brightness", auto_value, has_ldr, "Toggle"},
       {"Brightness bias", bias_value_, true, "Edit"},
   };
   list_model_.init(items, 3, /*wrap=*/true);

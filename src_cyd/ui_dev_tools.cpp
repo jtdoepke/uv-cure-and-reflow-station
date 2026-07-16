@@ -50,6 +50,17 @@ static void put_u32le(uint8_t *p, uint32_t v) {
 // One row buffer (w*3 bytes). BMP requires 4-byte-aligned rows and this writer emits no padding,
 // so it relies on w*3 being a multiple of 4 — true for every panel width we ship (320, 480).
 static void handle_screenshot() {
+  // Refuse rather than lie. This reads the panel's GRAM, which needs the panel's SDO wired; where
+  // it is not (cyd_board::kPanelReadable == false, e.g. the 3.5" board) readback returns all
+  // zeros and we would serve a flawlessly encoded, perfectly black BMP. `make dev-shot` would
+  // report success and write a PNG, and the only clue would be that the screenshot never matches
+  // the screen. Use the simulator on those boards.
+  if constexpr (!kPanelReadable) {
+    server.send(501, "text/plain",
+                "screenshot unavailable: this board's panel is not readable (SDO not wired) - "
+                "use `make sim-shot`\n");
+    return;
+  }
   const int32_t w = s_gfx->width();
   const int32_t h = s_gfx->height();
   const uint32_t row_bytes = static_cast<uint32_t>(w) * 3;

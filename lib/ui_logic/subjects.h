@@ -52,6 +52,14 @@ extern lv_subject_t subj_uv_cap;     // int, °C — UV/cure user max-temp cap
 extern lv_subject_t subj_reflow_cap; // int, °C — reflow user max-temp cap
 extern lv_subject_t subj_advanced;   // 0/1 — Advanced options unlocked
 
+// A hardware capability, not a preference: whether this board has an ambient-light sensor fitted
+// (the 3.5" panel does not). Published once at boot by the firmware from cyd_board.h; the Settings
+// screen greys out the auto-brightness row when it is 0. It arrives as data precisely so that
+// lib/ui_logic never learns what a board is — a #if here would be a board identity leaking into
+// host-testable code, which is the thing the ports exist to prevent. Defaults to 1 so the sim and
+// the UI tests exercise the fitted case unless a test says otherwise.
+extern lv_subject_t subj_has_ambient_light; // 0/1 — ambient-light sensor present
+
 // (Re)initialise every subject to a safe boot default. Call once after lv_init() and before
 // building any screen — the firmware setup(), the sim, and each test's setUp() all do this.
 // Idempotent: re-running it resets the shared state to defaults, which is exactly what the

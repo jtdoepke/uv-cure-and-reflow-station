@@ -16,8 +16,10 @@
 #include "frame_link.h"             // TinyFrame framing (lib/protocol)
 #include "home_screen.h"            // UI construction lives in lib/ui_logic (host-testable)
 #include "home_viewmodel.h"         // handshake -> LinkState mapper (lib/ui_logic)
-#include "lgfx_backlight.h"         // LGFX IBacklight adapter (firmware glue)
+#include "lgfx_display.h"           // LGFX IDisplay + IBacklight adapter (firmware glue)
+#include "lgfx_touch.h"             // LGFX ITouch adapter (firmware glue)
 #include "message_router.h"         // frame -> typed message dispatch (lib/protocol)
+#include "null_ambient_light.h"     // IAmbientLight for a board with no LDR (firmware glue)
 #include "nvs_settings_storage.h"   // NVS-backed ISettingsStorage adapter (firmware glue)
 #include "settings_screen.h"        // Settings hub + panels (§24)
 #include "settings_store.h"         // typed device settings (lib/app_logic)
@@ -25,7 +27,8 @@
 #include "subjects.h"
 #include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
-#include "ui_dev_tools.h" // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
+#include "injected_touch.h" // ITouch decorator letting the dev API pre-empt the panel
+#include "ui_dev_tools.h"   // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
 #endif
 
 static LGFX gfx;
@@ -44,12 +47,30 @@ static NvsSettingsStorage g_settings_storage;
 static SettingsStore g_settings(g_settings_storage);
 static SettingsScreen g_settings_screen;
 
+// The display + touch behind their ports (lib/display_port). LGFX itself is touched only here and
+// in my_disp_flush — see lgfx_display.h for why the flush deliberately is not a port call.
+static LgfxDisplay g_display(gfx);
+static LgfxTouch g_panel_touch(gfx);
+#if defined(UI_DEV_TOOLS)
+static InjectedTouch g_injected_touch(g_panel_touch); // WiFi-injected touches pre-empt the panel
+static ITouch &g_touch = g_injected_touch;
+#else
+static ITouch &g_touch = g_panel_touch;
+#endif
+
 // Auto-brightness (§18) + idle sleep/wake (§17). AutoBrightness owns the backlight; the
 // SleepController decides awake/asleep and AutoBrightness ramps the backlight off/on to match.
 // Fed from g_settings each loop (auto on/off, brightness bias, idle timeout).
+//
+// The ambient sensor is a per-board capability (cyd_board::kHasAmbientLight): a board with no LDR
+// gets the null adapter and AutoBrightness held disabled, rather than an Esp32AmbientLight aimed
+// at pin -1. `if constexpr` so only the real adapter is instantiated per build.
+#if CYD_HAS_AMBIENT_LIGHT
 static Esp32AmbientLight g_ambient(kAmbientPin);
-static LgfxBacklight g_backlight(gfx);
-static AutoBrightness g_auto_brightness(g_ambient, g_backlight);
+#else
+static NullAmbientLight g_ambient;
+#endif
+static AutoBrightness g_auto_brightness(g_ambient, g_display);
 static SleepController g_sleep;
 
 // CYD <-> controller link (§9). The UART, its pins and its buffer sizing live in cyd_board.h —
@@ -185,18 +206,10 @@ static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 }
 
 static void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
-#if defined(UI_DEV_TOOLS)
-  int16_t sx, sy;
-  if (ui_dev_touch_get(&sx, &sy)) { // injected touch takes precedence over the panel
-    g_sleep.noteActivity(millis()); // keep the screen awake during WiFi dev-shot/touch sessions
-    data->point.x = sx;
-    data->point.y = sy;
-    data->state = LV_INDEV_STATE_PRESSED;
-    return;
-  }
-#endif
-  uint16_t x, y;
-  if (gfx.getTouch(&x, &y)) { // getTouch() returns calibrated screen coords
+  // One touch read, no build-flag branch: g_touch is the panel, or the panel behind the dev-tools
+  // injector, and either way it is an ITouch (see injected_touch.h).
+  int x = 0, y = 0;
+  if (g_touch.getTouch(&x, &y)) { // already calibrated screen coords
     // A touch always counts as activity. If it woke the screen, consume it: the wake tap lights
     // the display without also actuating the control beneath it (§17).
     bool wasAsleep = !g_sleep.awake();
@@ -286,6 +299,8 @@ void setup() {
   // The subjects boot to safe defaults (idle, no-link); real telemetry/handshake wiring that
   // drives them lands with the controller-link integration.
   ui_subjects_init();
+  // Publish this board's hardware capabilities as data — lib/ui_logic must never see a board flag.
+  lv_subject_set_int(&subj_has_ambient_light, kHasAmbientLight ? 1 : 0);
 
   // Load persisted settings and clamp caps to the current hard-max (§4/§24), then publish the
   // cross-screen values so any consumer sees them before Settings is opened.
@@ -366,7 +381,11 @@ void loop() {
   g_sleep.setIdleTimeoutMs(static_cast<uint32_t>(g_settings.idleTimeoutMin()) * 60000U);
   g_sleep.tick(now, sleep_allowed);
   g_auto_brightness.setAwake(g_sleep.awake());
-  g_auto_brightness.setEnabled(g_settings.autoBrightness());
+  // The board's capability wins over the stored preference: with no sensor there is nothing to be
+  // automatic about, and the null adapter's constant 0 would otherwise read as "bright room" and
+  // pin the backlight at maximum. The setting is left stored rather than clamped — it is a user
+  // preference, and it is correct again the moment this firmware runs on a board that has an LDR.
+  g_auto_brightness.setEnabled(kHasAmbientLight && g_settings.autoBrightness());
   // Brightness bias: normally the stored value, but while the bias stepper is open, preview the
   // in-progress value live so the screen brightens/dims as you dial it (§18/§24).
   int32_t bias = g_settings_screen.isEditingBrightnessBias()
@@ -375,14 +394,18 @@ void loop() {
   g_auto_brightness.setBias(bias);
   g_auto_brightness.tick(now);
 
-  // On-glass curve tuning trace (1 Hz): the raw LDR vs the resulting backlight. On this board raw
-  // is ~0 in room light and climbs into the hundreds/thousands only as it gets dark (§18). Handy
-  // while tuning AutoBrightness::kCurve; safe to drop once the curve is dialed in.
+  // On-glass curve tuning trace (1 Hz): the raw LDR vs the resulting backlight. On a board with
+  // the LDR fitted, raw is ~0 in room light and climbs into the hundreds/thousands only as it
+  // gets dark (§18). Handy while tuning AutoBrightness::kCurve; safe to drop once dialed in.
+  // lastRaw() rather than a fresh g_ambient.read(): it is the sample the level was actually
+  // computed from, and it costs no extra ADC conversion. Reads 0 when auto is off — including on
+  // a board with no sensor, where the whole line is just "what is the backlight doing".
   static uint32_t last_ldr_log = 0;
   if (static_cast<uint32_t>(now - last_ldr_log) >= 1000U) {
     last_ldr_log = now;
-    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n", g_ambient.read(),
-                  g_auto_brightness.level(), static_cast<int>(g_settings.autoBrightness()),
+    Serial.printf("[ldr] raw=%4d backlight=%3u auto=%d bias=%ld awake=%d\n",
+                  g_auto_brightness.lastRaw(), g_auto_brightness.level(),
+                  static_cast<int>(kHasAmbientLight && g_settings.autoBrightness()),
                   static_cast<long>(bias), static_cast<int>(g_sleep.awake()));
     // Link state (§9), on the CYD's own USB console — which is free precisely because §2 put
     // the link on other pins. matched=0 with sawPeer=1 is a schema skew; sawPeer=0 means we

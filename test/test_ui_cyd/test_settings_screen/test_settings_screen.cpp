@@ -116,6 +116,38 @@ void test_auto_brightness_toggle_persists(void) {
   TEST_ASSERT_TRUE(fs.saveCalls > 0);
 }
 
+// A board with no light sensor (the 3.5" panel) publishes subj_has_ambient_light = 0. The row
+// must then be inert rather than absent: opening it must not toggle the stored preference, and
+// must not persist anything. The capability reaches this screen as data — there is deliberately
+// no board flag to test against here.
+void test_auto_brightness_row_inert_without_sensor(void) {
+  lv_subject_set_int(&subj_has_ambient_light, 0);
+  screen.begin(lv_screen_active(), store);
+  open_row(ROW_DISPLAY);
+  const bool before = store.autoBrightness();
+
+  // The model refuses to select a disabled row, so the toggle is unreachable — note this is NOT
+  // open_row(1): that would select(1) (refused, leaving row 0 selected) and then Open row 0,
+  // cycling the temperature units instead. The row being unselectable is the whole contract.
+  screen.listModel().select(1);
+  TEST_ASSERT_NOT_EQUAL_INT(1, screen.listModel().selected());
+
+  // The stored preference is left alone rather than clamped: it is a user preference, and it is
+  // meaningful again the moment this firmware runs on a board that has a sensor.
+  TEST_ASSERT_EQUAL(before, store.autoBrightness());
+  TEST_ASSERT_EQUAL_INT(0, fs.saveCalls);
+}
+
+// The other half of the contract: with a sensor present (the default), the row is selectable.
+// Without this, the test above would still pass if the row were disabled unconditionally.
+void test_auto_brightness_row_selectable_with_sensor(void) {
+  lv_subject_set_int(&subj_has_ambient_light, 1);
+  screen.begin(lv_screen_active(), store);
+  open_row(ROW_DISPLAY);
+  screen.listModel().select(1);
+  TEST_ASSERT_EQUAL_INT(1, screen.listModel().selected());
+}
+
 void test_uv_cap_edit_commits_and_publishes(void) {
   screen.begin(lv_screen_active(), store);
   open_row(ROW_TEMP);
@@ -151,6 +183,8 @@ int main(int, char **) {
   RUN_TEST(test_open_categories_and_back);
   RUN_TEST(test_back_from_hub_calls_exit);
   RUN_TEST(test_advanced_master_toggle);
+  RUN_TEST(test_auto_brightness_row_inert_without_sensor);
+  RUN_TEST(test_auto_brightness_row_selectable_with_sensor);
   RUN_TEST(test_units_cycle_persists_and_publishes);
   RUN_TEST(test_auto_brightness_toggle_persists);
   RUN_TEST(test_uv_cap_edit_commits_and_publishes);
