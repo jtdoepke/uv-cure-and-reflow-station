@@ -14,13 +14,12 @@ namespace {
 enum HubIndex {
   HUB_DISPLAY = 0,
   HUB_TEMP = 1,
-  HUB_SLEEP = 2,
-  HUB_NETWORK = 3,  // disabled — WiFi (D9)
-  HUB_DATA_FW = 4,  // disabled — OTA / logs
-  HUB_PROFILES = 5, // disabled — ProfileStore (B4)
-  HUB_ABOUT = 6,
-  HUB_ADVANCED = 7,
-  HUB_COUNT = 8,
+  HUB_NETWORK = 2,  // disabled — WiFi (D9)
+  HUB_DATA_FW = 3,  // disabled — OTA / logs
+  HUB_PROFILES = 4, // disabled — ProfileStore (B4)
+  HUB_ABOUT = 5,
+  HUB_ADVANCED = 6,
+  HUB_COUNT = 7,
 };
 
 // A read-only informational row: label left, value/detail right (About; the fixed sleep rules).
@@ -74,9 +73,6 @@ struct SettingsThunks {
   static void display_open(int index, void *ud) {
     static_cast<SettingsScreen *>(ud)->onDisplayOpen(index);
   }
-  static void sleep_open(int index, void *ud) {
-    static_cast<SettingsScreen *>(ud)->onSleepOpen(index);
-  }
   static void temp_open(int index, void *ud) {
     static_cast<SettingsScreen *>(ud)->onTempOpen(index);
   }
@@ -129,9 +125,6 @@ void SettingsScreen::showPage(SettingsPage page) {
   case SettingsPage::TempLimits:
     buildTempLimits();
     break;
-  case SettingsPage::SleepWake:
-    buildSleepWake();
-    break;
   case SettingsPage::About:
     buildAbout();
     break;
@@ -152,9 +145,6 @@ void SettingsScreen::openHubItem(int index) {
     break;
   case HUB_TEMP:
     showPage(SettingsPage::TempLimits);
-    break;
-  case HUB_SLEEP:
-    showPage(SettingsPage::SleepWake);
     break;
   case HUB_ABOUT:
     showPage(SettingsPage::About);
@@ -230,10 +220,13 @@ void SettingsScreen::buildHub() {
 
   const char *advanced_value = store_->advancedUnlocked() ? "On" : "Off";
   const SelectableListItem items[HUB_COUNT] = {
-      {"Display & units", nullptr, true, "Open"}, {"Temperature limits", nullptr, true, "Open"},
-      {"Sleep & wake", nullptr, true, "Open"},    {"Network (WiFi)", "soon", false},
-      {"Data & firmware", "soon", false},         {"Profiles", "soon", false},
-      {"About", nullptr, true, "Open"},           {"Advanced", advanced_value, true, "Toggle"},
+      {"Display & units", nullptr, true, "Open"},
+      {"Temperature limits", nullptr, true, "Open"},
+      {"Network (WiFi)", "soon", false},
+      {"Data & firmware", "soon", false},
+      {"Profiles", "soon", false},
+      {"About", nullptr, true, "Open"},
+      {"Advanced", advanced_value, true, "Toggle"},
   };
   list_model_.init(items, HUB_COUNT, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::hub_open, this);
@@ -272,7 +265,7 @@ void SettingsScreen::buildDisplayUnits() {
                                                    sizeof(bias_value_));
   }
 
-  SelectableListItem items[3];
+  SelectableListItem items[4];
   int n = 0;
   display_rows_[n] = DisplayRow::Units;
   items[n++] = {"Temperature units", units_value, true, "Change"};
@@ -282,6 +275,15 @@ void SettingsScreen::buildDisplayUnits() {
   }
   display_rows_[n] = DisplayRow::Brightness;
   items[n++] = {bright_label, bias_value_, true, "Edit"};
+
+  // Idle timeout lives here rather than in a panel of its own. It used to head a "Sleep & wake"
+  // category alongside the two fixed rules; once those went (they are policy, not settings) that
+  // panel was one row deep, which is a menu level charging a tap for nothing. It belongs with
+  // brightness anyway: both are "what the screen does when you are not touching it" (§17/§18).
+  SettingsStore::idleTimeoutConfig().format(store_->idleTimeoutMin(), idle_value_,
+                                            sizeof(idle_value_));
+  display_rows_[n] = DisplayRow::IdleTimeout;
+  items[n++] = {"Idle timeout", idle_value_, true, "Edit"};
   display_row_count_ = n;
 
   list_model_.init(items, n, /*wrap=*/true);
@@ -301,24 +303,6 @@ void SettingsScreen::buildTempLimits() {
   };
   list_model_.init(items, 2, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::temp_open, this);
-  create_selectable_list(parent_, list_model_);
-}
-
-void SettingsScreen::buildSleepWake() {
-  configParent();
-  buildHeader("Sleep & wake");
-  SettingsStore::idleTimeoutConfig().format(store_->idleTimeoutMin(), idle_value_,
-                                            sizeof(idle_value_));
-  // Only the idle timeout is here, because it is the only thing on this panel you can change.
-  // The never-sleep-during-a-run and stay-awake-while-HOT rules (§17) are fixed policy, and they
-  // used to sit here as disabled "fixed" rows — but a settings list is a list of settings, and a
-  // rule that can never be toggled is not one. They are also the two rules a machine's behaviour
-  // states plainly by itself: the screen does not go dark mid-run.
-  const SelectableListItem items[1] = {
-      {"Idle timeout", idle_value_, true, "Edit"},
-  };
-  list_model_.init(items, 1, /*wrap=*/true);
-  list_model_.setOpenHandler(SettingsThunks::sleep_open, this);
   create_selectable_list(parent_, list_model_);
 }
 
@@ -363,12 +347,9 @@ void SettingsScreen::onDisplayOpen(int index) {
                                                                 : EditField::ScreenBrightness,
                SettingsPage::DisplayUnits);
     break;
-  }
-}
-
-void SettingsScreen::onSleepOpen(int index) {
-  if (index == 0) {
-    openEditor(EditField::IdleTimeout, SettingsPage::SleepWake);
+  case DisplayRow::IdleTimeout: // how long until the screen sleeps (§17).
+    openEditor(EditField::IdleTimeout, SettingsPage::DisplayUnits);
+    break;
   }
 }
 

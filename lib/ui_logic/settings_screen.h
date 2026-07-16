@@ -6,7 +6,7 @@
 // with C4/C6): it owns a `parent` and rebuilds that parent's children as the user moves hub →
 // panel → editor → back, honoring §24's "create-on-demand, delete on leave (no PSRAM)". It owns
 // the reused editor view models + list models as members, so their subjects outlive each rebuilt
-// editor. Buildable panels only (Display & units, Temperature limits, Sleep & wake, About, and
+// editor. Buildable panels only (Display & units, Temperature limits, About, and
 // the Advanced master toggle); Network / Data & firmware / Profiles show as disabled "coming
 // soon" rows until their backends land.
 //
@@ -28,7 +28,6 @@ enum class SettingsPage {
   Hub,
   DisplayUnits,
   TempLimits,
-  SleepWake,
   About,
   Editor,
 };
@@ -87,19 +86,17 @@ private:
   // identifies the action — Open must dispatch on what was actually built, not on a number.
   // Storing the mapping is what stops index 1 meaning "auto-brightness" on one board and
   // "screen brightness" on another.
-  enum class DisplayRow { Units, AutoBrightness, Brightness };
+  enum class DisplayRow { Units, AutoBrightness, Brightness, IdleTimeout };
 
   // Panel builders (each clears `parent_` and lays out its own content). Every actionable panel is
   // a selectable list (scroll + Up/Down + a per-row verb); About is a read-only scrolling column.
   void buildHub();
   void buildDisplayUnits();
   void buildTempLimits();
-  void buildSleepWake();
   void buildAbout();
 
   // Per-panel Open dispatchers (the list's open seam; recover `this` via user_data thunks).
   void onDisplayOpen(int index);
-  void onSleepOpen(int index);
   void onTempOpen(int index);
 
   // Shared bits.
@@ -131,7 +128,7 @@ private:
   char idle_value_[16]{};
 
   // Row index -> action for the currently built Display & units panel (see DisplayRow).
-  DisplayRow display_rows_[3]{};
+  DisplayRow display_rows_[4]{};
   int display_row_count_ = 0;
 
   void (*on_exit_)(void *) = nullptr;

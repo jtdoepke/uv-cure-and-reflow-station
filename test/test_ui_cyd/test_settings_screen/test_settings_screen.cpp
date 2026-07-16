@@ -15,8 +15,8 @@
 #include "settings_store.h"
 #include "subjects.h"
 
-// Documented hub row order (settings_screen.cpp HubIndex). Enabled: 0,1,2,6,7.
-enum { ROW_DISPLAY = 0, ROW_TEMP = 1, ROW_SLEEP = 2, ROW_ABOUT = 6, ROW_ADVANCED = 7 };
+// Documented hub row order (settings_screen.cpp HubIndex). Enabled: 0,1,5,6.
+enum { ROW_DISPLAY = 0, ROW_TEMP = 1, ROW_ABOUT = 5, ROW_ADVANCED = 6 };
 
 static FakeSettingsStorage fs;
 static SettingsStore store(fs);
@@ -65,10 +65,6 @@ void test_open_categories_and_back(void) {
   open_row(ROW_TEMP);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::TempLimits),
                         static_cast<int>(screen.page()));
-  screen.back();
-
-  open_row(ROW_SLEEP);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::SleepWake), static_cast<int>(screen.page()));
   screen.back();
 
   open_row(ROW_ABOUT);
@@ -128,8 +124,8 @@ void test_auto_brightness_row_absent_without_sensor(void) {
   open_row(ROW_DISPLAY);
   const bool before = store.autoBrightness();
 
-  // Two rows only: units, then the absolute brightness. No auto row under any index.
-  TEST_ASSERT_EQUAL_INT(2, screen.listModel().count());
+  // Three rows: units, the absolute brightness, idle timeout. No auto row under any index.
+  TEST_ASSERT_EQUAL_INT(3, screen.listModel().count());
   for (int i = 0; i < screen.listModel().count(); i++) {
     TEST_ASSERT_NOT_EQUAL_INT(0, strcmp(screen.listModel().item(i).label, "Auto-brightness"));
   }
@@ -147,7 +143,7 @@ void test_auto_brightness_row_present_with_sensor(void) {
   lv_subject_set_int(&subj_has_ambient_light, 1);
   screen.begin(lv_screen_active(), store);
   open_row(ROW_DISPLAY);
-  TEST_ASSERT_EQUAL_INT(3, screen.listModel().count());
+  TEST_ASSERT_EQUAL_INT(4, screen.listModel().count());
   TEST_ASSERT_EQUAL_STRING("Auto-brightness", screen.listModel().item(1).label);
   screen.listModel().select(1);
   TEST_ASSERT_EQUAL_INT(1, screen.listModel().selected());
@@ -172,14 +168,17 @@ void test_uv_cap_edit_commits_and_publishes(void) {
 }
 
 void test_idle_timeout_edit_uses_stepper(void) {
+  lv_subject_set_int(&subj_has_ambient_light, 1); // with a sensor: units, auto, bias, idle
   screen.begin(lv_screen_active(), store);
-  open_row(ROW_SLEEP);
-  open_row(0); // Idle timeout -> stepper editor
+  open_row(ROW_DISPLAY);
+  TEST_ASSERT_EQUAL_STRING("Idle timeout", screen.listModel().item(3).label);
+  open_row(3); // Idle timeout -> stepper editor
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Editor), static_cast<int>(screen.page()));
   screen.stepperVm().onPlus(); // 2 -> 3
   screen.stepperVm().onSave();
   TEST_ASSERT_EQUAL_INT32(3, store.idleTimeoutMin());
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::SleepWake), static_cast<int>(screen.page()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::DisplayUnits),
+                        static_cast<int>(screen.page())); // back to the panel it lives on
 }
 
 // A board with no light sensor swaps the bias row for a plain absolute brightness control: a bias
@@ -220,15 +219,19 @@ void test_sensor_keeps_the_bias_row(void) {
   TEST_ASSERT_FALSE(screen.isEditingScreenBrightness());
 }
 
-// Sleep & wake lists only what you can change. The never-sleep-during-a-run and
-// stay-awake-while-HOT rules are fixed policy (§17), not settings, and are not rendered — the
-// same rule that removed the auto-brightness row on a sensorless board.
-void test_sleep_panel_lists_only_changeable_settings(void) {
+// There is no Sleep & wake panel. The never-sleep-during-a-run and stay-awake-while-HOT rules are
+// fixed policy (§17), not settings, so they are not rendered; that left one real row, and a menu
+// level holding one row charges a tap for nothing — Idle timeout moved in with the other
+// "what the screen does when you are not touching it" settings.
+void test_no_sleep_panel_and_idle_timeout_lives_on_display(void) {
+  lv_subject_set_int(&subj_has_ambient_light, 1);
   screen.begin(lv_screen_active(), store);
-  open_row(ROW_SLEEP);
-  TEST_ASSERT_EQUAL_INT(1, screen.listModel().count());
-  TEST_ASSERT_EQUAL_STRING("Idle timeout", screen.listModel().item(0).label);
-  TEST_ASSERT_TRUE(screen.listModel().item(0).enabled); // and it is genuinely actionable
+  for (int i = 0; i < screen.listModel().count(); i++) {
+    TEST_ASSERT_NOT_EQUAL_INT(0, strcmp(screen.listModel().item(i).label, "Sleep & wake"));
+  }
+  open_row(ROW_DISPLAY);
+  TEST_ASSERT_EQUAL_INT(4, screen.listModel().count()); // units, auto, bias, idle
+  TEST_ASSERT_EQUAL_STRING("Idle timeout", screen.listModel().item(3).label);
 }
 
 int main(int, char **) {
@@ -245,6 +248,6 @@ int main(int, char **) {
   RUN_TEST(test_auto_brightness_toggle_persists);
   RUN_TEST(test_uv_cap_edit_commits_and_publishes);
   RUN_TEST(test_idle_timeout_edit_uses_stepper);
-  RUN_TEST(test_sleep_panel_lists_only_changeable_settings);
+  RUN_TEST(test_no_sleep_panel_and_idle_timeout_lives_on_display);
   return UNITY_END();
 }

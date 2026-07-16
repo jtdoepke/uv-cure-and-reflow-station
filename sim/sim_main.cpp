@@ -197,11 +197,14 @@ int main(int argc, char **argv) {
     // A settings-hub-shaped list (§24) with a disabled "coming soon" row, to review the
     // ▲/▼-highlight + Open layout without a hosting Settings screen.
     static const SelectableListItem items[] = {
-        {"Display & units", nullptr, true}, {"Temperature limits", nullptr, true},
-        {"Sleep & wake", nullptr, true},    {"Network (WiFi)", "soon", false},
+        {"Display & units", nullptr, true},
+        {"Temperature limits", nullptr, true},
+        {"Network (WiFi)", "soon", false},
         {"About", nullptr, true},
     };
-    list_model.init(items, 5);
+    // Count derived from the array, not written twice: deleting a row above used to leave a
+    // stale literal here reading past the end.
+    list_model.init(items, static_cast<int>(sizeof(items) / sizeof(items[0])));
     create_selectable_list(lv_screen_active(), list_model);
   } else if (screen == "stepper") {
     // A representative nudge-range field: idle timeout 1–10 min, default 2 (§24).

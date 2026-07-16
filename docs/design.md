@@ -2279,7 +2279,6 @@ screen relies on precise small-target taps.
 ├──────────────────────────────────────┤
 │  Display & units                      │  ← selected (highlighted)
 │  Temperature limits                   │
-│  Sleep & wake                         │
 │  Network (WiFi)                       │
 │  Data & firmware                      │
 │  Profiles                             │
@@ -2298,21 +2297,30 @@ fields, the keypad (§26) for everything wider; **booleans** → **full-width to
 rows** (≥56–67 px, the whole row is the target, not an inline `[ON]`);
 **choices** → the ▲/▼-highlight + `Open` list. No inline mini-controls.
 
-- **Display & units** — temperature **units** (°C/°F toggle; applies everywhere: editor,
-  run, about); **auto-brightness** on/off + a manual **brightness bias** (→ the shared
-  value-stepper editor, below) (§18). The **min-brightness floor always applies** even at
-  lowest bias (HOT/UV/fault must stay legible, §18) — not user-defeatable.
+- **Display & units** — everything about what the screen does, including when you are not
+  touching it: temperature **units** (°C/°F toggle; applies everywhere: editor, run, about);
+  brightness; and the **idle timeout** before the screen sleeps (~1–2 min default, §17; → the
+  shared value-stepper editor, below).
+  Brightness follows the board's hardware (§6a), as data rather than as an `#if`: **with** an
+  ambient-light sensor it is **auto-brightness** on/off plus a manual **brightness bias**;
+  **without** one (the 3.5" board) the auto row is not shown at all and the bias — a trim on an
+  ambient reading that does not exist — becomes a plain absolute **screen brightness** (%).
+  The **min-brightness floor always applies** either way (HOT/UV/fault must stay legible, §18) —
+  not user-defeatable, which is why the absolute control's own range stops above it rather than
+  clamping silently against it.
 - **Temperature limits** — the per-mode **user max-temp caps** (§4): UV and reflow,
   each edited on the keypad (§26 — their ranges exceed the >20-step rule). The one
   safety-relevant panel.
-- **Sleep & wake** — **idle timeout** (~1–2 min default, §17; → the shared value-stepper
-  editor), and nothing else. The **never-sleep-during-a-run** and **stay-awake-while-HOT**
-  rules are **not** user-disableable (§17) and are therefore **not shown here at all**: a
-  settings list is a list of things you can change, so a permanently-fixed rule listed among
-  them is furniture — it costs a line of a small screen and draws the eye to a dead end.
-  (They were briefly rendered as disabled "fixed" rows. Same reasoning retired the
+- *(There is no **Sleep & wake** category.* The **never-sleep-during-a-run** and
+  **stay-awake-while-HOT** rules are **not** user-disableable (§17), so they are **not shown at
+  all**: a settings list is a list of things you can change, and a permanently-fixed rule listed
+  among them is furniture — it costs a line of a small screen and draws the eye to a dead end.
+  They were briefly rendered as disabled "fixed" rows; the same reasoning retired the
   auto-brightness row on a board with no light sensor, §6a. Rows for features that are merely
-  *not yet* changeable — the hub's "soon" entries — stay, because those become real.)
+  *not yet* changeable — the hub's "soon" entries — stay, because those become real. That left
+  the category one row deep, i.e. a menu level charging a tap for nothing, so **idle timeout
+  moved into Display & units**, which is where it belongs anyway: brightness and idle timeout are
+  both "what the screen does when you are not touching it".)
 - **Network (WiFi)** — enable toggle; join / status + IP → the **Connectivity & data view**
   (§27). All WiFi services are **idle-only** (§21). SSID/password use a **large-key
   on-screen keyboard** (the necessary free-text exception, like the profile name §12 — not
