@@ -105,6 +105,39 @@ is **fewer, taller chunks** (DRAW_BUF_LINES) — a widget crossing chunks is re-
 so taller buffers cut the whole table proportionally. That is the documented deferred win
 (cyd_board.h), gated on the OTA DRAM budget.
 
+### Dual-core rendering (LV_DRAW_SW_DRAW_UNIT_CNT=2 + LV_USE_OS=FREERTOS): measured, a LOSS (2026-07-16)
+
+LVGL 9's threaded software draw units are the obvious "use the second core" lever. Tried it on
+glass: `LV_USE_OS=LV_OS_FREERTOS` + `LV_DRAW_SW_DRAW_UNIT_CNT=2`. Two gotchas first — (1) editing
+only `lv_conf.h` does NOT recompile LVGL's library objects in PlatformIO (they aren't tracked as
+depending on `lv_conf.h`; a first "dual-core" build silently reused the stale single-unit objects
+and reported a bit-identical baseline number — a false null). A `pio run -t clean` of the env is
+mandatory. (2) On a clean build `lv_freertos.c` won't compile: it `#include "atomic.h"` bare, and
+ESP-IDF's FreeRTOS atomic header is `freertos/atomic.h` (not on the default path) — needs the
+include qualified or the dir added.
+
+With a genuinely fresh dual-core build (`tasks` 7→9, free_heap −19 kB for two 8 kB worker stacks):
+
+| build | Home render | vs baseline |
+|---|--:|--:|
+| 1 draw unit (production) | 129.6 ms | — |
+| **2 draw units, FreeRTOS** | **229.0 ms** | **+77% SLOWER** |
+
+A per-worker task counter instrumented into `render_thread_cb` shows why, decisively: over 30
+refreshes **worker 0 ran 30338 tasks, worker 1 ran 253 — 0.8%**. Worker 1 is starved. LVGL only
+hands a task to a second unit if it is `is_independent` — no older *unfinished* task overlaps its
+area (`lv_draw.c`). Our UI is a deep composite: a full-chunk background fill is task 0 of every
+chunk, then panels → translucent LV_OPA_50 tiles → the screen-wide dot grid → text, each drawn ON
+TOP of and overlapping everything beneath. While the background renders, every other task overlaps
+it, so nothing is independent; even after it, the panels/tiles/dots/text mostly overlap each other.
+The layered depth that gives the UI its look collapses the draw-task dependency graph into a chain,
+not a fan — there is almost nothing to parallelise. On top of getting ~no parallelism, the threaded
+dispatch replaces ~1000 inline `execute_drawing()` calls per frame with FreeRTOS semaphore
+round-trips (~98 µs/task of pure sync overhead) — that is the +100 ms. **Core-pinning cannot save
+it:** worker 1 has no work to place on the other core; the starvation is the dependency graph, not
+core contention. Spike reverted (both `lv_conf.h` values and the two vendored patches). Dead end,
+now with numbers.
+
 ### Consequences for the candidate list
 
 - **SPI 40→80 MHz (Opt-12/13): deprioritised to last-resort.** SPI is already fully hidden under
