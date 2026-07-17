@@ -60,7 +60,12 @@ constexpr float TURNTABLE_RPM = 5.0f;  // PLACEHOLDER
 
 // The single production plant model, assembled from the placeholders above. Downstream code takes
 // this by const-ref; tests pass their own toy OvenModel instead.
-constexpr OvenModel DEFAULT = {
+//
+// NOT named `DEFAULT`: this header compiles into both firmwares, and Arduino.h `#define`s DEFAULT
+// (an analog-reference constant), so `oven_cal::DEFAULT` gets macro-expanded to `oven_cal::1` in
+// any firmware TU that includes both — a syntax error the CYD firmware (C4, the first CYD consumer
+// of this header) hit. `kDefaultModel` sidesteps the macro; keep it macro-safe.
+constexpr OvenModel kDefaultModel = {
     {HEAT_FAN_OFF, HEAT_FAN_ON}, // heat
     {COOL_FAN_OFF, COOL_FAN_ON}, // cool
     {LAG_FAN_OFF, LAG_FAN_ON},   // lag

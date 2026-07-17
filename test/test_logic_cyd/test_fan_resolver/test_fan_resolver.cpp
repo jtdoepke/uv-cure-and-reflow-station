@@ -40,7 +40,7 @@ void test_explicit_on_off_passthrough(void) {
 }
 
 void test_uncalibrated_heuristic_on_while_heating(void) {
-  const OvenModel &m = oven_cal::DEFAULT; // calibrated == false
+  const OvenModel &m = oven_cal::kDefaultModel; // calibrated == false
   FanDecision heat = resolveFans(FanMode::Auto, FanMode::Auto, FanContext{20.0f, 120.0f, 0.0f}, m);
   TEST_ASSERT_TRUE(heat.convFan);   // heating → conv on
   TEST_ASSERT_FALSE(heat.coolFan);  // not cooling → cool off
@@ -48,7 +48,7 @@ void test_uncalibrated_heuristic_on_while_heating(void) {
 }
 
 void test_uncalibrated_heuristic_on_while_cooling(void) {
-  const OvenModel &m = oven_cal::DEFAULT;
+  const OvenModel &m = oven_cal::kDefaultModel;
   FanDecision cool = resolveFans(FanMode::Auto, FanMode::Auto, FanContext{120.0f, 30.0f, 0.0f}, m);
   TEST_ASSERT_FALSE(cool.convFan);
   TEST_ASSERT_TRUE(cool.coolFan);

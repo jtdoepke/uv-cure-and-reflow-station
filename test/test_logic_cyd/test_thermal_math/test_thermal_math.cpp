@@ -1,7 +1,8 @@
 // native_logic_cyd suite — pure host tests of the shared rate-limit / first-order-lag math
 // (thermal_math.h) and the stub calibration defaults (oven_cal.h). No LVGL, no Arduino: plain
 // plant maths — ramp-duration integral, feasibility clamp, low-pass lag, exposure↔hold,
-// feedforward duty, and a sanity check on oven_cal::DEFAULT. Backlog B2 (design.md §5/§6/§12/§15).
+// feedforward duty, and a sanity check on oven_cal::kDefaultModel. Backlog B2 (design.md
+// §5/§6/§12/§15).
 #include <unity.h>
 
 #include "oven_cal.h"
@@ -105,7 +106,7 @@ void test_exposure_guards_nonpositive_coverage(void) {
 // --- Fan-conditioned lookups -------------------------------------------------------------------
 
 void test_fan_pick_selects_variant(void) {
-  const OvenModel &m = oven_cal::DEFAULT;
+  const OvenModel &m = oven_cal::kDefaultModel;
   // Fan on heats & cools faster than fan off in the defaults.
   TEST_ASSERT_TRUE(heatRate(m, 100.0f, true) > heatRate(m, 100.0f, false));
   TEST_ASSERT_TRUE(coolRate(m, 100.0f, true) > coolRate(m, 100.0f, false));
@@ -115,17 +116,18 @@ void test_fan_pick_selects_variant(void) {
 
 void test_steady_state_duty_clamped(void) {
   // A duty model that would exceed 1 at high T is clamped into 0..1.
-  OvenModel m = oven_cal::DEFAULT;
+  OvenModel m = oven_cal::kDefaultModel;
   m.duty.on = DutyModel{0.01f, 0.5f, 1.0f}; // 0.5 + 0.01·T → >1 above 50 °C
   const float d = steadyStateDuty(m, 300.0f, true);
   TEST_ASSERT_TRUE(d <= 1.0f && d >= 0.0f);
   assert_close(1.0f, d, 1e-6f);
 }
 
-// --- oven_cal::DEFAULT sanity ------------------------------------------------------------------
+// --- oven_cal::kDefaultModel sanity
+// ------------------------------------------------------------------
 
 void test_default_model_is_uncalibrated_and_sane(void) {
-  const OvenModel &m = oven_cal::DEFAULT;
+  const OvenModel &m = oven_cal::kDefaultModel;
   TEST_ASSERT_FALSE(m.calibrated);
   TEST_ASSERT_TRUE(m.beamCoverage > 0.0f && m.beamCoverage <= 1.0f);
   TEST_ASSERT_TRUE(m.turntableRpm > 0.0f);
@@ -136,7 +138,7 @@ void test_default_model_is_uncalibrated_and_sane(void) {
 
 void test_default_model_gives_idealized_linear_duration(void) {
   // Uncalibrated (slope-0) envelopes → duration is exactly ΔT / constant-rate.
-  const OvenModel &m = oven_cal::DEFAULT;
+  const OvenModel &m = oven_cal::kDefaultModel;
   const float rate = heatRate(m, 100.0f, false); // constant across T
   const float t = rampDurationSeconds(m.heat.off, 20.0f, 120.0f);
   assert_close(100.0f / rate, t, 1e-2f);

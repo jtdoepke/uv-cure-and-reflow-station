@@ -28,7 +28,7 @@ public:
   // screen. Call after lv_init() + ui_subjects_init(). `model` defaults to the compiled-in
   // calibration; a test may pass a toy model.
   void begin(lv_obj_t *parent, ProfileStore &cure, ProfileStore &reflow,
-             const OvenModel &model = oven_cal::DEFAULT);
+             const OvenModel &model = oven_cal::kDefaultModel);
 
   // Exit seam: fired when Back is pressed on the chooser (Home is the caller's to rebuild).
   void setExitHandler(void (*cb)(void *user_data), void *user_data);

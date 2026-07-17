@@ -124,7 +124,7 @@ void test_cure_exposure_to_hold_calibrated(void) {
 }
 
 void test_cure_exposure_uncalibrated_is_estimated(void) {
-  const OvenModel &m = oven_cal::DEFAULT; // calibrated == false, beamCoverage 0.25
+  const OvenModel &m = oven_cal::kDefaultModel; // calibrated == false, beamCoverage 0.25
   Phase p;
   p.targetC = 80.0f;
   p.rampSeconds = 0.0f;

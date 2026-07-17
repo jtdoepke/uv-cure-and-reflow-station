@@ -145,8 +145,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const Caps caps{oven_safety::MIN_SEGMENT_C, mode == RecipeMode::Cure
                                                     ? oven_safety::CURE_HARD_MAX_C
                                                     : oven_safety::REFLOW_HARD_MAX_C};
-    CompileResult r = compileRecipe(out.phases, out.phaseCount, out.mode, oven_cal::DEFAULT, caps,
-                                    /*ambientC=*/22.0f, /*id=*/1, /*seq=*/1);
+    CompileResult r =
+        compileRecipe(out.phases, out.phaseCount, out.mode, oven_cal::kDefaultModel, caps,
+                      /*ambientC=*/22.0f, /*id=*/1, /*seq=*/1);
     if (r.hardValid) {
       FUZZ_ASSERT(r.recipe.segments_count >= 1);
       FUZZ_ASSERT(r.recipe.segments_count <= kMaxSegments);

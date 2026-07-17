@@ -32,8 +32,8 @@ public:
   ProfileLibraryViewModel() = default;
   ProfileLibraryViewModel(ProfileStore &store, const OvenModel &model) { init(store, model); }
 
-  // `model` supplies the calibration the facts/curve are computed against (oven_cal::DEFAULT in
-  // production; a toy model in tests). Both must outlive this object.
+  // `model` supplies the calibration the facts/curve are computed against (oven_cal::kDefaultModel
+  // in production; a toy model in tests). Both must outlive this object.
   void init(ProfileStore &store, const OvenModel &model) {
     store_ = &store;
     model_ = &model;

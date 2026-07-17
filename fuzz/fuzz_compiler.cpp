@@ -11,7 +11,7 @@
 //
 // Input format (documented so seed_gen.cpp can emit an on-contract seed; little-endian floats):
 //   [0]      mode  : bit0 → 0 = Reflow, 1 = Cure
-//   [1]      model : bit0 → 0 = uncalibrated (oven_cal::DEFAULT), 1 = a calibrated preset
+//   [1]      model : bit0 → 0 = uncalibrated (oven_cal::kDefaultModel), 1 = a calibrated preset
 //   [2..5]   ambientC : float32
 //   [6]      requested phase count (clamped to the bytes available and to kFuzzMaxPhases)
 //   then N × 17-byte phase records:
@@ -69,7 +69,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   }
 
   const RecipeMode mode = (data[0] & 1) ? RecipeMode::Cure : RecipeMode::Reflow;
-  const OvenModel &model = (data[1] & 1) ? calibratedPreset() : oven_cal::DEFAULT;
+  const OvenModel &model = (data[1] & 1) ? calibratedPreset() : oven_cal::kDefaultModel;
   const float ambientC = readF32(data + 2);
 
   const size_t available = (size - kHeaderBytes) / kRecordBytes;

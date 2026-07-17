@@ -50,8 +50,8 @@ bool inBounds(float v, float lo, float hi) {
 }
 
 // A toy affine-rate model, so the fuzzer also exercises the temperature-dependent envelope path
-// (the stub oven_cal::DEFAULT is constant-rate). Rates are floored > 0 like the real ones, so the
-// integrand never divides by ~0.
+// (the stub oven_cal::kDefaultModel is constant-rate). Rates are floored > 0 like the real ones, so
+// the integrand never divides by ~0.
 OvenModel toyCalibrated() {
   RateEnvelope heat{0.004f, 0.6f, 0.05f, 2.0f};
   RateEnvelope cool{0.002f, 0.2f, 0.05f, 1.0f};
@@ -68,7 +68,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   }
 
   const RecipeMode mode = (data[0] & 1) ? RecipeMode::Cure : RecipeMode::Reflow;
-  const OvenModel model = (data[0] & 2) ? toyCalibrated() : oven_cal::DEFAULT;
+  const OvenModel model = (data[0] & 2) ? toyCalibrated() : oven_cal::kDefaultModel;
   const bool fahrenheit = (data[0] & 4) != 0;
   const float ambient = readF32(data + 2); // adversarial start temp (NaN/Inf ok)
 

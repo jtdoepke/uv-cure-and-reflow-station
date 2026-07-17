@@ -158,7 +158,7 @@ static void build_alert_specimen(lv_obj_t *scr) {
 // A representative multi-phase reflow profile rendered through profile_curve + profile_facts, so
 // the requested/achievable line style, the instrument frame, and the "uncalibrated" note can be
 // eyeballed before the full library detail screen hosts it. Constants are illustrative, not a real
-// paste; oven_cal::DEFAULT is uncalibrated, so the achievable curve rate-limits away from the
+// paste; oven_cal::kDefaultModel is uncalibrated, so the achievable curve rate-limits away from the
 // requested one (the divergence the §12 preview exists to show).
 static void build_curve_demo(lv_obj_t *scr) {
   theme::apply_screen(scr);
@@ -182,14 +182,14 @@ static void build_curve_demo(lv_obj_t *scr) {
   static profile_facts::CurvePoint req[profile_facts::kMaxCurvePoints];
   static profile_facts::CurvePoint ach[profile_facts::kMaxCurvePoints];
   const size_t nr =
-      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::DEFAULT,
+      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel,
                                  /*achievable=*/false, 25.0f, req, profile_facts::kMaxCurvePoints);
   const size_t na =
-      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::DEFAULT,
+      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel,
                                  /*achievable=*/true, 25.0f, ach, profile_facts::kMaxCurvePoints);
 
   const profile_facts::ProfileFacts f =
-      profile_facts::computeFacts(reflow, 4, RecipeMode::Reflow, oven_cal::DEFAULT);
+      profile_facts::computeFacts(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel);
   char peak[24];
   char dur[24];
   profile_facts::formatPeak(f.peakC, /*fahrenheit=*/false, peak, sizeof(peak));

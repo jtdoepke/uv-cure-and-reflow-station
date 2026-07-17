@@ -207,7 +207,7 @@ std::vector<uint8_t> compilerReflowSeed() {
 std::vector<uint8_t> compilerCureSeed() {
   std::vector<uint8_t> v;
   v.push_back(1);   // mode: Cure
-  v.push_back(0);   // model: uncalibrated (oven_cal::DEFAULT)
+  v.push_back(0);   // model: uncalibrated (oven_cal::kDefaultModel)
   putF32(v, 22.0F); // ambientC
   v.push_back(1);   // phase count
   putPhase(v, 80.0F, 0.0F, 0.0F, 30.0F, 0x03);
