@@ -375,8 +375,10 @@ existing `IClock`/`IHeaterSwitch` idiom:
   intended — and it recovers on its own when telemetry resumes.*
 - [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
   *Shipped as a self-contained hub-and-spoke controller (the `SettingsScreen` pattern): Home →
-  Profiles opens a **Cure|Reflow chooser** (the entry is mode-blind; §23's "never mixed" is enforced
-  by picking a mode first), then the fixed-mode **list** → profile **detail/actions**. New
+  Profiles opens a **Cure|Reflow chooser** — **two big Home-style tiles** ("UV CURE PROFILES" /
+  "REFLOW PROFILES"), a direct tap rather than a menu since there are only two profile types (the
+  entry is mode-blind; §23's "never mixed" is enforced by picking a mode first) — then the fixed-mode
+  **list** → profile **detail/actions**. New
   `profile_facts.h` (pure `lib/app_logic`) is the shared derived-fact layer — peak + estimated
   duration (∫dT/rate + holds) for the row/detail facts, and the **requested/achievable curve point
   sampling** — computed off a loaded profile's phases via the §12 curve math (`thermal_math`), no
@@ -392,20 +394,33 @@ existing `IClock`/`IHeaterSwitch` idiom:
   §23 **stock gating** rendered: Edit → "Save as", Delete disabled. `selectable_list` gained an
   optional **leading footer action** (the `+ New` button; the settings hub passes none) and
   `kMaxItems` 12→32 to hold a full library (a `static_assert` in the screen ties it to
-  `ProfileStore::kMaxListed`). **New/Edit/Load** leave for screens C4 does not own (editor §12/C5,
-  Setup §19/C6) — published as `NAV_PROFILE_*` intents, observed only by tests until those land (the
-  posture Home's tile intents held before Settings existed; the *which-profile* + working-copy handoff
-  is a seam C5/C6 own). Wired into `main.cpp` (router `SCREEN_PROFILES`, create-on-demand) over the
-  two `ProfileStore`s already instantiated at boot; the `·` middot separating the row facts was added
-  to `red_hat_mono_14/16` (the pipeline reproduced the committed 14px glyphs byte-for-byte first).
+  `ProfileStore::kMaxListed`); its **Open button disables when no row is selectable** (`canOpen()`),
+  so an empty library shows Open greyed rather than falsely pressable. **New/Edit/Load** leave for
+  screens C4 does not own (editor §12/C5, Setup §19/C6) — published as `NAV_PROFILE_*` intents,
+  observed only by tests until those land (the posture Home's tile intents held before Settings
+  existed; the *which-profile* + working-copy handoff is a seam C5/C6 own). Wired into `main.cpp`
+  (router `SCREEN_PROFILES`, **cached like Home** with a reset-to-chooser hook — the stateless
+  two-tile chooser is its default view; the list/detail pages rebuild on demand and re-read the store,
+  so caching the resident screen is safe) over the two `ProfileStore`s already instantiated at boot;
+  the `·` middot separating the row facts was added to `red_hat_mono_14/16` (the pipeline reproduced
+  the committed 14px glyphs byte-for-byte first).
   Host-tested `test_profile_library` (native_ui_cyd, both geometries — driven through the real button
   seams so it is geometry-independent) + `test_profile_facts` (native_logic) **plus
   `fuzz/fuzz_profile_facts.cpp`** (profile_facts is a new consumer of an untrusted loaded `Phase[]`,
   §7 — facts/curve stay finite + bounded, no NaN reaches `lv_line`; 3.7M+ runs clean).
-  **Deferred** (unchanged from B4): the **recently-used sort** (no usage clock — `list()` stays
-  alphabetical) and the **stock-seed population** (`data/`→`uploadfs`) + §24 "Restore stock profiles"
-  (need a seed source; land with deployment) — a fresh flash shows the §23 empty state. **Pick
-  context** (Setup → Load) entry lands with C6; the manage-context CRUD is complete. Unblocks **C6**.*
+  Two incidental fixes rode along: **`oven_cal::DEFAULT` → `kDefaultModel`** (C4 is the first
+  CYD-firmware consumer of `oven_cal.h`, and `DEFAULT` collided with Arduino's `DEFAULT` macro — a
+  latent landmine for any firmware TU including both), and **`board_build.filesystem = littlefs`** on
+  the CYD envs so `uploadfs` builds a LittleFS image matching the firmware's mount (the PlatformIO
+  default is SPIFFS, which would not mount). **Verified end-to-end on the 3.5" board** (flash +
+  `uploadfs` demo fixtures `data/profiles/` → boot reports `[profiles] cure=1 reflow=2`; chooser →
+  list → detail curve render on glass, stock gating on the seeded stock profile).
+  **Deferred**: the **recently-used sort** (no usage clock — `list()` stays alphabetical), and the
+  **stock-seed *feature*** — a reviewable seed source (JSON→generator), §24 "Restore stock profiles",
+  and the marking semantics (needs a seed-source decision; the `uploadfs` mechanism + demo fixtures
+  above are in place, but the feature itself is future work) — a fresh flash otherwise shows the §23
+  empty state. **Pick context** (Setup → Load) entry lands with C6; the manage-context CRUD is
+  complete. Unblocks **C6**.*
 - [ ] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
   then feasibility-curve preview). deps: C1, B1, B2. *All deps now landed — B1's
   `compileRecipe()` + `CompileResult` advisories (rate-limited/estimated/fallback flags) are the
