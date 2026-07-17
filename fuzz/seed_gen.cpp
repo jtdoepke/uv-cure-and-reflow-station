@@ -5,15 +5,19 @@
 // from the project root; commit fuzz/corpus/**. Re-run and re-commit if the seed set
 // or the input formats change.
 //
-//   .pio/build/fuzz_seedgen/program            # writes fuzz/corpus/{frontdoor,decode,validator}
+//   .pio/build/fuzz_seedgen/program            # writes every fuzz/corpus/<harness>/ subdir
 //   .pio/build/fuzz_seedgen/program <basedir>  # override the corpus base dir
 //
 // Formats (must match the harnesses):
 //   frontdoor : full TinyFrame wire bytes (SOF..CRC), as the controller receives them.
 //   decode    : byte 0 = TinyFrame type id, rest = raw nanopb payload.
 //   validator : byte 0 = recipe-payload length L, next L bytes = Recipe, rest = Start.
+//   compiler  : the recipe-compiler harness's own struct format (header + phase records, see
+//               fuzz_compiler.cpp). Not a wire encoding — this harness fuzzes a CYD-side producer,
+//               so there is no protocol message to reuse the encoder for; the seed is hand-packed.
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <vector>
 
@@ -149,11 +153,54 @@ std::vector<uint8_t> decodeSeed(uint8_t type, const std::vector<uint8_t> &payloa
   return out;
 }
 
+// --- compiler harness format (fuzz_compiler.cpp): header + 17-byte phase records ---
+
+void putF32(std::vector<uint8_t> &v, float f) {
+  uint8_t b[sizeof f];
+  std::memcpy(b, &f, sizeof f);
+  v.insert(v.end(), b, b + sizeof f);
+}
+
+// flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2}, bits4-5 coolFan{0,1,2}.
+void putPhase(std::vector<uint8_t> &v, float target, float ramp, float hold, float exposure,
+              uint8_t flags) {
+  putF32(v, target);
+  putF32(v, ramp);
+  putF32(v, hold);
+  putF32(v, exposure);
+  v.push_back(flags);
+}
+
+// A calibrated two-phase reflow profile (ramp-over-time + hold, then ASAP + hold) — the same shape
+// as the recipe_compiler unit test's happy path, so the seed lands squarely in accept territory.
+std::vector<uint8_t> compilerReflowSeed() {
+  std::vector<uint8_t> v;
+  v.push_back(0);   // mode: Reflow
+  v.push_back(1);   // model: calibrated preset
+  putF32(v, 22.0F); // ambientC
+  v.push_back(2);   // phase count
+  putPhase(v, 100.0F, 80.0F, 60.0F, 0.0F, 0x00);
+  putPhase(v, 150.0F, 0.0F, 30.0F, 0.0F, 0x00);
+  return v;
+}
+
+// An uncalibrated cure phase with UV + turntable: exercises the exposure→hold estimate path and the
+// heuristic fan resolution. flags 0x03 = uv|motor, both fans Auto.
+std::vector<uint8_t> compilerCureSeed() {
+  std::vector<uint8_t> v;
+  v.push_back(1);   // mode: Cure
+  v.push_back(0);   // model: uncalibrated (oven_cal::DEFAULT)
+  putF32(v, 22.0F); // ambientC
+  v.push_back(1);   // phase count
+  putPhase(v, 80.0F, 0.0F, 0.0F, 30.0F, 0x03);
+  return v;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   const fs::path base = (argc > 1) ? fs::path(argv[1]) : fs::path("fuzz/corpus");
-  for (const char *sub : {"frontdoor", "decode", "validator"}) {
+  for (const char *sub : {"frontdoor", "decode", "validator", "compiler"}) {
     fs::create_directories(base / sub);
   }
 
@@ -187,6 +234,10 @@ int main(int argc, char **argv) {
   // validator: length-prefixed Recipe + Start.
   writeFile(base / "validator" / "recipe_start.bin", validatorSeed(recipe, start));
   writeFile(base / "validator" / "bogus_mode.bin", validatorSeed(encodeRecipeBogusMode(), start));
+
+  // compiler: the recipe-compiler harness's struct format (hand-packed, not a wire encoding).
+  writeFile(base / "compiler" / "reflow.bin", compilerReflowSeed());
+  writeFile(base / "compiler" / "cure.bin", compilerCureSeed());
 
   std::printf("done\n");
   return 0;

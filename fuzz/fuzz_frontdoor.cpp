@@ -4,7 +4,7 @@
 // exercises TinyFrame's byte state machine (CRC-16, the 1024-byte RX buffer and its
 // discard_data overflow path), nanopb pb_decode, the MessageRouter switch, and the
 // SetupResponder/RecipeValidator/SessionGate backstop — in one shot, cold.
-#include "fuzz_util.h"
+#include "fuzz_pipeline.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   fuzz::ControllerHarness h;

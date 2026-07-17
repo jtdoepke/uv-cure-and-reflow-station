@@ -5,6 +5,7 @@
 // Input format (matches the committed corpus, see seed_gen.cpp): byte 0 is the
 // TinyFrame type id, the rest is the raw payload handed to protocol::decode.
 #include "fuzz_util.h"
+#include "message_router.h"
 
 namespace {
 // Default no-op observer: every dispatch target is exercised, nothing is retained

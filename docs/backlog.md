@@ -148,11 +148,38 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - [ ] **A6** [A] — profile executor: segment sequencing, `RAMP_ASAP` target
   gating, hold-entry gate, per-segment watchdog. deps: temp-input port. *Emits the
   setpoint A5's PID tracks — buildable/testable independently of A5.* (§5)
-- [ ] **B1** [B] — phase→segment compiler: {target, ramp `x`, hold `y`} → generic
+- [x] **B1** [B] — phase→segment compiler: {target, ramp `x`, hold `y`} → generic
   segments; two-tier validation; exposure→hold-seconds math with fallback/labeling.
   deps: B2. (§5, §12)
-- [ ] **B3** [B] — fan-`Auto` resolver at recipe-compile time + pre-calibration
-  heuristic fallback. deps: B2. (§5)
+  *New `lib/app_logic/`: `phase.h` (the editable domain model — `FanMode {Auto,On,Off}` tri-state,
+  `RecipeMode`, the `Phase` struct — kept apart from the compiler because C5's editor mutates it),
+  `recipe_compiler.h` (`compileRecipe()` lowering a `Phase[]` into an `oven_Recipe`), and B3's
+  `fan_resolver.h` (below). Each phase → a ramp segment (`RAMP_OVER_TIME` when x>0, `RAMP_ASAP` when
+  x=0 with dur estimated via `rampDurationSeconds` for the ETA/watchdog) + a hold; a degenerate ramp
+  (no temperature change) or a hold rounding to 0 ms is omitted — the latter matters because the
+  controller NAKs `dur_ms==0`, so every emitted segment carries dur>0. Cure holds compute from
+  UV-exposure-per-surface via `beamCoverage`, falling back to raw seconds when the turntable is off
+  or there is no coverage, and are labeled estimated when uncalibrated. **Two-tier validation
+  (§12):** a *hard* tier that is a strict subset of the controller's `RecipeValidator` (A7) — ≥1
+  phase, targets finite + within the passed-in caps, reflow-tag/content consistency, ≤32 segments —
+  so an accepted compile never NAKs on upload; and an *amber* tier (rate-limited ramps,
+  estimated/fallback holds, heuristic fans, whole-recipe uncalibrated preview) that only warns —
+  those stay saveable/uploadable and take their real time via the controller's hold-entry gate. Caps
+  and the `OvenModel` are passed by argument (no policy in the compiler), matching `thermal_math.h`.
+  Host-tested (`test_recipe_compiler`, 11 cases) **plus a differential fuzz harness**
+  (`fuzz/fuzz_compiler.cpp`, env `fuzz_compiler`) asserting every hard-valid compile is accepted by
+  the real `RecipeValidator` — 10M+ runs clean; the fuzz suite's README was reframed as the repo's
+  property-fuzz home (untrusted-input + internal-correctness families) as part of this. Unblocks
+  **C5** (editor/preview), **B6**, **B9**.*
+- [x] **B3** [B] — fan-`Auto` resolver at recipe-compile time + pre-calibration
+  heuristic fallback. deps: B2. (§5) *Shipped with B1 as `lib/app_logic/fan_resolver.h`:
+  `resolveFans()` turns each phase's tri-state `FanMode` into the resolved on/off the compiled
+  Recipe carries (no `Auto` crosses the wire, §9). Explicit On/Off pass through; `Auto` consults the
+  fan-conditioned envelopes — conv on when the fan-off heat envelope can't meet the requested ramp,
+  cool on when passive cooling is too slow, faster-envelope wins for ASAP — and before calibration
+  falls back to the §5 heuristic (conv on while heating, cool on while cooling), flagged so the
+  preview labels it estimated. The exact rate/target margins stay §10-open (`kRampMarginFrac`
+  placeholder). Host-tested (`test_fan_resolver`).*
 - [ ] **B4** [B] — `ProfileStore` over a storage port; per-mode dirs;
   stock-vs-user semantics. deps: storage port. (§7, §23)
 - [x] **B5** [B] — `SettingsStore` + per-field `{min, max, step, units}` config +
@@ -258,7 +285,9 @@ existing `IClock`/`IHeaterSwitch` idiom:
   intended — and it recovers on its own when telemetry resumes.*
 - [ ] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
 - [ ] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
-  then feasibility-curve preview). deps: C1, B1, B2. (§12)
+  then feasibility-curve preview). deps: C1, B1, B2. *All deps now landed — B1's
+  `compileRecipe()` + `CompileResult` advisories (rate-limited/estimated/fallback flags) are the
+  feasibility-preview data source; the editor mutates `Phase` objects (`phase.h`) directly.* (§12)
 - [ ] **C7** [C] — Run/Monitor (3 PRs: layout/telemetry/STOP; projected-vs-actual
   chart + live ETA; cure paused/resume overlay). deps: C3, B2; soft: B6 (resume
   overlay, 3rd PR). (§15)

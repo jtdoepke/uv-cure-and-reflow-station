@@ -10,7 +10,7 @@
 #include <cmath>
 
 #include "fuzz_util.h"
-#include "oven_safety.h"
+#include "recipe_validator.h" // pulls codec.h, oven.pb.h, oven_safety.h
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   if (size == 0) {
