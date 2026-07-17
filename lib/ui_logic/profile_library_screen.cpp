@@ -157,6 +157,11 @@ lv_obj_t *make_mode_tile(lv_obj_t *parent, const char *text, lv_event_cb_t on_cl
   theme::apply_mode_tile(btn);
   lv_obj_t *label = lv_label_create(btn);
   lv_label_set_text(label, text);
+  // The two-word labels ("UV CURE PROFILES") can exceed a tile's width on the narrow 2.8" side-by-
+  // side layout, so wrap + centre rather than clip.
+  lv_obj_set_width(label, lv_pct(90));
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_center(label);
   lv_obj_add_event_cb(btn, on_click, LV_EVENT_CLICKED, screen);
   return btn;
@@ -177,8 +182,8 @@ void ProfileLibraryScreen::buildChooser() {
   lv_obj_set_flex_grow(modes, 1);
   lv_obj_set_flex_flow(modes, panel::kPortrait ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
 
-  lv_obj_t *cure = make_mode_tile(modes, "UV CURE", ProfileThunks::choose_cure, this);
-  lv_obj_t *reflow = make_mode_tile(modes, "REFLOW", ProfileThunks::choose_reflow, this);
+  lv_obj_t *cure = make_mode_tile(modes, "UV CURE PROFILES", ProfileThunks::choose_cure, this);
+  lv_obj_t *reflow = make_mode_tile(modes, "REFLOW PROFILES", ProfileThunks::choose_reflow, this);
   for (lv_obj_t *tile : {cure, reflow}) {
     lv_obj_set_flex_grow(tile, 1);
     if (panel::kPortrait) {
