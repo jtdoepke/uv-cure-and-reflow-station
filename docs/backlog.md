@@ -140,9 +140,41 @@ existing `IClock`/`IHeaterSwitch` idiom:
   L3 clamps and the A6/A7 fault paths hook into (no `FaultCode`/`Fault` emission yet). The
   command-timeout test is the unit-level form of A8's §8-step-1 fail-safe proof. ESP32 adapters +
   `main.cpp` wiring deferred to A8.*
-- [ ] **A4b** [A] — `SafetySupervisor` L3: setpoint clamp, per-mode over-temp trip,
+- [x] **A4b** [A] — `SafetySupervisor` L3: setpoint clamp, per-mode over-temp trip,
   stuck-heater plausibility, bounded total runtime, reset-cause → `Fault{WATCHDOG}`.
   deps: A4a, temp-input port, `IWatchdog`; soft: B2 (runtime bound uses `oven_cal`). (§4)
+  *Extended `SafetySupervisor` (now `IThermocouples` + `IClock`-injected) with the L3 layer that
+  acts on **measured** temp, so it catches a welded SSR the setpoint clamp can't. `armRun(recipe)`
+  derives the cap-selector mode from recipe **content** (reusing `oven_safety::deriveMode`) and,
+  while armed + authorized, every tick checks: per-mode over-temp trip on an **independent
+  high-limit channel** (the hottest non-faulted wall — §4's "own channel, not the control
+  sensor"; no knowledge of which channel the executor uses); stuck-heater (measured rise while
+  commanded `duty ≈ 0` across a window, off `HeaterActuator::duty()`); bounded runtime; and a
+  refuse-to-run-blind `SENSOR_FAULT` when no wall channel is usable. The supervisor is now the
+  single fault **aggregator/latch**: the executor's `Output.fault` routes in via a new
+  `trip(code)` overload, the L3 checks trip internally, and `faultCode()` exposes the one active
+  code. **The runtime bound sidesteps the soft B2 dep**: B1 already baked projected durations into
+  `dur_ms`, so the budget is Σ`dur_ms` × margin — summed in 64-bit and saturated to uint32 so a
+  raw/adversarial recipe can't overflow it — with no `oven_cal`. `clampSetpoint()` is a **total**
+  independent clamp (NaN/±Inf → finite, ≤ hard-max), defense-in-depth over the executor's own.
+  Watchdog reset → `Fault{WATCHDOG}` via `noteResetCause()` — **annunciation, not a latch**, since
+  the controller already boots safe.
+  **Built the controller-side Fault-emit path that didn't exist** (only heartbeat/telemetry
+  senders did): new `protocol::FaultSender` mirroring `TelemetrySender` — fires the dedicated
+  `Fault` frame on change and re-sends while active so a dropped, un-ACKed frame self-heals; the
+  CYD latches on first receipt so repeats are harmless. `telemetry.fault_code` rides continuously
+  as the backup channel. This finally gives **B7's `FaultController` a live producer** (§22 modal),
+  closing the controller→CYD annunciation pipeline end-to-end (still C8's to render).
+  **A4b-shaped fuzzing** joins A5/A6's harnesses: `fuzz/fuzz_safety_supervisor.cpp` drives a raw
+  recipe + adversarial driver (temps incl. NaN/Inf, duty, clock jumps, auth/trip/clear) and asserts
+  the L3 invariants — latch monotonicity, trip ⇒ safe, `clampSetpoint` totality, run-blind refusal,
+  and no UB in `armRun`'s Σ — clean over millions of runs.
+  **On-device temp source is deferred to D4** (a `StubThermocouples` reporting no channel; the L3
+  checks only run once a run is armed, which rides in with D4's real sensor) — the same
+  "logic host-tested, hardware wiring deferred" posture A4a took to A8. **All L3 thresholds are
+  §10-open placeholders** (over-temp margin, stuck-heater rise/window, runtime frac) — the §10
+  "over-temp-trip / stuck-heater margins + times" item owns them, tuned against real runs (§8 step
+  4). Host-tested (`test_safety_supervisor` +10 cases, `test_fault_sender`).*
 - [ ] **A5** [A] — PID + anti-windup + feedforward hook, tested against a toy
   first-order plant. deps: A3, temp-input port; soft: B2 (feedforward constants). (§5)
 - [ ] **A6** [A] — profile executor: segment sequencing, `RAMP_ASAP` target

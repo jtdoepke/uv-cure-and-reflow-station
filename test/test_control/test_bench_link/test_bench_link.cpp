@@ -17,6 +17,7 @@
 #include "heater_actuator.h"
 #include "helpers/fake_clock.h"
 #include "helpers/fake_contactor.h"
+#include "helpers/fake_thermocouples.h"
 #include "helpers/fake_heater_switch.h"
 #include "helpers/flaky_transport.h"
 #include "helpers/pipe_transport.h"
@@ -53,13 +54,14 @@ struct BenchRig {
   ControllerLink ctrl;
   FakeHeaterSwitch heater_sw;
   FakeContactor contactor;
+  FakeThermocouples tc;
   HeaterActuator heater;
   SafetySupervisor safety;
 
   BenchRig()
       : cyd_tx(pipe.a()), cyd_router(), cyd_link(cyd_tx, TF_MASTER, cyd_router), cyd(cyd_link, clk),
         ctrl_router(), ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk),
-        heater(heater_sw, clk), safety(ctrl, heater, contactor) {
+        heater(heater_sw, clk), safety(ctrl, heater, contactor, tc, clk) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
   }

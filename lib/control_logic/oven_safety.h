@@ -14,6 +14,8 @@
 // pick the cap. Pure constants + inline helpers; no Arduino, host-testable.
 #pragma once
 
+#include <cstdint>
+
 #include "oven.pb.h"
 
 namespace oven_safety {
@@ -27,6 +29,33 @@ constexpr float CURE_HARD_MAX_C = 120.0F; // TBD §10
 
 // A setpoint below this is implausible/erroneous, not a real recipe.
 constexpr float MIN_SEGMENT_C = 0.0F;
+
+// --- L3 clamp thresholds (design.md §4 "L3 clamps", backlog A4b) ------------------
+// These bound the *independent* safety layer that acts on MEASURED temperature, so it
+// catches a welded SSR even when the control loop or executor misbehave. Every value
+// here is a TBD §10 placeholder ("over-temp-trip / stuck-heater margins + times", §8
+// step 4), deliberately conservative and tuned against real runs later — the same
+// convention as ProfileExecutor::Config's watchdog constants. They are NOT calibration
+// outputs: they live in this reviewed controller header, never the generated oven_cal.h.
+
+// The per-mode over-temp trip fires when a measured high-limit reading exceeds
+// hardMaxForMode(mode) + this margin, opening the contactor (Fault{OVERTEMP_CHAMBER}).
+// Above the hard-max cap but below the L0 hardware high-limit — firmware catches it first.
+constexpr float OVERTEMP_MARGIN_C = 15.0F; // TBD §10
+
+// Stuck-heater plausibility (Fault{HEATER_STUCK}): measured temp climbing while the
+// commanded duty is ~0 means the SSR is welded on. Trip when the measured high-limit
+// rises by at least STUCK_HEATER_RISE_C across a STUCK_HEATER_WINDOW_MS window during
+// which the commanded duty never exceeds STUCK_HEATER_DUTY_EPS.
+constexpr float STUCK_HEATER_DUTY_EPS = 0.02F;      // TBD §10: "duty ~ 0" threshold
+constexpr float STUCK_HEATER_RISE_C = 5.0F;         // TBD §10: implausible rise over the window
+constexpr uint32_t STUCK_HEATER_WINDOW_MS = 60000U; // TBD §10: the N-second window
+
+// Bounded total runtime (Fault{RUNTIME_EXCEEDED}): at run start the supervisor budgets
+// Σ(projected segment durations) × this fraction. B1 baked each segment's projected
+// duration into dur_ms, so the sum needs no oven_cal here. A run outliving its budget
+// faults — the backstop against a run that never reaches DONE.
+constexpr float RUNTIME_MARGIN_FRAC = 1.5F; // TBD §10: L3 total-runtime margin
 
 // The cap-selector mode derived from recipe content (NOT recipe.mode). A segment
 // asserting uv or motor forces CURE (the tighter cap); a plain-heat recipe with

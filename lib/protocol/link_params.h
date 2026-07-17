@@ -39,6 +39,13 @@ inline constexpr uint32_t kLinkTimeoutMs = 1000;
 // same reason — that is one fact, and it gets one definition.
 inline constexpr uint32_t kLinkTickMs = 10;
 
+// Controller -> CYD Fault (§22): the dedicated Fault frame is sent on change, then
+// re-sent this often while a fault stays active. The frame is un-ACKed, so the resend
+// self-heals a dropped one; the CYD latches on first receipt, so the repeats are
+// harmless. Slower than telemetry because the continuous telemetry.fault_code is the
+// backup channel — this only needs to land the annunciation reliably once. **TBD §10**.
+inline constexpr uint32_t kFaultResendMs = 500;
+
 // Setup path (Recipe/Start): resend interval and retry budget before the sender
 // gives up and surfaces an error. kSetupMaxRetries counts resends *after* the
 // initial send, so a command is transmitted up to 1 + kSetupMaxRetries times.

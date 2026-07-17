@@ -18,12 +18,14 @@
 #include "esp32_heater_switch.h"
 #include "esp32_serial_transport.h"
 #include "esp32_watchdog.h"
+#include "fault_sender.h"
 #include "frame_link.h"
 #include "heater_actuator.h"
 #include "link_params.h"
 #include "message_router.h"
 #include "safety_supervisor.h"
-#include "schema.h" // shared wire-contract identity (lib/protocol)
+#include "schema.h"             // shared wire-contract identity (lib/protocol)
+#include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
 #include "telemetry_sender.h"
 
 // --- Link stack (§9) ---
@@ -43,13 +45,22 @@ static ControllerLink g_ctrl(g_link, g_clk);
 // frame; A5/A6/D4 fill in temps, setpoint and duty as those land.
 static protocol::TelemetrySender g_telemetry(g_link, g_clk);
 
+// Fault annunciation to the CYD (§22): fires the dedicated Fault frame on change and re-sends
+// while a fault stays active. Driven from SafetySupervisor::faultCode() each loop; the
+// continuous telemetry.fault_code below is the self-healing backup channel.
+static protocol::FaultSender g_fault(g_link, g_clk);
+
 // --- Outputs (§4) ---
 // Declared above the supervisor that owns them: its constructor drives the fail-safe state, and
 // statics in one translation unit initialize in declaration order.
 static Esp32HeaterSwitch g_heater_sw(kHeaterPin);
 static Esp32Contactor g_contactor(kContactorPin);
 static HeaterActuator g_heater(g_heater_sw, g_clk);
-static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor);
+// High-limit input for the L3 over-temp / stuck-heater checks (§4). Stubbed (reports no
+// usable channel) until D4's real TC adapter; the L3 checks only run once a run is armed,
+// which rides in with D4. See stub_thermocouples.h.
+static StubThermocouples g_tc;
+static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor, g_tc, g_clk);
 
 static Esp32Watchdog g_wdt;
 
@@ -86,6 +97,9 @@ void setup() {
   g_contactor.begin();
 
   g_wdt.begin(kWatchdogTimeoutMs);
+  // Map the previous boot's reset cause onto a boot fault: a watchdog reset is reported once
+  // as Fault{WATCHDOG} (§9) rather than the pair coming back silently. Read after begin().
+  g_safety.noteResetCause(g_wdt.lastResetCause());
 
 #if defined(CONTROL_BENCH)
   Serial.begin(115200); // bench only: UART0 is the console, the link is on UART2
@@ -158,9 +172,18 @@ void loop() {
   // Report what the outputs actually ended up doing, so telemetry reflects the post-safety
   // truth rather than what the control loop asked for. session 0 = IDLE telemetry (§9): we are
   // stateless across a reset, so an unadopted session is exactly what a fresh boot should say.
+  const uint32_t session = g_ctrl.gate().hasActiveSession() ? g_ctrl.gate().activeSession() : 0U;
+  const oven_FaultCode fault = g_safety.faultCode();
   g_telemetry.state().heater_duty = g_heater.duty();
-  g_telemetry.setSession(g_ctrl.gate().hasActiveSession() ? g_ctrl.gate().activeSession() : 0U);
+  g_telemetry.state().fault_code = fault; // continuous backup for the §22 annunciation
+  g_telemetry.setSession(session);
   g_telemetry.service();
+
+  // Dedicated Fault frame: fires on change, re-sends while active (§22). The supervisor has
+  // already safed the outputs; this is the CYD-facing annunciation.
+  g_fault.setSession(session);
+  g_fault.set(fault);
+  g_fault.service();
 
 #if defined(CONTROL_BENCH)
   // Edge-triggered, so the fail-safe cut timestamps itself: the 1 Hz trace below is far too

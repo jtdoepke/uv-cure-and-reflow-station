@@ -18,6 +18,8 @@
 //   heater_control : the PI-loop harness's struct format (gain header + tick records, see
 //               fuzz_heater_control.cpp). Also hand-packed — controller-side control math, no wire
 //               message to reuse the encoder for.
+//   safety_supervisor : the L3-gate harness's struct format (recipe + driver records, see
+//               fuzz_safety_supervisor.cpp). Hand-packed; controller-side safety logic.
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -300,12 +302,52 @@ std::vector<uint8_t> heaterFaultSeed() {
   return v;
 }
 
+// --- safety-supervisor harness format (fuzz_safety_supervisor.cpp): header + 5-byte segments
+// + 11-byte driver records ---
+
+// Only the fields armRun reads: dur_ms (runtime budget) and uv/motor (deriveMode cap select).
+void putSafetySeg(std::vector<uint8_t> &v, uint32_t durMs, uint8_t channels) {
+  putU32LE(v, durMs);
+  v.push_back(channels);
+}
+
+// ctl bits: bit0 refresh-auth, bit1 trip, bit2 clearFault, bit3 disarm, bit4 fault every wall.
+void putSafetyDriver(std::vector<uint8_t> &v, float wallC, float duty, uint16_t stepMs,
+                     uint8_t ctl) {
+  putF32(v, wallC);
+  putF32(v, duty);
+  putU16LE(v, stepMs);
+  v.push_back(ctl);
+}
+
+// A steady, authorized reflow run that never trips: the ordinary regime the fuzzer mutates from.
+std::vector<uint8_t> safetyRunSeed() {
+  std::vector<uint8_t> v;
+  v.push_back(0);                          // flags
+  v.push_back(1);                          // one segment
+  putSafetySeg(v, /*durMs=*/600000, 0x00); // reflow (no uv/motor)
+  for (int i = 0; i < 4; ++i) {
+    putSafetyDriver(v, /*wallC=*/100.0f, /*duty=*/0.5f, /*stepMs=*/1000, /*ctl=refresh*/ 0x01);
+  }
+  return v;
+}
+
+// A cure run (uv → 120 °C cap) driven past the over-temp trip point: seeds the L3 trip path.
+std::vector<uint8_t> safetyOvertempSeed() {
+  std::vector<uint8_t> v;
+  v.push_back(0);                          // flags
+  v.push_back(1);                          // one segment
+  putSafetySeg(v, /*durMs=*/600000, 0x01); // cure (uv on) -> trip above ~135 C
+  putSafetyDriver(v, /*wallC=*/200.0f, /*duty=*/0.0f, /*stepMs=*/1000, /*ctl=refresh*/ 0x01);
+  return v;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   const fs::path base = (argc > 1) ? fs::path(argv[1]) : fs::path("fuzz/corpus");
-  for (const char *sub :
-       {"frontdoor", "decode", "validator", "compiler", "executor", "heater_control"}) {
+  for (const char *sub : {"frontdoor", "decode", "validator", "compiler", "executor",
+                          "heater_control", "safety_supervisor"}) {
     fs::create_directories(base / sub);
   }
 
@@ -351,6 +393,10 @@ int main(int argc, char **argv) {
   // heater_control: the PI-loop harness's struct format (gain header + tick records, hand-packed).
   writeFile(base / "heater_control" / "hold.bin", heaterHoldSeed());
   writeFile(base / "heater_control" / "fault.bin", heaterFaultSeed());
+
+  // safety_supervisor: the L3-gate harness's struct format (recipe + driver, hand-packed).
+  writeFile(base / "safety_supervisor" / "run.bin", safetyRunSeed());
+  writeFile(base / "safety_supervisor" / "overtemp.bin", safetyOvertempSeed());
 
   std::printf("done\n");
   return 0;
