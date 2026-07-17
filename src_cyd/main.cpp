@@ -224,6 +224,13 @@ static void build_profile_library_cb(void *, lv_obj_t *scr) {
   g_profile_library.begin(scr, g_cure_profiles, g_reflow_profiles);
 }
 
+// Reset-on-show for the cached profile library: the stateless two-tile chooser is its default view,
+// and a cached re-show must land there (not on whatever list/detail page it was left on). The list
+// re-reads the store on entry, so nothing stale is shown.
+static void reset_profile_library_cb(void *) {
+  g_profile_library.showChooser();
+}
+
 // Wake the display the instant the machine leaves idle — a HOT chamber, a run start, or a
 // fault must never be hidden behind a dark screen (§17/§22). The loop's sleep tick also keeps
 // us awake while non-idle; this observer just makes the wake immediate on the state change.
@@ -403,7 +410,11 @@ void setup() {
 
   g_router.define(SCREEN_HOME, build_home_screen_cb, nullptr, /*cached=*/true);
   g_router.define(SCREEN_SETTINGS, build_settings_screen_cb, nullptr, /*cached=*/false);
-  g_router.define(SCREEN_PROFILES, build_profile_library_cb, nullptr, /*cached=*/false);
+  // Cached (like Home): the chooser is stateless two tiles, and the reset hook returns a cached
+  // re-show to it. The list/detail pages are rebuilt on demand and re-read the store, so caching
+  // the resident screen object is safe (the §skill cacheability rule).
+  g_router.define(SCREEN_PROFILES, build_profile_library_cb, nullptr, /*cached=*/true,
+                  reset_profile_library_cb);
   g_router.show(SCREEN_HOME);
   // Watch for the Home → Settings / Profiles navigation intents (persist across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);

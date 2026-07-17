@@ -1,5 +1,7 @@
 #include "profile_library_screen.h"
 
+#include <initializer_list>
+
 #include "confirm_dialog.h"
 #include "profile_curve.h"
 #include "subjects.h"
@@ -14,9 +16,11 @@ static_assert(ProfileStore::kMaxListed <= static_cast<size_t>(SelectableListMode
 // Captureless thunks — a friend of ProfileLibraryScreen so they can reach its private navigation /
 // action methods (the codebase's single-void*-user_data idiom, no std::function).
 struct ProfileThunks {
-  static void chooser_open(int index, void *ud) {
-    static_cast<ProfileLibraryScreen *>(ud)->openMode(index == 0 ? RecipeMode::Cure
-                                                                 : RecipeMode::Reflow);
+  static void choose_cure(lv_event_t *e) {
+    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->openMode(RecipeMode::Cure);
+  }
+  static void choose_reflow(lv_event_t *e) {
+    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->openMode(RecipeMode::Reflow);
   }
   static void list_open(int index, void *ud) {
     static_cast<ProfileLibraryScreen *>(ud)->openDetail(index);
@@ -146,17 +150,43 @@ void ProfileLibraryScreen::back() {
 
 // --- Chooser (Cure | Reflow) ---
 
+namespace {
+// A big Home-style mode tile (§14 apply_mode_tile), `screen` as the click user_data.
+lv_obj_t *make_mode_tile(lv_obj_t *parent, const char *text, lv_event_cb_t on_click, void *screen) {
+  lv_obj_t *btn = lv_button_create(parent);
+  theme::apply_mode_tile(btn);
+  lv_obj_t *label = lv_label_create(btn);
+  lv_label_set_text(label, text);
+  lv_obj_center(label);
+  lv_obj_add_event_cb(btn, on_click, LV_EVENT_CLICKED, screen);
+  return btn;
+}
+} // namespace
+
 void ProfileLibraryScreen::buildChooser() {
   clearParent();
   configParent();
   buildHeader("Profiles");
-  const SelectableListItem items[2] = {
-      {"Cure profiles", nullptr, true, "Open"},
-      {"Reflow profiles", nullptr, true, "Open"},
-  };
-  list_model_.init(items, 2, /*wrap=*/true);
-  list_model_.setOpenHandler(ProfileThunks::chooser_open, this);
-  create_selectable_list(parent_, list_model_);
+
+  // Exactly two profile types, so this is two big Home-style tiles (a direct tap), not a ▲/▼ list —
+  // and being stateless is what lets the router cache this screen. The tiles are NOT link-gated:
+  // browsing/editing profiles is CYD-local and always available (§23/§24), unlike Home's run tiles.
+  lv_obj_t *modes = lv_obj_create(parent_);
+  theme::apply_row(modes);
+  lv_obj_set_width(modes, lv_pct(100));
+  lv_obj_set_flex_grow(modes, 1);
+  lv_obj_set_flex_flow(modes, panel::kPortrait ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
+
+  lv_obj_t *cure = make_mode_tile(modes, "UV CURE", ProfileThunks::choose_cure, this);
+  lv_obj_t *reflow = make_mode_tile(modes, "REFLOW", ProfileThunks::choose_reflow, this);
+  for (lv_obj_t *tile : {cure, reflow}) {
+    lv_obj_set_flex_grow(tile, 1);
+    if (panel::kPortrait) {
+      lv_obj_set_width(tile, lv_pct(100));
+    } else {
+      lv_obj_set_height(tile, lv_pct(100));
+    }
+  }
 }
 
 // --- Mode-scoped library list ---

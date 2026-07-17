@@ -60,6 +60,7 @@ public:
   const SelectableListItem &item(int i) const { return items_[i]; }
   bool atFirstEnabled(); // true → the Up button disables
   bool atLastEnabled();  // true → the Down button disables
+  bool canOpen();        // false → the Open button disables (empty list / no selectable row)
   lv_subject_t *selectedSubject() { return &selected_subject_; }
 
 private:

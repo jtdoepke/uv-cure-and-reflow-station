@@ -111,6 +111,11 @@ bool SelectableListModel::atLastEnabled() {
   return last < 0 || selected() >= last;
 }
 
+bool SelectableListModel::canOpen() {
+  int sel = selected();
+  return sel >= 0 && sel < count_ && items_[sel].enabled;
+}
+
 // --- View ---
 
 namespace {
@@ -138,6 +143,14 @@ void on_down_state(lv_observer_t *observer, lv_subject_t *) {
   lv_obj_t *btn = lv_observer_get_target_obj(observer);
   auto *m = static_cast<SelectableListModel *>(lv_observer_get_user_data(observer));
   lv_obj_set_state(btn, LV_STATE_DISABLED, m->atLastEnabled());
+}
+
+// Open disables when there is no selectable row (an empty list, or every row a disabled "soon"
+// entry) — there is nothing to open, so the button must not read as pressable.
+void on_open_state(lv_observer_t *observer, lv_subject_t *) {
+  lv_obj_t *btn = lv_observer_get_target_obj(observer);
+  auto *m = static_cast<SelectableListModel *>(lv_observer_get_user_data(observer));
+  lv_obj_set_state(btn, LV_STATE_DISABLED, !m->canOpen());
 }
 
 // The action button names what Open does to the highlighted row (its `verb`, or "Open").
@@ -279,6 +292,7 @@ SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &mod
   lv_obj_t *open_label = nullptr;
   ui.btn_open = make_footer_button(footer, "Open", model, LIST_INTENT(onOpen), &open_label);
   lv_subject_add_observer_obj(sel, on_action_verb_changed, open_label, &model);
+  lv_subject_add_observer_obj(sel, on_open_state, ui.btn_open, &model);
 
   return ui;
 }

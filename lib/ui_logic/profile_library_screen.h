@@ -72,7 +72,7 @@ private:
   ProfileLibraryViewModel cure_vm_;
   ProfileLibraryViewModel reflow_vm_;
   ProfileLibraryViewModel *current_ = nullptr; // the shown mode's VM (&cure_vm_ / &reflow_vm_)
-  SelectableListModel list_model_; // serves the chooser and the list (one shown at a time)
+  SelectableListModel list_model_;             // the mode-scoped list (the chooser is two tiles)
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;

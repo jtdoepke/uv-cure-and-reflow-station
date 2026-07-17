@@ -80,9 +80,8 @@ void test_chooser_to_list_to_detail_and_back(void) {
   screen.begin(lv_screen_active(), cure, reflow);
   TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::Chooser, (int)screen.page());
 
-  // Select "Reflow profiles" (row 1) and Open through the model seam the footer Open button uses.
-  screen.listModel().select(1);
-  screen.listModel().onOpen();
+  // Pick Reflow — what the chooser's big Reflow tile does (openMode is its click target).
+  screen.openMode(RecipeMode::Reflow);
   TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::List, (int)screen.page());
   TEST_ASSERT_EQUAL_INT((int)RecipeMode::Reflow, (int)screen.mode());
   TEST_ASSERT_EQUAL_UINT(1, screen.vm().count());
@@ -164,6 +163,14 @@ void test_empty_state(void) {
   screen.openMode(RecipeMode::Reflow); // empty store
   TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::List, (int)screen.page());
   TEST_ASSERT_EQUAL_UINT(0, screen.vm().count());
+  TEST_ASSERT_FALSE(screen.listModel().canOpen()); // nothing to open → Open disables
+}
+
+void test_open_enabled_with_profiles(void) {
+  seed(reflow, "LF-245", false, 245.0f, 3);
+  screen.begin(lv_screen_active(), cure, reflow);
+  screen.openMode(RecipeMode::Reflow);
+  TEST_ASSERT_TRUE(screen.listModel().canOpen()); // a selectable row exists → Open enabled
 }
 
 void test_new_edit_load_publish_nav_intents(void) {
@@ -189,6 +196,7 @@ int main(int, char **) {
   RUN_TEST(test_duplicate_creates_copy);
   RUN_TEST(test_delete_confirm_removes_and_cancel_keeps);
   RUN_TEST(test_empty_state);
+  RUN_TEST(test_open_enabled_with_profiles);
   RUN_TEST(test_new_edit_load_publish_nav_intents);
   return UNITY_END();
 }
