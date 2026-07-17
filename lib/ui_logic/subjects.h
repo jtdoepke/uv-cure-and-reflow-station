@@ -27,9 +27,7 @@ enum LinkState {
 
 // Navigation intent. A screen publishes one on a tap; a subject-level observer in main.cpp (which
 // survives screen swaps) routes it. Home drives NAV_PROFILES/NAV_SETTINGS today; the profile
-// library (C4) drives the NAV_PROFILE_* trio below. The intents whose destination screens have not
-// landed yet (the editor §12/C5, Setup §19/C6) are still observed only by tests — the same posture
-// Home's tile intents held before Settings existed.
+// library (C4) drives the NAV_PROFILE_* pair below (routed to the editor, C5).
 enum NavRequest {
   NAV_NONE = 0,
   NAV_CURE_SETUP,
@@ -37,13 +35,13 @@ enum NavRequest {
   NAV_PROFILES,
   NAV_CALIBRATE,
   NAV_SETTINGS,
-  // Profile-library actions that leave for a screen C4 does not own. The *which profile* + editable
-  // working-copy handoff is a seam C5/C6 own (a name/mode buffer beside this int); C4 only signals
-  // the intent. NEW → editor on a fresh template; EDIT → editor on the selected profile; LOAD →
-  // Setup with the selected profile as the run template.
+  // Profile-library actions that open the editor (§12/C5). The *which profile* + editable
+  // working-copy handoff is resolved in main.cpp off the library's own selection state. NEW →
+  // editor on a fresh template; EDIT → editor on the selected profile. There is deliberately no
+  // LOAD intent: running a profile is a separate path from Home (UV Cure / Reflow → Setup, §19),
+  // not the Profiles branch, which is for managing profiles only.
   NAV_PROFILE_NEW,
   NAV_PROFILE_EDIT,
-  NAV_PROFILE_LOAD,
 };
 
 extern lv_subject_t subj_chamber_temp; // int, °C

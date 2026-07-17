@@ -1,0 +1,7 @@
+{
+  "name": "ui_logic",
+  "description": "CYD UI layer (screens, widgets, view bindings; design.md 12-24). The profile editor (C5) and the fault overlay (C8) validate/annotate against the shared nanopb wire contract, so a ui_logic source includes the generated oven.pb.h — this dependency is what puts nanopb's generated-src on this library's include path (the lib/protocol pattern). LVGL is resolved from the env lib_deps.",
+  "dependencies": {
+    "nanopb/Nanopb": "^0.4.91"
+  }
+}

@@ -10,6 +10,11 @@
 //     phaseCount <= kMaxPhases.
 //   - sampleCurve() (requested AND achievable): <= kMaxCurvePoints points, each finite and within
 //     the same declared bounds — no NaN coordinate can ever reach lv_line.
+//   - sampleOvershoot() (C5 closed-loop preview): an ITERATIVE {a,b,τ} lag over the achievable
+//     trajectory — the new NaN/divergence surface (cf. fuzz_heater_control on the PID). Bounded to
+//     kMaxCurvePoints points, each finite + in-bounds, time monotonic, no matter how adversarial
+//     the Phase[] / ambient / model — a NaN setpoint must not poison the running lag state.
+//   - anyRampRateLimited() (C5 divergence flag): total, no UB, on any input.
 //   - formatDuration()/formatPeak(): always NUL-terminate their buffer (no overflow) on any input.
 //
 // ASAN/UBSAN catch any OOB/UB in the maths itself. Joins the fuzz_profile_store / fuzz_compiler
@@ -21,7 +26,7 @@
 //   [2..5]   ambient °C (raw float — incl. NaN/Inf, exercising clampT on the start temp)
 //   then N × 17-byte phase records (same layout as fuzz_compiler.cpp / fuzz_profile_store.cpp):
 //     [0..3] targetC [4..7] rampSeconds [8..11] holdSeconds [12..15] exposurePerSurface
-//     [16]   flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2}, bits4-5 coolFan{0,1,2}
+//     [16]   flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2} (bits4-5 reserved — no cool fan §6)
 #include <cmath>
 #include <cstring>
 
@@ -92,7 +97,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     phases[i].uv = flags & 0x01;
     phases[i].motor = flags & 0x02;
     phases[i].convFan = readFan((flags >> 2) & 0x03);
-    phases[i].coolFan = readFan((flags >> 4) & 0x03);
+    // bits4-5 reserved (was coolFan — no chamber cool fan, §6)
   }
 
   // --- computeFacts: finite + bounded ---
@@ -115,6 +120,48 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         FUZZ_ASSERT(pts[i].t >= pts[i - 1].t); // time is monotonic non-decreasing
       }
     }
+  }
+
+  // --- sampleOvershoot: bounded, finite, in-bounds, time monotonic (C5 iterative lag) ---
+  profile_facts::CurvePoint over[profile_facts::kMaxCurvePoints];
+  const size_t mo = profile_facts::sampleOvershoot(phases, n, mode, model, ambient, over,
+                                                   profile_facts::kMaxCurvePoints);
+  FUZZ_ASSERT(mo <= profile_facts::kMaxCurvePoints);
+  for (size_t i = 0; i < mo; ++i) {
+    FUZZ_ASSERT(inBounds(over[i].t, 0.0f, profile_facts::kMaxSeconds));
+    FUZZ_ASSERT(inBounds(over[i].T, profile_facts::kTempLo, profile_facts::kTempHi));
+    if (i > 0) {
+      FUZZ_ASSERT(over[i].t >= over[i - 1].t);
+    }
+  }
+
+  // --- anyRampRateLimited: total, no UB (the return value is unconstrained; UBSAN is the check)
+  // ---
+  (void)profile_facts::anyRampRateLimited(phases, n, mode, model, ambient);
+
+  // --- samplePhaseBoundaries: bounded, finite, monotonic (the curve's phase-separator x's). The
+  // effective list carries one extra boundary for the implicit cool-down phase (§6), so size to
+  // kMaxCurvePhases. ---
+  float bounds[profile_facts::kMaxCurvePhases];
+  const size_t mb = profile_facts::samplePhaseBoundaries(phases, n, mode, model, ambient, bounds,
+                                                         profile_facts::kMaxCurvePhases);
+  FUZZ_ASSERT(mb <= profile_facts::kMaxCurvePhases);
+  for (size_t i = 0; i < mb; ++i) {
+    FUZZ_ASSERT(inBounds(bounds[i], 0.0f, profile_facts::kMaxSeconds));
+    if (i > 0) {
+      FUZZ_ASSERT(bounds[i] >= bounds[i - 1]);
+    }
+  }
+
+  // --- sampleUvSpans: bounded, finite, ordered (start <= end) ---
+  profile_facts::TimeSpan spans[kMaxPhases];
+  const size_t ms =
+      profile_facts::sampleUvSpans(phases, n, mode, model, ambient, spans, kMaxPhases);
+  FUZZ_ASSERT(ms <= kMaxPhases);
+  for (size_t i = 0; i < ms; ++i) {
+    FUZZ_ASSERT(inBounds(spans[i].start, 0.0f, profile_facts::kMaxSeconds));
+    FUZZ_ASSERT(inBounds(spans[i].end, 0.0f, profile_facts::kMaxSeconds));
+    FUZZ_ASSERT(spans[i].end >= spans[i].start);
   }
 
   // --- formatters: never overrun their buffer, always NUL-terminated ---

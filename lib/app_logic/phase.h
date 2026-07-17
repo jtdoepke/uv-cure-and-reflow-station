@@ -13,9 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 
-// Per-phase convection/cooling-fan intent. The default is `Auto`, resolved to on/off at
-// recipe-compile time against oven_cal.h (fan_resolver.h). `uv`/`motor` stay plain on/off — only
-// the fans are tri-state (§5 "Fan `Auto`").
+// Per-phase convection-fan intent. The default is `Auto`, resolved to on/off at recipe-compile time
+// against oven_cal.h (fan_resolver.h). `uv`/`motor` stay plain on/off — only the convection fan is
+// tri-state (§5 "Fan `Auto`"). There is no cooling fan (the teardown found none, §6).
 enum class FanMode : uint8_t { Auto = 0, On = 1, Off = 2 };
 
 // Which mode a whole profile is authored in. Selects the hold-authoring convention (cure holds are
@@ -49,6 +49,8 @@ struct Phase {
   bool uv = false;    // UV lamp on for this phase (cure)
   bool motor = false; // turntable on for this phase (cure)
 
+  // Convection fan only — the teardown found no chamber cooling fan (§6), so cooling is passive and
+  // there is no cool-fan channel. The electronics cooling fan is always on and controller-managed,
+  // not a per-phase setting.
   FanMode convFan = FanMode::Auto;
-  FanMode coolFan = FanMode::Auto;
 };

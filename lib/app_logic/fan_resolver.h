@@ -2,12 +2,13 @@
 // Recipe carries (design.md §5 "Fan `Auto`"; backlog B3).
 //
 // `Auto` is resolved on the CYD at recipe-compile time so the controller stays a generic executor
-// and no `Auto` value crosses the wire (§9). The decision is made against the fan-conditioned rate
-// envelopes in oven_cal.h: turn conv_fan on when the requested heat ramp can't be met on the
-// fan-off envelope, turn cool_fan on when the requested cool ramp is faster than passive cooling.
-// Before any calibration exists (`!model.calibrated`) there are no real fan-on-vs-off rates to
-// decide against, so `Auto` falls back to the simple heuristic "conv_fan on while heating, cool_fan
-// on while cooling" (§5) and the decision is flagged so the preview can label it estimated (§12).
+// and no `Auto` value crosses the wire (§9). Only the convection fan exists on this chamber — the
+// teardown found no chamber cooling fan (§6a/§10), so cooling is always passive and there is no
+// cool-fan channel. The decision is made against the fan-conditioned rate envelopes in oven_cal.h:
+// turn conv_fan on when the requested heat ramp can't be met on the fan-off envelope. Before any
+// calibration exists (`!model.calibrated`) there are no real fan-on-vs-off rates to decide against,
+// so `Auto` falls back to the simple heuristic "conv_fan on while heating" (§5) and the decision is
+// flagged so the preview can label it estimated (§12).
 //
 // The exact rate/target margins are an OPEN question (§10 "Fan `Auto` resolution"); they live here
 // as named constants and will tighten against real envelopes. Pure C++: no LVGL, no Arduino —
@@ -25,10 +26,11 @@ struct FanContext {
 };
 
 // The resolved fan state for a phase, plus whether the resolution used the pre-calibration
-// heuristic (a Auto fan decided without real envelopes → amber "estimated" in the preview).
+// heuristic (an Auto fan decided without real envelopes → amber "estimated" in the preview).
+// Only the convection fan exists on this chamber (the teardown found no chamber cooling fan, §6a);
+// cooling is always passive, so there is no cool-fan field.
 struct FanDecision {
   bool convFan;
-  bool coolFan;
   bool heuristic;
 };
 
@@ -51,19 +53,16 @@ inline bool fanOffTooSlow(const RateEnvelope &offEnv, float a, float b, float re
 
 } // namespace fan_resolver
 
-// Resolve both fans for one phase. Explicit On/Off pass through untouched; only `Auto` consults the
-// model. Returns the resolved booleans and a heuristic flag set when any Auto fan was decided on
-// the uncalibrated fallback path.
-inline FanDecision resolveFans(FanMode convMode, FanMode coolMode, const FanContext &ctx,
-                               const OvenModel &model) {
+// Resolve the convection fan for one phase (the only chamber fan; cooling is passive, §6a).
+// Explicit On/Off pass through untouched; only `Auto` consults the model. Returns the resolved
+// boolean and a heuristic flag set when an Auto fan was decided on the uncalibrated fallback path.
+inline FanDecision resolveFans(FanMode convMode, const FanContext &ctx, const OvenModel &model) {
   const bool heating = ctx.toC > ctx.fromC;
-  const bool cooling = ctx.toC < ctx.fromC;
-  const bool heuristic =
-      !model.calibrated && (convMode == FanMode::Auto || coolMode == FanMode::Auto);
+  const bool heuristic = !model.calibrated && convMode == FanMode::Auto;
 
-  FanDecision d{false, false, heuristic};
+  FanDecision d{false, heuristic};
 
-  // --- Convection fan: aids heating (rate + uniformity); irrelevant to passive cooling. ---
+  // Convection fan: aids heating (rate + uniformity); irrelevant to passive cooling.
   switch (convMode) {
   case FanMode::On:
     d.convFan = true;
@@ -83,30 +82,6 @@ inline FanDecision resolveFans(FanMode convMode, FanMode coolMode, const FanCont
       } else {
         d.convFan =
             fan_resolver::fanOffTooSlow(model.heat.off, ctx.fromC, ctx.toC, ctx.rampSeconds);
-      }
-    }
-    break;
-  }
-
-  // --- Cooling fan: aids cooling only; forced convection beats passive cooling. ---
-  switch (coolMode) {
-  case FanMode::On:
-    d.coolFan = true;
-    break;
-  case FanMode::Off:
-    d.coolFan = false;
-    break;
-  case FanMode::Auto:
-    if (!model.calibrated) {
-      d.coolFan = cooling; // heuristic: fan on while cooling (§5)
-    } else if (cooling) {
-      if (ctx.rampSeconds <= 0.0f) {
-        const float tOff = rampDurationSeconds(model.cool.off, ctx.fromC, ctx.toC);
-        const float tOn = rampDurationSeconds(model.cool.on, ctx.fromC, ctx.toC);
-        d.coolFan = tOn < tOff;
-      } else {
-        d.coolFan =
-            fan_resolver::fanOffTooSlow(model.cool.off, ctx.fromC, ctx.toC, ctx.rampSeconds);
       }
     }
     break;

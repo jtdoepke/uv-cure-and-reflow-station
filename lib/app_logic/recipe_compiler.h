@@ -25,6 +25,7 @@
 #include <cstdint>
 
 #include "fan_resolver.h"
+#include "implicit_cool.h"
 #include "oven.pb.h"
 #include "phase.h"
 #include "thermal_math.h"
@@ -105,8 +106,7 @@ inline uint32_t secondsToMs(float seconds) {
 inline oven_Segment baseSegment(const Phase &p, const FanDecision &fans) {
   oven_Segment seg = oven_Segment_init_default;
   seg.heat_c = p.targetC;
-  seg.conv_fan = fans.convFan;
-  seg.cool_fan = fans.coolFan;
+  seg.conv_fan = fans.convFan; // the only chamber fan; cooling is passive (§6)
   seg.uv = p.uv;
   seg.motor = p.motor;
   return seg;
@@ -158,14 +158,14 @@ inline CompileResult compileRecipe(const Phase *phases, size_t count, RecipeMode
 
     // --- Fan Auto resolution (B3) ---
     const FanContext fc{prevC, p.targetC, p.rampSeconds};
-    const FanDecision fans = resolveFans(p.convFan, p.coolFan, fc, model);
+    const FanDecision fans = resolveFans(p.convFan, fc, model);
     adv.fanHeuristic = fans.heuristic;
 
     // --- Ramp segment (omitted when the phase makes no temperature change) ---
     if (p.targetC != prevC) {
       const bool heating = p.targetC > prevC;
-      const RateEnvelope &env =
-          heating ? model.heat.pick(fans.convFan) : model.cool.pick(fans.coolFan);
+      // Cooling is passive — no chamber cool fan (§6) — so the fan-off cool envelope always.
+      const RateEnvelope &env = heating ? model.heat.pick(fans.convFan) : model.cool.off;
       oven_Segment seg = recipe_compiler::baseSegment(p, fans);
       if (p.rampSeconds <= 0.0f) {
         // ASAP: executed to target; dur_ms is the projected-duration estimate (ETA / watchdog, §5).
@@ -214,6 +214,28 @@ inline CompileResult compileRecipe(const Phase *phases, size_t count, RecipeMode
     if (i < kMaxPhases)
       r.phases[i] = adv;
     prevC = p.targetC;
+  }
+
+  // Implicit passive cool-down to a touch-safe temperature (§5/§6): every run that ends hotter than
+  // kTouchSafeC gets an appended cool segment so the controller coasts the chamber down before it
+  // reports Done. Its duration is the passive-coast time on the fan-off cool envelope (there is no
+  // chamber cool fan) — the projected temp reaches kTouchSafeC at the segment's end. The controller
+  // also runs its own independent backup cooldown, so this tail is a nicety, not the safety itself.
+  if (needsImplicitCool(prevC)) {
+    const uint32_t coolMs =
+        recipe_compiler::secondsToMs(rampDurationSeconds(model.cool.off, prevC, kTouchSafeC));
+    if (coolMs > 0) {
+      oven_Segment seg = oven_Segment_init_default;
+      seg.heat_c = kTouchSafeC;
+      seg.conv_fan = false; // passive cool; the convection fan aids heating only (§6)
+      seg.uv = false;
+      seg.motor = false;
+      seg.interp = oven_Interp_INTERP_RAMP_OVER_TIME;
+      seg.dur_ms = coolMs;
+      if (segCount >= kMaxSegments)
+        return fail(CompileReject::TooManySegments, count - 1);
+      r.recipe.segments[segCount++] = seg;
+    }
   }
 
   // A phase list with no ramp and no hold anywhere produces nothing to run.

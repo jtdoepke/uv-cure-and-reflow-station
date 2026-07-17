@@ -20,7 +20,7 @@
 namespace {
 
 oven_Segment makeSeg(oven_Interp interp, float heatC, uint32_t durMs, bool uv = false,
-                     bool motor = false, bool convFan = false, bool coolFan = false) {
+                     bool motor = false, bool convFan = false) {
   oven_Segment s = oven_Segment_init_zero;
   s.interp = interp;
   s.heat_c = heatC;
@@ -28,7 +28,6 @@ oven_Segment makeSeg(oven_Interp interp, float heatC, uint32_t durMs, bool uv = 
   s.uv = uv;
   s.motor = motor;
   s.conv_fan = convFan;
-  s.cool_fan = coolFan;
   return s;
 }
 
@@ -73,7 +72,11 @@ void test_ramp_over_time_sweeps_and_advances(void) {
   TEST_ASSERT_FLOAT_WITHIN(0.1f, 62.5f, exec.output().setpointC);
 
   clk.advance(5000);
-  exec.tick(90.0f, true); // dur elapsed -> advance -> DONE
+  exec.tick(90.0f, true); // dur elapsed -> advance -> backup cooldown (still hot, heater off, §6)
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, exec.output().setpointC);
+
+  exec.tick(30.0f, true); // measured touch-safe -> DONE
   TEST_ASSERT_EQUAL(kDone, exec.state());
   TEST_ASSERT_TRUE(exec.output().safe);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, exec.output().setpointC);
@@ -96,7 +99,9 @@ void test_ramp_asap_advances_on_reaching_target(void) {
   TEST_ASSERT_EQUAL(kRunning, exec.state()); // not there yet
 
   clk.advance(5000);
-  exec.tick(99.0f, true); // within the 2 C band -> reached -> DONE
+  exec.tick(99.0f, true); // within the 2 C band -> reached -> backup cooldown (still hot, §6)
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+  exec.tick(40.0f, true); // touch-safe -> DONE
   TEST_ASSERT_EQUAL(kDone, exec.state());
 }
 
@@ -115,7 +120,9 @@ void test_hold_gated_waits_for_arrival(void) {
 
   exec.tick(100.0f, true); // arrives -> hold begins now
   clk.advance(5000);
-  exec.tick(100.0f, true); // full hold elapsed -> DONE
+  exec.tick(100.0f, true); // full hold elapsed -> backup cooldown (still hot, §6)
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+  exec.tick(42.0f, true); // touch-safe -> DONE
   TEST_ASSERT_EQUAL(kDone, exec.state());
 }
 
@@ -206,9 +213,60 @@ void test_healthy_multisegment_run(void) {
 
   exec.tick(80.0f, true); // enters the hold segment -> its (ungated) timer starts now
   clk.advance(10000);
-  exec.tick(80.0f, true); // hold elapsed -> DONE
+  exec.tick(80.0f, true); // hold elapsed -> backup cooldown (still hot, §6)
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+  TEST_ASSERT_FALSE(exec.output().uv); // channels drop during the cooldown too
+
+  exec.tick(35.0f, true); // touch-safe -> DONE
   TEST_ASSERT_EQUAL(kDone, exec.state());
   TEST_ASSERT_FALSE(exec.output().uv); // channels drop when not running
+}
+
+// Backup cooldown (§6): after the last segment, the executor holds the heater off and stays RUNNING
+// until the MEASURED temp confirms touch-safe (43 C) — independent of the compiled cool tail.
+void test_backup_cooldown_waits_for_touch_safe(void) {
+  FakeClock clk;
+  ProfileExecutor exec(clk);
+  oven_Segment segs[] = {makeSeg(oven_Interp_INTERP_HOLD, 200.0f, 5000)};
+  exec.load(makeRecipe(segs, 1), /*holdEntryGated=*/false);
+  exec.start();
+
+  exec.tick(200.0f, true);
+  clk.advance(5000);
+  exec.tick(200.0f, true); // hold elapsed -> enters backup cooldown, still hot
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, exec.output().setpointC); // heater off throughout the cooldown
+
+  clk.advance(60000);
+  exec.tick(60.0f, true); // still above 43 -> not done yet
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+
+  clk.advance(60000);
+  exec.tick(43.0f, true); // reaches touch-safe -> DONE
+  TEST_ASSERT_EQUAL(kDone, exec.state());
+  TEST_ASSERT_TRUE(exec.output().safe);
+}
+
+// The cooldown wait has a generous backstop: the heater has been off throughout, so on expiry the
+// run reports DONE anyway rather than hanging (a genuinely stuck-hot chamber is the L3 trip's job).
+void test_backup_cooldown_backstop_completes(void) {
+  FakeClock clk;
+  ProfileExecutor::Config cfg;
+  cfg.cooldownMaxMs = 100000; // short backstop for the test
+  ProfileExecutor exec(clk, cfg);
+  oven_Segment segs[] = {makeSeg(oven_Interp_INTERP_HOLD, 200.0f, 5000)};
+  exec.load(makeRecipe(segs, 1), /*holdEntryGated=*/false);
+  exec.start();
+
+  exec.tick(200.0f, true);
+  clk.advance(5000);
+  exec.tick(200.0f, true); // -> backup cooldown, still hot
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+
+  clk.advance(100001);
+  exec.tick(200.0f, true); // never cooled, but the backstop elapsed -> DONE
+  TEST_ASSERT_EQUAL(kDone, exec.state());
+  TEST_ASSERT_TRUE(exec.output().safe);
 }
 
 // A faulted control TC is a stop condition: the executor faults safe (§4).
@@ -312,6 +370,8 @@ int main(int, char **) {
   RUN_TEST(test_watchdog_k_timeout_faults);
   RUN_TEST(test_watchdog_rate_floor_faults);
   RUN_TEST(test_healthy_multisegment_run);
+  RUN_TEST(test_backup_cooldown_waits_for_touch_safe);
+  RUN_TEST(test_backup_cooldown_backstop_completes);
   RUN_TEST(test_sensor_fault_is_safe);
   RUN_TEST(test_abort_returns_to_idle);
   RUN_TEST(test_zero_segment_recipe_completes);

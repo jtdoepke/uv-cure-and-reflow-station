@@ -271,9 +271,14 @@ interpolation (ramp-linear / hold / step). Channels:
 |---------|-----------|-------------|
 | `heater_setpoint_C` | the solder curve (peak ~245 °C) | gentle hold ~80 °C |
 | `conv_fan` (seg: on/off — duty only if the motor allows it, open §10; phase: Auto/On/Off) | convection during heat (uniformity) | optional |
-| `cool_fan` (seg: on/off; phase: Auto/On/Off) | cooldown boost (donor chamber-cooling fan if present — open §6/§10) | optional |
 | `uv` (on/off or duty) | off | on for the cure |
 | `motor` (on/off) | unused | turntable — even-exposure under directional UV (§6) |
+
+There is **no chamber `cool_fan` channel** — the teardown found the donor has a convection
+fan and an electronics-cooling fan but **no dedicated chamber-cooling fan** (§6, DECIDED),
+so cooling is **passive** (heater OFF + coast). Cooling-side control is instead the
+**implicit cool-down** below; the electronics-cooling fan runs for the whole of every run
+and is controller-managed, not a per-phase setting.
 
 The controller sequences segments, PID-tracks `heater_setpoint_C` via the
 zero-cross SSR — against the **mode's control sensor**: the **measured workpiece
@@ -301,8 +306,27 @@ phase compiles to two generic segments via the `interp` field:
   curve/ETA, but *executed* to target), **bounded by the per-segment watchdog
   below** so an unreachable target can't stall the run at full duty.
 - **`HOLD`**: keep target for `y` s.
-Per-phase channel settings (`conv_fan`/`cool_fan`/`uv`/`motor`) ride along. This is
+Per-phase channel settings (`conv_fan`/`uv`/`motor`) ride along. This is
 why the whole projected timeline + ETA are computable up front (§15).
+
+**Implicit cool-down to touch-safe (DECIDED).** The operator never authors a cool phase.
+Instead every profile ends with an **implicit passive cool-down to `kTouchSafeC` (43 °C)** —
+cool enough to open the door and handle the workpiece — so the templates carry only the
+active phases (reflow preheat/soak/reflow, cure warm/cure). It is realised in **two
+independent places**:
+
+- **Compiler-appended (CYD, `implicit_cool.h` + `recipe_compiler.h`):** when a run ends
+  hotter than touch-safe, the compiler appends one `RAMP_OVER_TIME` segment down to 43 °C
+  whose duration is the passive-coast time on the fan-off cool envelope (`oven_cal.h`), so
+  the **projected chamber temp reaches 43 °C at the segment's end**. The preview curve draws
+  the same tail (`profile_facts.h`), labelled "Cool". This is an open-loop *estimate*.
+- **Controller backup cooldown (`profile_executor.h` + `oven_safety.h` `TOUCH_SAFE_C`):**
+  after the last segment the executor holds the heater OFF and stays RUNNING until the
+  **measured** control temp confirms 43 °C before reporting DONE (with a generous backstop
+  so a stuck-hot sensor can't hang the run — the heater is off throughout, and a genuinely
+  stuck-hot chamber is the L3 over-temp trip's job). This closed-loop gate is what
+  guarantees the operator is never told a run is finished while the chamber is still hot,
+  independent of the compiled tail's accuracy — belt and suspenders.
 
 **Hold-entry gate (reflow — DECIDED):** in reflow, *every* ramp→hold transition
 additionally waits for the **measured workpiece temp** (§6) to be within a band of
@@ -325,25 +349,25 @@ below every temperature limit until the operator notices. `k`, the rate floor, a
 `N` are firmware constants (TBD, §10); the L3 total-runtime bound (§4) is the
 independent backstop.
 
-**Fan `Auto` mode (DECIDED — default for both fans).** Per phase, `conv_fan` and
-`cool_fan` are **tri-state {`Auto` (default), `On`, `Off`}** (not plain on/off); `uv` and
-`motor` stay explicit on/off. **`Auto` is resolved on the CYD at recipe-compile time**
-from `oven_cal.h`: for each segment the CYD picks the fan state **needed to hit the
+**Fan `Auto` mode (DECIDED — default for the convection fan).** Per phase, `conv_fan`
+is **tri-state {`Auto` (default), `On`, `Off`}** (not plain on/off); `uv` and
+`motor` stay explicit on/off. (There is no chamber cool fan, so no cool-fan channel to
+resolve — cooling is passive, above.) **`Auto` is resolved on the CYD at recipe-compile
+time** from `oven_cal.h`: for each segment the CYD picks the fan state **needed to hit the
 phase's ramp rate and hold the target** — turn `conv_fan` on when the requested heat ramp
-(or hold uniformity) can't be met without it; turn `cool_fan` on when the requested cool
-ramp is faster than passive cooling (§6 heat/cool-rate envelopes). This keeps the
+(or hold uniformity) can't be met without it. This keeps the
 architecture intact: the **stored profile carries the `Auto` intent** (so it re-resolves
 if calibration changes), the **compiled `Recipe` carries the resolved on/off** (§9), and
 the **controller stays a generic executor** — no fan policy in the safety MCU.
 
-- **Fan-conditioned calibration (DECIDED):** the calibration fit **always produces** rate
-  envelopes modelled **with each fan on vs off** (`heatRate(T, conv_fan)` /
-  `coolRate(T, cool_fan)`) — a standard part of `oven_cal.h`, so `Auto` decides against
-  real fan-on-vs-off rates. The characterization runs supply the data by randomizing
-  per-phase fan state (below). See §6.
+- **Fan-conditioned calibration (DECIDED):** the calibration fit **always produces** the
+  heat-rate envelope modelled **with the convection fan on vs off** (`heatRate(T, conv_fan)`)
+  — a standard part of `oven_cal.h`, so `Auto` decides against real fan-on-vs-off rates. The
+  cool-rate envelope is fan-off only (passive cooling, no chamber cool fan — §6). The
+  characterization runs supply the data by randomizing per-phase fan state (below). See §6.
 - **Pre-first-calibration fallback only:** before any calibration exists, `Auto` uses a
-  simple heuristic — `conv_fan` on while heating, `cool_fan` on while cooling — flagged
-  like the idealized preview (§12). Once calibrated, the fan-conditioned envelopes govern.
+  simple heuristic — `conv_fan` on while heating — flagged like the idealized preview (§12).
+  Once calibrated, the fan-conditioned envelopes govern.
 - **Reactivity:** resolution is compile-time-static (matches the up-front timeline/ETA,
   §15). A live/reactive controller-side variant is a parked enhancement — it would move
   fan policy into the controller, which we're deliberately avoiding for now (§10).
@@ -374,7 +398,7 @@ the segment still carries plain seconds, and the controller stays generic.
 For ML data collection, the CYD has a **random-profile generator**: it produces *n*
 random profiles of *m* random phases each and runs them back-to-back, logging
 everything (§7). Each generated phase randomizes values across **all** channels — a
-random heater setpoint, random per-phase on/off of `conv_fan` / `cool_fan` / `uv`,
+random heater setpoint, random per-phase on/off of `conv_fan` / `uv`,
 and a random duration. These are **ordinary profiles through the normal
 recipe/executor path** (closed-loop PID on the setpoint), just generated rather than
 hand-authored — no special actuator mode needed. `n`, `m`, and the per-channel
@@ -548,10 +572,11 @@ the HMI board itself.
       feasibility-aware curve preview (§12). Rate-limit + lag math is **shared
       `lib/` logic** reused by the CYD preview and the controller feedforward.
     - **Fan-conditioned envelopes AND estimator (DECIDED — for fan `Auto` +
-      planning, §5):** the calibration fit **always produces** rate envelopes
-      modelled **with each fan on vs off** — `heatRate(T, conv_fan)` and
-      `coolRate(T, cool_fan)` — so the CYD can decide whether a fan is *needed* to
-      hit a phase's rate. The **`{a,b,τ}` estimator is fan-conditioned the same
+      planning, §5):** the calibration fit **always produces** the heat-rate envelope
+      modelled **with the convection fan on vs off** — `heatRate(T, conv_fan)` — so the
+      CYD can decide whether the fan is *needed* to hit a phase's rate. The cool-rate
+      envelope `coolRate(T)` is **fan-off only** (cooling is passive, no chamber cool
+      fan — §6). The **`{a,b,τ}` estimator is fan-conditioned the same
       way** — `{a,b,τ}(conv_fan)` — because the convection fan shortens the board
       time constant (§5); a single fit over mixed-fan data would average two
       different plants and bias every projection. Planning code switches parameter
@@ -627,11 +652,17 @@ the HMI board itself.
   (LEDC would be for a DC replacement fan only). Runs during reflow heat phases
   for convective uniformity (top-mounted element would otherwise cause top/bottom
   board ΔT + hot spots).
-- **Cooling fan (chamber cooldown):** the donor *may* have a dedicated
-  chamber-cooling fan — verify (open, §10); if absent, add one. **The magnetron
-  fan is not it** — that fan keeps its original electronics-bay job (above); no
-  donor fan gets moved from its designed location. On/off, separate actuator from
-  the convection fan.
+- **Chamber cooling — passive (DECIDED, teardown-confirmed):** the teardown found the
+  donor has a chamber **convection fan** and an **electronics-cooling fan**, but **no
+  dedicated chamber-cooling fan**, and we are **not adding one**. Chamber cooldown is
+  therefore **passive** (heater OFF + coast + passive vents), and the cool-rate side of
+  the plant model is a single fan-off envelope. There is no `cool_fan` channel anywhere in
+  the domain, wire protocol, or UI (§5). What replaces active cooldown control is the
+  **implicit cool-down to touch-safe** (§5): the compiler appends a passive coast-to-43 °C
+  tail and the controller independently backs it with a measured-temp cooldown gate before
+  reporting DONE. **The magnetron fan is not a chamber fan** — it keeps its original
+  electronics-bay job (above) and runs for the whole of every run (controller-managed, not
+  a per-phase setting).
 - **Chamber humidity sensor (donor — cure-mode only):** the ML2-STC13SAIT has a
   humidity (steam) sensor for its sensor-cook/reheat modes, sited in the exhaust
   vent. Reusable as a cure-mode ML feature (outgassing/moisture). Caveats: it's a
@@ -1109,8 +1140,11 @@ starting that step; untagged detail inside an item inherits the tag.
 - **Convection fan motor type** *(gates §8 step 2)*: verify whether the donor's
   convection fan is an AC shaded-pole/synchronous motor (relay on/off only) or
   can be replaced by a DC fan for duty control — decides "on/off vs duty" across
-  §5's channel table, §6's driver, and the `Recipe` schema (§9). Also verify
-  whether a dedicated chamber-cooling fan exists (§6) or one must be added.
+  §5's channel table, §6's driver, and the `Recipe` schema (§9). ~~Also verify
+  whether a dedicated chamber-cooling fan exists or one must be added.~~
+  **RESOLVED (teardown): no chamber cooling fan; cooling is passive, none added** — the
+  `cool_fan` channel is dropped everywhere and replaced by the implicit cool-down to
+  touch-safe (§5/§6).
 - **Donor reuse (Toshiba ML2-STC13SAIT)** *(gates §8 step 2)*: characterize the
   **humidity sensor's** analog interface (cure-mode only); decide **relay-board
   reuse** for on/off loads vs new drivers; decide whether to **reuse the donor
@@ -1180,7 +1214,7 @@ starting that step; untagged detail inside an item inherits the tag.
   thresholds; firmware constants, tune against real runs.
 - **Calibration presets (§20)** *(§8 step 4)*: the exact `n`/`m`/coverage/time
   values behind the re-scoped Quick (cure-range) / Standard (full-range heat +
-  fan-on cool) / Thorough (adds passive-cool characterization) presets.
+  passive cool) / Thorough (adds fuller passive-cool characterization) presets.
 - **Data logging + calibration pipeline** *(§8 step 4)*: the PC-side
   protobuf→CSV/Parquet decoder tool; the analysis that emits the generated
   `lib/calibration/oven_cal.h` (fan-conditioned `{a,b,τ}(conv_fan)` +
@@ -1405,13 +1439,13 @@ steps, so per the §24 rule they skip the stepper), and each channel is a
 
 ```text
 ┌──────────────────────────────────────┐
-│ ‹ Back            Soak (2/4)          │  header: back + which phase
+│ ‹ Back            Soak (2/3)          │  header: back + which phase
 ├──────────────────────────────────────┤
 │  Target                    165 °C   › │  ← selected; Open → keypad (§26)
-│  Ramp                       MAX     › │  (Ramp at min = MAX / ASAP)
+│  Ramp                       ASAP    › │  (Ramp at min = ASAP / MAX)
 │  Hold                        90 s   › │
-│  Conv fan               [ AUTO ] (on) │  fans: tri-state Auto/On/Off; (…) = what
-│  Cool fan               [ AUTO ] (off)│  Auto resolved from calibration (§5/§6)
+│  Conv fan               [ AUTO ] (on) │  the only chamber fan; tri-state Auto/On/Off;
+│                                       │  (…) = Auto resolved from calibration (§5/§6)
 │  UV                          [ OFF ]  │  UV/motor: On/Off — cure mode only
 ├───────────────┬───────────┬──────────┤
 │      ▲        │     ▼     │  Open ›   │  move highlight · edit/flip selected
@@ -1494,8 +1528,8 @@ oven's **calibrated capability**:
 
 Hub-and-spoke per the **ui-development** skill. Largely **hardware-independent** —
 screens talk to the controller via the protocol + capabilities, not specific ICs —
-so the UI can be designed before the teardown. Variable channels (cool_fan,
-turntable, humidity) are gated by the controller's reported capabilities.
+so the UI can be designed before the teardown. Variable channels (turntable,
+humidity) are gated by the controller's reported capabilities.
 
 ### Screen map
 
@@ -1988,13 +2022,13 @@ A step-wizard:
 
 2. **Scope preset** — re-scoped around the plant's real time constants (passive
    cool-down of an insulated cavity from 245 °C takes tens of minutes per cool,
-   and the fan-off cool envelope — the binding one, §12 — is observable *only*
-   via those slow passive cools; each cool envelope needs **multiple observed
-   cools per fan state**):
+   and the passive (fan-off) cool envelope — the only one, since cooling is passive
+   (§6) — is observable *only* via those slow passive cools, so it needs **multiple
+   observed cools** to fit well):
    - **Quick (~30–45 min):** cure-range only (≤120 °C) — enough to run cure mode
      credibly; characterizes nothing above it.
-   - **Standard (~2 h, recommended):** full-range heating + fan-on cooling.
-   - **Thorough (~3–4 h):** adds full passive-cool (fan-off) characterization.
+   - **Standard (~2 h, recommended):** full-range heating + a passive cool.
+   - **Thorough (~3–4 h):** adds fuller passive-cool characterization (multiple cools).
    Maps to the random-generator `n`/`m`/coverage (§5, exact values §10).
 3. **Hazardous confirm** — press-and-hold (§19): it drives the oven across the **full
    temperature range** for a long time (needed to characterize the heat/cool-rate
@@ -2291,14 +2325,18 @@ run can only ever load a **same-mode** profile (the §4 cap + §12 template alwa
 │    25 │_ /  _/  \_ ___                │
 │       └──────────────── t             │
 │ peak 245 °C · ~6:10 · 4 phases        │  key facts
-├───────┬───────┬───────┬──────────────┤
-│  Load │ Edit  │  Dup  │   Delete      │  actions (Delete/Edit gated for stock)
-└───────┴───────┴───────┴──────────────┘
+├─────────────┬─────────────┬────────────┤
+│    Edit     │     Dup     │   Delete    │  manage-context actions (Delete/Edit stock-gated)
+└─────────────┴─────────────┴────────────┘
 ```
 
-- **`Load`** (primary in pick context): copies this profile into Setup's working buffer
-  and returns to Setup (§19). In manage context it's a shortcut — enters this mode's
-  Setup with it pre-loaded.
+- **`Load` appears in the Pick context only (Setup → `Load`, §19); the Manage context has no
+  `Load` (DECIDED, changed).** Editing a profile and *using* one to run are two separate paths
+  from Home — Profiles → library → editor (§12) manages them, **UV Cure / Reflow → Setup (§19)**
+  picks one and runs it — so the manage detail (above) never offers a run jump: you can't start a
+  run while tidying the library. In the pick context `Load` is the primary action: it copies this
+  profile into Setup's working buffer and returns to Setup. *(The shipped library, C4, is
+  manage-only; the pick context arrives with Setup, C6.)*
 - **`Edit`** → editor (§12) on the **saved** profile (a persistent edit — unlike
   Setup→Edit, which edits the ephemeral working copy). On a **stock** profile, Edit
   becomes **Save-as** (source preserved).

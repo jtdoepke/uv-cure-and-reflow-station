@@ -4,6 +4,7 @@
 
 #include "confirm_dialog.h"
 #include "profile_curve.h"
+#include "profile_templates.h"
 #include "subjects.h"
 #include "theme.h"
 
@@ -30,9 +31,6 @@ struct ProfileThunks {
   }
   static void new_evt(lv_event_t *e) {
     static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onNew();
-  }
-  static void load_evt(lv_event_t *e) {
-    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onLoad();
   }
   static void edit_evt(lv_event_t *e) {
     static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onEdit();
@@ -279,12 +277,54 @@ void ProfileLibraryScreen::buildDetail() {
   lv_label_set_text(badge, mode_ == RecipeMode::Cure ? "Cure" : "Reflow");
   lv_obj_set_style_text_color(badge, theme::col(theme::ACCENT), 0);
 
-  // Read-only §12 curve preview (requested vs achievable). Local point arrays — the widget copies.
+  // Read-only §12 curve preview (requested vs achievable) with phase separators, phase names, axis
+  // ticks, and UV shading. Local arrays — the widget copies.
   profile_facts::CurvePoint req[profile_facts::kMaxCurvePoints];
-  profile_facts::CurvePoint ach[profile_facts::kMaxCurvePoints];
+  profile_facts::CurvePoint over[profile_facts::kMaxCurvePoints];
+  float bounds[profile_facts::kMaxCurvePhases];
+  profile_facts::TimeSpan uv[kMaxPhases];
   const size_t nr = current_->sampleRequested(selected_, req, profile_facts::kMaxCurvePoints);
-  const size_t na = current_->sampleAchievable(selected_, ach, profile_facts::kMaxCurvePoints);
-  create_profile_curve(parent_, req, nr, ach, na, current_->uncalibrated());
+  const size_t no = current_->sampleOvershoot(selected_, over, profile_facts::kMaxCurvePoints);
+  const size_t nb =
+      current_->samplePhaseBoundaries(selected_, bounds, profile_facts::kMaxCurvePhases);
+  const size_t nuv = current_->sampleUvSpans(selected_, uv, kMaxPhases);
+  // Phase labels parallel to the boundaries: the authored role labels (indexed by the authored
+  // count, not nb), then "Cool" for the implicit passive cool-down phase (implicit_cool.h, §6).
+  char namebuf[profile_facts::kMaxCurvePhases][16];
+  const char *names[profile_facts::kMaxCurvePhases];
+  const size_t authored = current_->phaseCount(selected_);
+  for (size_t i = 0; i < authored && i < nb; ++i) {
+    names[i] = profile_templates::phaseLabel(current_->mode(), i, authored, namebuf[i],
+                                             sizeof(namebuf[i]));
+  }
+  if (nb > authored) {
+    names[authored] = kImplicitCoolLabel;
+  }
+  ProfileCurveData cd;
+  cd.requested = req;
+  cd.n_requested = nr;
+  cd.overshoot = over;
+  cd.n_overshoot = no;
+  cd.boundaries = bounds;
+  cd.n_boundaries = nb;
+  cd.uv_spans = uv;
+  cd.n_uv_spans = nuv;
+  cd.phase_names = names;
+  cd.n_phase_names = nb;
+  cd.uncalibrated = false; // shown as a warning bar below the graph instead of a label on it
+  create_profile_curve(parent_, cd);
+
+  // Uncalibrated warning as an amber bar under the graph (mirrors the editor), rather than a label
+  // drawn over the curve.
+  if (current_->uncalibrated()) {
+    lv_obj_t *banner = lv_obj_create(parent_);
+    theme::apply_alert(banner, theme::WARN);
+    lv_obj_set_width(banner, lv_pct(100));
+    lv_obj_set_height(banner, theme::BANNER_H);
+    lv_obj_t *lbl = lv_label_create(banner);
+    lv_label_set_text(lbl, "UNCALIBRATED");
+    lv_obj_center(lbl);
+  }
 
   // Key facts: "peak 245° · ~6:10 · 4 phases".
   const profile_facts::ProfileFacts f = current_->facts(selected_);
@@ -299,17 +339,20 @@ void ProfileLibraryScreen::buildDetail() {
   lv_label_set_text(facts_label, facts);
   theme::apply_caption(facts_label);
 
-  // Action row: Load · Edit(/Save as) · Dup · Delete (Delete gated for stock, §23).
+  // Action row: Delete · Clone · Edit(/Save as) (Delete gated for stock, §23). Edit is rightmost —
+  // the most common action, landing under the finger that just tapped Open on the list, with the
+  // destructive Delete pushed to the far (left) end. Managing profiles only — running one is a
+  // separate path (Home → UV Cure / Reflow → Setup, §19), so there is no Load here: the Profiles
+  // branch ends at the editor, matching the §13 screen map.
   lv_obj_t *row = lv_obj_create(parent_);
   theme::apply_row(row);
   lv_obj_set_width(row, lv_pct(100));
   lv_obj_set_height(row, theme::SECONDARY_H);
   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  action_button(row, "Load", ProfileThunks::load_evt, this, true);
+  action_button(row, "Delete", ProfileThunks::delete_evt, this, current_->canDelete(selected_));
+  action_button(row, "Clone", ProfileThunks::dup_evt, this, true);
   action_button(row, current_->editIsSaveAs(selected_) ? "Save as" : "Edit",
                 ProfileThunks::edit_evt, this, true);
-  action_button(row, "Dup", ProfileThunks::dup_evt, this, true);
-  action_button(row, "Delete", ProfileThunks::delete_evt, this, current_->canDelete(selected_));
 }
 
 // --- Detail actions ---
@@ -320,10 +363,6 @@ void ProfileLibraryScreen::onNew() {
 
 void ProfileLibraryScreen::onEdit() {
   publishNav(NAV_PROFILE_EDIT); // → editor / Save-as (C5)
-}
-
-void ProfileLibraryScreen::onLoad() {
-  publishNav(NAV_PROFILE_LOAD); // → Setup (C6)
 }
 
 void ProfileLibraryScreen::onDuplicate() {

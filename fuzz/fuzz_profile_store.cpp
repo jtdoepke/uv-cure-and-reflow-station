@@ -21,7 +21,7 @@
 //   [3..]    name-length bytes, each mapped onto a filesystem-safe charset (always a valid name)
 //   then N × 17-byte phase records (same layout as fuzz_compiler.cpp):
 //     [0..3] targetC [4..7] rampSeconds [8..11] holdSeconds [12..15] exposurePerSurface
-//     [16]   flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2}, bits4-5 coolFan{0,1,2}
+//     [16]   flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2} (bits4-5 reserved — no cool fan §6)
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -123,7 +123,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     p.phases[i].uv = flags & 0x01;
     p.phases[i].motor = flags & 0x02;
     p.phases[i].convFan = readFan((flags >> 2) & 0x03);
-    p.phases[i].coolFan = readFan((flags >> 4) & 0x03);
+    // bits4-5 reserved (was coolFan — no chamber cool fan, §6)
   }
   // Report the *requested* count (possibly > kMaxPhases) so save()'s bound guard is exercised; the
   // guard returns before any read past the filled slots, so this is safe.

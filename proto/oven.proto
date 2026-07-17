@@ -88,10 +88,11 @@ enum NakReason {
 // One executable step. Fans are resolved on/off — the CYD applies any "Auto"
 // policy before upload; no Auto value crosses the wire (design.md §5).
 message Segment {
+  reserved 4;             // was cool_fan — the chamber has no cooling fan (§6); cooling is passive
+  reserved "cool_fan";
   uint32 dur_ms = 1;
   float heat_c = 2;
   bool conv_fan = 3;
-  bool cool_fan = 4;
   bool uv = 5;
   bool motor = 6;
   Interp interp = 7;
@@ -138,6 +139,8 @@ message Nak {
 // Hot path, controller -> CYD at 4 Hz during a run (~1 Hz idle). Carries the
 // full raw state vector — this record doubles as the SD log format (§7).
 message Telemetry {
+  reserved 13;         // was cool_fan — the chamber has no cooling fan (§6); cooling is passive
+  reserved "cool_fan";
   uint32 session = 1;
   uint32 seq = 2;
   uint32 ctrl_millis = 3;
@@ -150,7 +153,6 @@ message Telemetry {
   float setpoint = 10; // active target, deg C
   float heater_duty = 11; // 0..1 commanded duty
   bool conv_fan = 12;
-  bool cool_fan = 13;
   float uv_duty = 14; // 0..1
   bool motor = 15;
   uint32 seg_idx = 16;

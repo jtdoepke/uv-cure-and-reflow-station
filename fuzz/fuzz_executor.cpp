@@ -22,7 +22,7 @@
 //     [1..4]  heat_c  : float32 (raw bytes → NaN/Inf/denormal)
 //     [5..8]  dur_ms  : uint32  (clamped to 0..300000 so an honestly-long hold can't be
 //                                mistaken for a hang; the watchdog is what this hunts)
-//     [9]     channels: bit0 uv, bit1 motor, bit2 conv_fan, bit3 cool_fan
+//     [9]     channels: bit0 uv, bit1 motor, bit2 conv_fan (bit3 reserved — no cool fan, §6)
 //   then the trajectory — 6-byte records, consumed one per tick until the bytes run out:
 //     [0..3]  control temp : float32 (raw; a non-finite value drives the controlValid=false path)
 //     [4..5]  clock step   : uint16; the tick advances the clock by (1000 + value) ms, so time
@@ -94,7 +94,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     s.uv = (ch & 0x01) != 0;
     s.motor = (ch & 0x02) != 0;
     s.conv_fan = (ch & 0x04) != 0;
-    s.cool_fan = (ch & 0x08) != 0;
     if (std::isfinite(s.heat_c) && s.heat_c > expectedHi) {
       expectedHi = s.heat_c;
     }

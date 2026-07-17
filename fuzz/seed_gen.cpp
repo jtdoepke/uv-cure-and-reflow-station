@@ -179,7 +179,7 @@ void putU16LE(std::vector<uint8_t> &v, uint16_t x) {
   v.push_back(static_cast<uint8_t>(x >> 8));
 }
 
-// flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2}, bits4-5 coolFan{0,1,2}.
+// flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2} (bits4-5 reserved — no cool fan, §6).
 void putPhase(std::vector<uint8_t> &v, float target, float ramp, float hold, float exposure,
               uint8_t flags) {
   putF32(v, target);

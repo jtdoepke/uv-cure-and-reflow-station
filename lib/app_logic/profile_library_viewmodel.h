@@ -88,13 +88,50 @@ public:
     return profile_facts::computeFacts(p.phases, p.phaseCount, store_->mode(), *model_);
   }
 
+  // The count of *authored* phases (clamped to kMaxPhases) — what the curve's phase-name labels
+  // index with phaseLabel(). The curve's boundaries carry one extra entry (the implicit cool-down,
+  // §6) when the run ends hot; the caller appends "Cool" for that, so it must not fold it into the
+  // count.
+  size_t phaseCount(size_t i) const {
+    ProfileStore::StoredProfile p;
+    if (!loadDetail(i, p)) {
+      return 0;
+    }
+    return p.phaseCount > kMaxPhases ? kMaxPhases : p.phaseCount;
+  }
+
   // Fill the detail curve's requested / achievable point series for profile `i`. Returns point
   // count.
   size_t sampleRequested(size_t i, profile_facts::CurvePoint *out, size_t cap) const {
     return sample(i, /*achievable=*/false, out, cap);
   }
-  size_t sampleAchievable(size_t i, profile_facts::CurvePoint *out, size_t cap) const {
-    return sample(i, /*achievable=*/true, out, cap);
+  // Phase-boundary times (achievable timeline) for the detail curve's phase separators (§12).
+  size_t samplePhaseBoundaries(size_t i, float *out, size_t cap) const {
+    ProfileStore::StoredProfile p;
+    if (!loadDetail(i, p)) {
+      return 0;
+    }
+    return profile_facts::samplePhaseBoundaries(p.phases, p.phaseCount, store_->mode(), *model_,
+                                                profile_facts::kDefaultAmbientC, out, cap);
+  }
+  // UV-on time windows for the detail curve's shading (cure profiles, §12).
+  size_t sampleUvSpans(size_t i, profile_facts::TimeSpan *out, size_t cap) const {
+    ProfileStore::StoredProfile p;
+    if (!loadDetail(i, p)) {
+      return 0;
+    }
+    return profile_facts::sampleUvSpans(p.phases, p.phaseCount, store_->mode(), *model_,
+                                        profile_facts::kDefaultAmbientC, out, cap);
+  }
+  // Closed-loop settling (predicted actual temperature) for the detail curve — the same trace the
+  // editor draws, so both charts match (§12).
+  size_t sampleOvershoot(size_t i, profile_facts::CurvePoint *out, size_t cap) const {
+    ProfileStore::StoredProfile p;
+    if (!loadDetail(i, p)) {
+      return 0;
+    }
+    return profile_facts::sampleOvershoot(p.phases, p.phaseCount, store_->mode(), *model_,
+                                          profile_facts::kDefaultAmbientC, out, cap);
   }
   bool uncalibrated() const { return !model_->calibrated; }
 

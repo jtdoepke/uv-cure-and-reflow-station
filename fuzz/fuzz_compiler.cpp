@@ -16,7 +16,7 @@
 //   [6]      requested phase count (clamped to the bytes available and to kFuzzMaxPhases)
 //   then N × 17-byte phase records:
 //     [0..3] targetC  [4..7] rampSeconds  [8..11] holdSeconds  [12..15] exposurePerSurface
-//     [16]   flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2}, bits4-5 coolFan{0,1,2}
+//     [16]   flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2} (bits4-5 reserved — no cool fan §6)
 #include <cmath>
 #include <cstring>
 
@@ -92,7 +92,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     phases[i].uv = flags & 0x01;
     phases[i].motor = flags & 0x02;
     phases[i].convFan = readFan((flags >> 2) & 0x03);
-    phases[i].coolFan = readFan((flags >> 4) & 0x03);
+    // bits4-5 reserved (was coolFan — no chamber cool fan, §6)
   }
 
   // Caps as the real call site derives them: a user cap can never loosen past the controller's

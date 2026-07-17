@@ -5,8 +5,13 @@ font toolchain. **Four files, two roles, two panel pitches:**
 
 | role | 5.60 px/mm (2.8") | 6.49 px/mm (3.5") | selected by |
 |---|---|---|---|
+| small labels (chart phase names) | `red_hat_mono_10.c` | `red_hat_mono_12.c` | `theme::small_font()`, `theme.h` |
 | default UI text | `red_hat_mono_14.c` | `red_hat_mono_16.c` | `LV_FONT_DEFAULT`, `include/lv_conf.h` |
 | big readouts + keys | `red_hat_mono_28.c` | `red_hat_mono_32.c` | `theme::big_font()`, `theme.h` |
+
+The small-label role (dense chart annotations, deliberately below the body text) uses
+`red_hat_mono_10.c` / `red_hat_mono_12.c`. Generate each with the identical command below,
+`--size 10 -o red_hat_mono_10.c` (and `--size 12` for the 3.5").
 
 ## Why two sizes of each
 

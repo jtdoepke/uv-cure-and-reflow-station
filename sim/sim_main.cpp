@@ -5,7 +5,7 @@
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
 // Usage: program [--out PATH] [--screen
-// home|stepper|keypad|list|settings|alerts|curve|profile-library] [ACTION...]
+// home|stepper|keypad|list|settings|alerts|curve|profile-library|editor] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
@@ -39,7 +39,9 @@
 #include "phase.h"
 #include "profile_curve.h"
 #include "profile_facts.h"
+#include "profile_editor_screen.h"
 #include "profile_library_screen.h"
+#include "profile_templates.h"
 #include "profile_store.h"
 #include "selectable_list.h"
 #include "settings_screen.h"
@@ -180,13 +182,13 @@ static void build_curve_demo(lv_obj_t *scr) {
   reflow[3].rampSeconds = 0.0f; // ASAP cool-down
 
   static profile_facts::CurvePoint req[profile_facts::kMaxCurvePoints];
-  static profile_facts::CurvePoint ach[profile_facts::kMaxCurvePoints];
+  static profile_facts::CurvePoint over[profile_facts::kMaxCurvePoints];
   const size_t nr =
       profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel,
                                  /*achievable=*/false, 25.0f, req, profile_facts::kMaxCurvePoints);
-  const size_t na =
-      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel,
-                                 /*achievable=*/true, 25.0f, ach, profile_facts::kMaxCurvePoints);
+  const size_t no =
+      profile_facts::sampleOvershoot(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel, 25.0f,
+                                     over, profile_facts::kMaxCurvePoints);
 
   const profile_facts::ProfileFacts f =
       profile_facts::computeFacts(reflow, 4, RecipeMode::Reflow, oven_cal::kDefaultModel);
@@ -197,7 +199,13 @@ static void build_curve_demo(lv_obj_t *scr) {
 
   lv_obj_t *title = lv_label_create(scr);
   lv_label_set_text(title, "LF-245");
-  lv_obj_t *curve = create_profile_curve(scr, req, nr, ach, na, !oven_cal::CALIBRATED).root;
+  ProfileCurveData cd;
+  cd.requested = req;
+  cd.n_requested = nr;
+  cd.overshoot = over;
+  cd.n_overshoot = no;
+  cd.uncalibrated = !oven_cal::CALIBRATED;
+  lv_obj_t *curve = create_profile_curve(scr, cd).root;
   (void)curve;
 
   char facts[48];
@@ -369,7 +377,7 @@ static bool parse_i32(const char *s, int32_t *out) {
 static int usage(const char *argv0) {
   std::fprintf(stderr,
                "Usage: %s [--out PATH] [--screen "
-               "home|stepper|keypad|list|settings|alerts|curve|profile-library]\n"
+               "home|stepper|keypad|list|settings|alerts|curve|profile-library|editor]\n"
                "          [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
                "         frame PATH (unsettled capture - for photographing animation)\n"
@@ -422,6 +430,7 @@ int main(int argc, char **argv) {
   ProfileStore cure_profiles(cure_storage, RecipeMode::Cure);
   ProfileStore reflow_profiles(reflow_storage, RecipeMode::Reflow);
   ProfileLibraryScreen profiles;
+  ProfileEditorScreen editor;
   if (screen == "settings") {
     // The full Settings hub over an in-memory store (defaults). Navigate with click actions.
     settings_store.load();
@@ -487,6 +496,15 @@ int main(int argc, char **argv) {
     cure[1].targetC = 40.0f;
     seed_profile(cure_profiles, "Resin-A", /*stock=*/false, cure, 2);
     profiles.begin(lv_screen_active(), cure_profiles, reflow_profiles);
+  } else if (screen == "editor" || screen == "editor-cure") {
+    // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
+    // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile
+    // so the UV shading + UV/Turntable rows show; `--screen editor` a reflow one.
+    const bool cure = screen == "editor-cure";
+    const RecipeMode m = cure ? RecipeMode::Cure : RecipeMode::Reflow;
+    editor.beginEdit(profile_templates::defaultTemplate(m), cure ? cure_profiles : reflow_profiles,
+                     /*saveAs=*/true);
+    editor.render(lv_screen_active());
   } else if (screen == "home") {
     create_home_screen(lv_screen_active());
   } else {

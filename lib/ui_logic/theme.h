@@ -43,11 +43,27 @@
 #endif
 LV_FONT_DECLARE(THEME_BIG_FONT)
 
+// A step BELOW the default UI text, for dense secondary labels where the 14/16 px default is too
+// large (the profile chart's phase names, §12/C5). Same pitch reasoning as the big font: keep the
+// physical size roughly constant across panels, so the denser 3.5" uses more px (14) than the 2.8"
+// (12). red_hat_mono_14 is already the 2.8" default, so only the 12 px file is new (fonts/README).
+#if PANEL_PX_PER_MM_X100 >= 600
+#define THEME_SMALL_FONT red_hat_mono_12
+#else
+#define THEME_SMALL_FONT red_hat_mono_10
+#endif
+LV_FONT_DECLARE(THEME_SMALL_FONT)
+
 namespace theme {
 
 // The big-readout font, as a reference the views use without naming a size.
 inline const lv_font_t &big_font() {
   return THEME_BIG_FONT;
+}
+
+// The small-label font (one step below the default), for dense chart annotations.
+inline const lv_font_t &small_font() {
+  return THEME_SMALL_FONT;
 }
 
 // Palette — "Azure Instrument" (chosen 2026-07-15 from a rendered variant sweep; design.md §14).
@@ -90,6 +106,12 @@ constexpr uint32_t FAULT = 0xff3b30;    // red   — danger (reserved)
 constexpr uint32_t ACCENT = 0x0a84ff;
 constexpr uint32_t ACCENT_DIM = 0x14456f; // the accent, receded — for rules that must not shout
 constexpr uint32_t GRID = 0x24384e;       // background dot matrix; barely-there by construction
+
+// A domain-CHANNEL hue (not a machine-state hue): violet marks where the UV lamp is on — the
+// profile chart shades UV-on phases with it (§12 cure preview). Deliberately distinct from the
+// three reserved state hues and the azure accent (it names a channel, not "look here" or a state);
+// only ever used as a low-opacity fill, never as text or an alarm.
+constexpr uint32_t UV = 0x9b5cff;
 
 // Geometry, authored in MILLIMETRES and converted at compile time from the panel's pixel pitch
 // (lib/panel/panel.h, set per board in platformio.ini). The design guide's rules are physical —

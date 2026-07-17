@@ -24,8 +24,10 @@
 #include "null_ambient_light.h"       // IAmbientLight for a board with no LDR (firmware glue)
 #include "nvs_settings_storage.h"     // NVS-backed ISettingsStorage adapter (firmware glue)
 #include "littlefs_profile_storage.h" // LittleFS-backed IProfileStorage adapter (firmware glue)
+#include "profile_editor_screen.h"    // §12 profile editor screen pair (lib/ui_logic, C5)
 #include "profile_library_screen.h"   // §23 profile library screen pair (lib/ui_logic, C4)
 #include "profile_store.h"            // per-mode profile library (lib/app_logic, §7/§23)
+#include "profile_templates.h"        // per-mode default phase templates (lib/app_logic, §12/C5)
 #include "screen_router.h"            // hub-and-spoke screen manager + cache policy (lib/ui_logic)
 #include "settings_screen.h"          // Settings hub + panels (§24)
 #include "settings_store.h"           // typed device settings (lib/app_logic)
@@ -41,6 +43,14 @@
 #include <esp_timer.h>  // esp_timer_get_time() — us clock for the flush/render split
 #include "perf_probe.h" // on-glass CPU/SPI split (esp32dev_cyd35_perf env only)
 #endif
+
+// Enlarge the Arduino loop task's stack. LVGL screens are built on the loop task, and a screen
+// build is a deep call chain with large local buffers (the profile chart samples several
+// kMaxCurvePoints/kMaxPhases arrays and loads a StoredProfile on the stack) — the 8 kB default
+// overflowed opening the profile detail (Guru Meditation "Double exception", a stack-overflow
+// signature). 16 kB gives comfortable headroom; it costs 8 kB of heap for the task stack (no PSRAM,
+// but there is ample internal heap once the LVGL pool is carved out).
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 static LGFX gfx;
 
@@ -66,6 +76,19 @@ static LittleFsProfileStorage g_reflow_profile_storage("/profiles/reflow");
 static ProfileStore g_cure_profiles(g_cure_profile_storage, RecipeMode::Cure);
 static ProfileStore g_reflow_profiles(g_reflow_profile_storage, RecipeMode::Reflow);
 static ProfileLibraryScreen g_profile_library; // §23 list/detail over the two stores (C4)
+
+// §12 editor over the two stores (C5). Heap-allocated on first edit rather than a static: the
+// library's two view-models already fill the static DRAM segment (32×32 name buffers each), and the
+// editor is just as large; since the two screens are never co-visible, keeping the editor out of
+// .bss until it is first needed is what lets both fit on this no-PSRAM board. Never freed — a
+// singleton screen (like the other resident screens), so there is no delete-during-event hazard.
+static ProfileEditorScreen *g_profile_editor = nullptr;
+static ProfileEditorScreen &profile_editor() {
+  if (g_profile_editor == nullptr) {
+    g_profile_editor = new ProfileEditorScreen();
+  }
+  return *g_profile_editor;
+}
 
 // The display + touch behind their ports (lib/display_port). LGFX itself is touched only here and
 // in my_disp_flush — see lgfx_display.h for why the flush deliberately is not a port call.
@@ -176,8 +199,16 @@ static void bench_link_stimulus() {
 // costs ~9-14 kB of the 64 kB LVGL pool. Settings stays create-on-demand: it is stateful (scroll /
 // drill-down / selection), so a cached instance would NOT be pixel-identical to a rebuild — caching
 // it would need a reset-on-show hook (ScreenRouter supports one) and is low-ROI (rarely revisited).
-enum : int { SCREEN_HOME = 0, SCREEN_SETTINGS = 1, SCREEN_PROFILES = 2 };
+enum : int { SCREEN_HOME = 0, SCREEN_SETTINGS = 1, SCREEN_PROFILES = 2, SCREEN_EDITOR = 3 };
 static ScreenRouter g_router;
+
+// Which mode's library the editor returns to (the editor edits one mode's profile; on exit we land
+// back on that mode's list, not the mode-blind chooser).
+static RecipeMode g_editor_mode = RecipeMode::Reflow;
+
+static ProfileStore &store_for(RecipeMode m) {
+  return m == RecipeMode::Cure ? g_cure_profiles : g_reflow_profiles;
+}
 
 static void go_home() {
   lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping a hub tile re-triggers
@@ -194,6 +225,38 @@ static void on_profiles_exit(void *) {
   go_home();
 }
 
+// Editor Back / completed Save → return to the edited mode's library list (not the chooser), where
+// the just-saved profile is now visible (the list re-reads the store on show). Reset the nav intent
+// first so re-tapping Edit on the same profile re-triggers the observer (go_home's idiom).
+static void on_editor_exit(void *) {
+  lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  g_router.show(SCREEN_PROFILES);
+  g_profile_library.openMode(g_editor_mode);
+}
+
+// The profile-library NAV_PROFILE_* seam: seed the editor's working copy and route to it. NEW seeds
+// the mode's default template (name entry supplies the name on Save); EDIT loads the highlighted
+// profile (a stock one edits as Save-as, §23). The which-profile handoff the library reserved
+// (subjects.h) is resolved here, in the composition root, off the library's own selection state.
+static void open_editor_new() {
+  g_editor_mode = g_profile_library.mode();
+  profile_editor().beginEdit(profile_templates::defaultTemplate(g_editor_mode),
+                             store_for(g_editor_mode), /*saveAs=*/true);
+  g_router.show(SCREEN_EDITOR);
+}
+
+static void open_editor_edit() {
+  g_editor_mode = g_profile_library.mode();
+  ProfileStore::StoredProfile p;
+  const int sel = g_profile_library.selected();
+  if (sel < 0 || !g_profile_library.vm().loadDetail(static_cast<size_t>(sel), p)) {
+    return; // nothing selected / unreadable — stay put
+  }
+  const bool save_as = g_profile_library.vm().editIsSaveAs(static_cast<size_t>(sel));
+  profile_editor().beginEdit(p, store_for(g_editor_mode), save_as);
+  g_router.show(SCREEN_EDITOR);
+}
+
 static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
   switch (lv_subject_get_int(subject)) {
   case NAV_SETTINGS:
@@ -202,10 +265,16 @@ static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
   case NAV_PROFILES:
     g_router.show(SCREEN_PROFILES);
     break;
+  case NAV_PROFILE_NEW:
+    open_editor_new();
+    break;
+  case NAV_PROFILE_EDIT:
+    open_editor_edit();
+    break;
   default:
-    // NAV_PROFILE_NEW/EDIT/LOAD (editor §12/C5, Setup §19/C6) have no destination yet — the profile
-    // library publishes them, and this observer ignores them until those screens land. The same
-    // holds for NAV_CURE_SETUP/REFLOW_SETUP/CALIBRATE.
+    // NAV_CURE_SETUP/REFLOW_SETUP/CALIBRATE have no destination yet — Home publishes them and this
+    // observer ignores them until Setup (§19/C6) and Calibrate land. Running a profile goes through
+    // those Setup screens, not the Profiles branch (there is no Load intent).
     break;
   }
 }
@@ -222,6 +291,14 @@ static void build_settings_screen_cb(void *, lv_obj_t *scr) {
 static void build_profile_library_cb(void *, lv_obj_t *scr) {
   g_profile_library.setExitHandler(on_profiles_exit, nullptr);
   g_profile_library.begin(scr, g_cure_profiles, g_reflow_profiles);
+}
+
+// Create-on-demand like Settings: the editor is stateful (which page / phase / field), so a cached
+// instance would not be pixel-identical to a rebuild. beginEdit() sets the working copy + save
+// target before the router shows this screen; render() builds the current page from that state.
+static void build_profile_editor_cb(void *, lv_obj_t *scr) {
+  profile_editor().setExitHandler(on_editor_exit, nullptr);
+  profile_editor().render(scr);
 }
 
 // Reset-on-show for the cached profile library: the stateless two-tile chooser is its default view,
@@ -415,6 +492,7 @@ void setup() {
   // the resident screen object is safe (the §skill cacheability rule).
   g_router.define(SCREEN_PROFILES, build_profile_library_cb, nullptr, /*cached=*/true,
                   reset_profile_library_cb);
+  g_router.define(SCREEN_EDITOR, build_profile_editor_cb, nullptr, /*cached=*/false);
   g_router.show(SCREEN_HOME);
   // Watch for the Home → Settings / Profiles navigation intents (persist across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);

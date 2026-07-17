@@ -28,7 +28,7 @@ namespace oven_cal {
 constexpr bool CALIBRATED = false;
 
 // --- Max heat/cool-rate envelopes (PLACEHOLDER) ------------------------------------------------
-// slope 0 → constant rate → idealized-linear preview (§12). Fan on models the convection/cooling
+// slope 0 → constant rate → idealized-linear preview (§12). Heat "fan on" models the convection
 // fan helping (§6 "convection fan shortens the board time constant"). floor guards the ETA
 // integrand; ceiling equals the constant rate here.
 constexpr float RATE_FLOOR = 0.05f; // °C/s, PLACEHOLDER — minimum non-zero rate for the integrand
@@ -37,9 +37,11 @@ constexpr float RATE_FLOOR = 0.05f; // °C/s, PLACEHOLDER — minimum non-zero r
 constexpr RateEnvelope HEAT_FAN_OFF = {0.0f, 0.8f, RATE_FLOOR, 0.8f}; // PLACEHOLDER ~0.8 °C/s
 constexpr RateEnvelope HEAT_FAN_ON = {0.0f, 1.2f, RATE_FLOOR, 1.2f};  // PLACEHOLDER ~1.2 °C/s
 
-// Cooling: passive and one-sided; the cooling fan roughly doubles it (§6 "cooling passive").
+// Cooling: passive and one-sided — there is no chamber cool fan (§6), so cooling always uses the
+// fan-off envelope. COOL_FAN_ON fills the FanPair's `.on` slot structurally but is never selected;
+// keep it a copy of the passive rate so a stray read can't imply a nonexistent fan helps.
 constexpr RateEnvelope COOL_FAN_OFF = {0.0f, 0.2f, RATE_FLOOR, 0.2f}; // PLACEHOLDER ~0.2 °C/s
-constexpr RateEnvelope COOL_FAN_ON = {0.0f, 0.5f, RATE_FLOOR, 0.5f};  // PLACEHOLDER ~0.5 °C/s
+constexpr RateEnvelope COOL_FAN_ON = COOL_FAN_OFF;                    // unused (no cool fan, §6)
 
 // --- First-order board-temp lag {a, b, τ} (PLACEHOLDER) ----------------------------------------
 // The convection fan shortens the board time constant (§6). a≈1, b≈0 = board ≈ wall until fit.

@@ -45,6 +45,7 @@
 #include "IClock.h"
 #include "codec.h" // protocol::wireEnum — read the untrusted, wire-sourced interp without UB
 #include "oven.pb.h"
+#include "oven_safety.h" // TOUCH_SAFE_C — the controller's independent backup-cooldown threshold
 
 class ProfileExecutor {
 public:
@@ -56,6 +57,12 @@ public:
     float rateFloorCPerS = 0.05f;       // TBD §10: min measured heat rate during a gated wait
     uint32_t rateFloorWindowMs = 30000; // TBD §10: window the rate must beat the floor over
     uint32_t maxWaitMs = 1200000;       // absolute stall cap on any single wait (20 min backstop)
+    // Backup cooldown (§6): after the last segment, the executor holds with the heater off until
+    // the measured control temp confirms TOUCH_SAFE_C before reporting DONE. This is the absolute
+    // backstop on that wait — heater's been off throughout, so on expiry it reports DONE anyway (a
+    // genuinely stuck-hot chamber is the L3 over-temp trip's job, not this timer). Generous,
+    // §10-TBD.
+    uint32_t cooldownMaxMs = 1800000; // 30 min backstop on the touch-safe wait
   };
 
   // What the executor wants the outputs to do this tick. The caller routes setpointC to
@@ -63,8 +70,7 @@ public:
   // SafetySupervisor. When not RUNNING, everything reads its safe/off value.
   struct Output {
     float setpointC = 0.0f;
-    bool convFan = false;
-    bool coolFan = false;
+    bool convFan = false; // the only chamber fan — cooling is passive (§6)
     bool uv = false;
     bool motor = false;
     uint32_t segIdx = 0;
@@ -105,6 +111,7 @@ public:
     setpointC_ = 0.0f;
     segIdx_ = 0;
     entered_ = false;
+    cooling_ = false;
     state_ = recipe_.segments_count == 0 ? oven_RunState_RUN_STATE_DONE
                                          : oven_RunState_RUN_STATE_RUNNING;
     writeOutput();
@@ -137,10 +144,15 @@ private:
     setpointC_ = 0.0f;
     entered_ = false;
     holdStarted_ = false;
+    cooling_ = false;
     writeOutput();
   }
 
   void run(float temp) {
+    if (cooling_) {
+      runCooldown(temp);
+      return;
+    }
     const oven_Segment &seg = recipe_.segments[segIdx_];
     const uint32_t now = clock_.millis();
     if (!entered_) {
@@ -157,7 +169,7 @@ private:
       const float target = finiteOr(seg.heat_c, rampFromC_);
       if (seg.dur_ms == 0 || elapsed >= seg.dur_ms) {
         setSetpoint(target);
-        advance();
+        advance(temp);
         break;
       }
       const float frac = static_cast<float>(elapsed) / static_cast<float>(seg.dur_ms);
@@ -168,7 +180,7 @@ private:
       const float target = finiteOr(seg.heat_c, 0.0f);
       setSetpoint(target);
       if (reached(temp, target)) {
-        advance();
+        advance(temp);
       } else if (waitTimedOut(seg, now, temp, /*useProjected=*/true)) {
         enterFault(oven_FaultCode_FAULT_TARGET_UNREACHABLE);
       }
@@ -196,7 +208,7 @@ private:
       }
       const uint32_t held = now - holdStartMs_;
       if (seg.dur_ms == 0 || held >= seg.dur_ms) {
-        advance();
+        advance(temp);
       }
       break;
     }
@@ -214,12 +226,38 @@ private:
     rateWinTempC_ = finiteOr(temp, 0.0f);
   }
 
-  void advance() {
+  void advance(float temp) {
     ++segIdx_;
     if (segIdx_ >= recipe_.segments_count) {
-      state_ = oven_RunState_RUN_STATE_DONE;
+      enterCooldown(temp);
     } else {
       entered_ = false; // re-enter the next segment on the following tick
+    }
+  }
+
+  // The last segment finished. Rather than reporting DONE straight away, enter the independent
+  // backup cooldown (§6): keep the heater off (setpoint 0, all channels off) and stay RUNNING until
+  // the measured control temp confirms TOUCH_SAFE_C. The CYD's compiled recipe usually ends with
+  // its own passive cool-down segment, but that is an open-loop estimate — this closed-loop gate is
+  // what guarantees the operator is never told the run is done while the chamber is still hot to
+  // touch. A run that already ends touch-safe completes this same tick (runCooldown
+  // short-circuits).
+  void enterCooldown(float temp) {
+    cooling_ = true;
+    setpointC_ = 0.0f;
+    cooldownStartMs_ = clock_.millis();
+    runCooldown(temp);
+  }
+
+  // One tick of the backup cooldown: heater stays off; leave for DONE once the measured temp is
+  // touch-safe, or on the generous backstop (the heater has been off throughout, so a chamber that
+  // still can't confirm cool is the L3 over-temp trip's concern, not a reason to hang the run).
+  void runCooldown(float temp) {
+    setpointC_ = 0.0f;
+    if (finiteOr(temp, oven_safety::TOUCH_SAFE_C) <= oven_safety::TOUCH_SAFE_C ||
+        static_cast<uint32_t>(clock_.millis() - cooldownStartMs_) >= cfg_.cooldownMaxMs) {
+      cooling_ = false;
+      state_ = oven_RunState_RUN_STATE_DONE;
     }
   }
 
@@ -271,21 +309,23 @@ private:
   static float finiteOr(float v, float fallback) { return std::isfinite(v) ? v : fallback; }
 
   void writeOutput() {
-    out_.segIdx = segIdx_;
     out_.runState = state_;
     out_.fault = fault_;
     out_.safe = state_ != oven_RunState_RUN_STATE_RUNNING;
-    if (state_ == oven_RunState_RUN_STATE_RUNNING) {
+    if (state_ == oven_RunState_RUN_STATE_RUNNING && !cooling_) {
       const oven_Segment &s = recipe_.segments[segIdx_];
+      out_.segIdx = segIdx_;
       out_.setpointC = setpointC_;
       out_.convFan = s.conv_fan;
-      out_.coolFan = s.cool_fan;
       out_.uv = s.uv;
       out_.motor = s.motor;
     } else {
+      // Idle / done / fault, or the backup cooldown (RUNNING but past the last segment): heater
+      // off, every channel off. Report the last real segment index during cooldown so telemetry
+      // never carries an out-of-range seg_idx (segIdx_ has been advanced past the segment array).
+      out_.segIdx = cooling_ && recipe_.segments_count > 0 ? recipe_.segments_count - 1 : segIdx_;
       out_.setpointC = 0.0f;
       out_.convFan = false;
-      out_.coolFan = false;
       out_.uv = false;
       out_.motor = false;
     }
@@ -310,6 +350,9 @@ private:
 
   bool holdStarted_ = false;
   uint32_t holdStartMs_ = 0;
+
+  bool cooling_ = false;         // in the backup cooldown after the last segment (§6)
+  uint32_t cooldownStartMs_ = 0; // clock baseline for the cooldown backstop
 
   uint32_t rateWinMs_ = 0;    // rate-floor window baseline time
   float rateWinTempC_ = 0.0f; // rate-floor window baseline temperature

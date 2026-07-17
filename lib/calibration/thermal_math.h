@@ -83,7 +83,7 @@ template <typename T> struct FanPair {
 // "uncalibrated / estimated" (§12, §6).
 struct OvenModel {
   FanPair<RateEnvelope> heat; // conv_fan off/on
-  FanPair<RateEnvelope> cool; // cool_fan off/on
+  FanPair<RateEnvelope> cool; // passive cooling — there is no chamber cool fan (§6); use `.off`
   FanPair<LagParams> lag;     // conv_fan off/on
   FanPair<DutyModel> duty;    // conv_fan off/on
   float beamCoverage;         // 0..1 fraction of a rotation a surface is in the UV beam (§6)
@@ -97,8 +97,11 @@ inline float heatRate(const OvenModel &m, float T, bool convFan) {
   return m.heat.pick(convFan).rate(T);
 }
 
-inline float coolRate(const OvenModel &m, float T, bool coolFan) {
-  return m.cool.pick(coolFan).rate(T);
+// Passive cooling rate at temperature T — there is no chamber cool fan (§6), so cooling always uses
+// the fan-off envelope. Kept as a named accessor so callers read `coolRate(m, T)` symmetrically
+// with heatRate; the `cool.on` variant of the FanPair is unused.
+inline float coolRate(const OvenModel &m, float T) {
+  return m.cool.off.rate(T);
 }
 
 // --- Ramp duration: the ETA / ASAP-ramp integral (§15) -----------------------------------------

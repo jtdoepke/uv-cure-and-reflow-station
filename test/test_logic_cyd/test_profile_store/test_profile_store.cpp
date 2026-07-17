@@ -31,7 +31,6 @@ Phase mkPhase(float t) {
   p.uv = true;
   p.motor = false;
   p.convFan = FanMode::On;
-  p.coolFan = FanMode::Off;
   return p;
 }
 
@@ -85,7 +84,6 @@ void test_save_load_round_trip(void) {
     TEST_ASSERT_EQUAL_INT(a.uv, b.uv);
     TEST_ASSERT_EQUAL_INT(a.motor, b.motor);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(a.convFan), static_cast<int>(b.convFan));
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(a.coolFan), static_cast<int>(b.coolFan));
   }
 }
 

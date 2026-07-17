@@ -79,7 +79,7 @@ void test_reflow_ramp_over_time_then_hold(void) {
   TEST_ASSERT_EQUAL(oven_Mode_MODE_REFLOW, r.recipe.mode);
   TEST_ASSERT_EQUAL_UINT32(7, r.recipe.id);
   TEST_ASSERT_EQUAL_UINT32(3, r.recipe.seq);
-  TEST_ASSERT_EQUAL(4, r.recipe.segments_count);
+  TEST_ASSERT_EQUAL(5, r.recipe.segments_count); // 4 authored + the implicit cool-down (§6)
 
   TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_OVER_TIME, r.recipe.segments[0].interp);
   TEST_ASSERT_EQUAL_UINT32(80000, r.recipe.segments[0].dur_ms);
@@ -95,6 +95,12 @@ void test_reflow_ramp_over_time_then_hold(void) {
 
   TEST_ASSERT_EQUAL(oven_Interp_INTERP_HOLD, r.recipe.segments[3].interp);
   TEST_ASSERT_EQUAL_UINT32(30000, r.recipe.segments[3].dur_ms);
+
+  // Implicit passive cool-down to touch-safe: 150 °C → 43 °C at fan-off 0.5 °C/s = 214 s (§6).
+  TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_OVER_TIME, r.recipe.segments[4].interp);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, kTouchSafeC, r.recipe.segments[4].heat_c);
+  TEST_ASSERT_EQUAL_UINT32(214000, r.recipe.segments[4].dur_ms);
+  TEST_ASSERT_FALSE(r.recipe.segments[4].conv_fan); // passive cool; conv fan aids heating only
 
   TEST_ASSERT_FALSE(r.hasAmber()); // calibrated, nothing rate-limited
   assertUploadable(r.recipe);
@@ -113,13 +119,18 @@ void test_cure_exposure_to_hold_calibrated(void) {
 
   TEST_ASSERT_TRUE(r.hardValid);
   TEST_ASSERT_EQUAL(oven_Mode_MODE_CURE, r.recipe.mode);
-  TEST_ASSERT_EQUAL(2, r.recipe.segments_count);
+  TEST_ASSERT_EQUAL(3, r.recipe.segments_count); // ASAP ramp + hold + the implicit cool-down (§6)
   TEST_ASSERT_EQUAL(oven_Interp_INTERP_HOLD, r.recipe.segments[1].interp);
   TEST_ASSERT_EQUAL_UINT32(60000, r.recipe.segments[1].dur_ms);
   TEST_ASSERT_TRUE(r.recipe.segments[1].uv);
   TEST_ASSERT_TRUE(r.recipe.segments[1].motor);
   TEST_ASSERT_FALSE(r.phases[0].holdEstimated); // calibrated → not an estimate
   TEST_ASSERT_FALSE(r.phases[0].holdFallback);
+  // The appended cool-down carries no UV/motor and targets touch-safe (§6).
+  TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_OVER_TIME, r.recipe.segments[2].interp);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, kTouchSafeC, r.recipe.segments[2].heat_c);
+  TEST_ASSERT_FALSE(r.recipe.segments[2].uv);
+  TEST_ASSERT_FALSE(r.recipe.segments[2].motor);
   assertUploadable(r.recipe);
 }
 
@@ -173,13 +184,30 @@ void test_amber_rate_limited_still_uploadable(void) {
   CompileResult r = compileRecipe(&p, 1, RecipeMode::Reflow, m, kReflowCaps, 20.0f, 1, 1);
 
   TEST_ASSERT_TRUE(r.hardValid); // physically-optimistic, but still saveable/uploadable (§12)
-  TEST_ASSERT_EQUAL(1, r.recipe.segments_count);
+  TEST_ASSERT_EQUAL(2, r.recipe.segments_count); // the ramp + the implicit cool-down (§6)
   TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_OVER_TIME, r.recipe.segments[0].interp);
   TEST_ASSERT_EQUAL_UINT32(40000,
                            r.recipe.segments[0].dur_ms); // requested sweep kept, not rewritten
   TEST_ASSERT_TRUE(r.recipe.segments[0].conv_fan);       // Auto turned the fan on to try
+  // segments[1] is the appended cool-down back to touch-safe (§6).
+  TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_OVER_TIME, r.recipe.segments[1].interp);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, kTouchSafeC, r.recipe.segments[1].heat_c);
   TEST_ASSERT_TRUE(r.phases[0].rampRateLimited);
   TEST_ASSERT_TRUE(r.hasAmber());
+  assertUploadable(r.recipe);
+}
+
+// A run ending at or below touch-safe needs no cool-down tail (nothing to coast down from).
+void test_no_implicit_cool_when_run_ends_cool(void) {
+  const OvenModel m = calibratedModel();
+  Phase p;
+  p.targetC = 40.0f; // below kTouchSafeC (43)
+  p.rampSeconds = 30.0f;
+  p.holdSeconds = 20.0f;
+  CompileResult r = compileRecipe(&p, 1, RecipeMode::Reflow, m, kReflowCaps, kAmbient, 1, 1);
+  TEST_ASSERT_TRUE(r.hardValid);
+  // Ramp + hold only — no appended cool segment. The last segment must not be a spurious cool ramp.
+  TEST_ASSERT_EQUAL(2, r.recipe.segments_count);
   assertUploadable(r.recipe);
 }
 
@@ -255,6 +283,7 @@ int main(int, char **) {
   RUN_TEST(test_cure_exposure_uncalibrated_is_estimated);
   RUN_TEST(test_cure_turntable_off_falls_back_to_seconds);
   RUN_TEST(test_amber_rate_limited_still_uploadable);
+  RUN_TEST(test_no_implicit_cool_when_run_ends_cool);
   RUN_TEST(test_omit_degenerate_ramp);
   RUN_TEST(test_reject_no_phases);
   RUN_TEST(test_reject_target_over_cap);

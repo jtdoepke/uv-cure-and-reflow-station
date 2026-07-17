@@ -107,9 +107,9 @@ void test_exposure_guards_nonpositive_coverage(void) {
 
 void test_fan_pick_selects_variant(void) {
   const OvenModel &m = oven_cal::kDefaultModel;
-  // Fan on heats & cools faster than fan off in the defaults.
+  // The convection fan heats faster than fan-off in the defaults. Cooling is passive (§6).
   TEST_ASSERT_TRUE(heatRate(m, 100.0f, true) > heatRate(m, 100.0f, false));
-  TEST_ASSERT_TRUE(coolRate(m, 100.0f, true) > coolRate(m, 100.0f, false));
+  TEST_ASSERT_TRUE(coolRate(m, 100.0f) > 0.0f);
 }
 
 // --- Feedforward duty --------------------------------------------------------------------------
@@ -132,7 +132,7 @@ void test_default_model_is_uncalibrated_and_sane(void) {
   TEST_ASSERT_TRUE(m.beamCoverage > 0.0f && m.beamCoverage <= 1.0f);
   TEST_ASSERT_TRUE(m.turntableRpm > 0.0f);
   TEST_ASSERT_TRUE(heatRate(m, 150.0f, false) > 0.0f);
-  TEST_ASSERT_TRUE(coolRate(m, 150.0f, false) > 0.0f);
+  TEST_ASSERT_TRUE(coolRate(m, 150.0f) > 0.0f);
   TEST_ASSERT_TRUE(m.lag.off.tau > 0.0f && m.lag.on.tau > 0.0f);
 }
 

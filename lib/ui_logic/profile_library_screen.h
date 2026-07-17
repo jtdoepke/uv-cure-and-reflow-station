@@ -8,8 +8,8 @@
 //
 // The two per-mode ProfileLibraryViewModels (pure app_logic) supply the rows/facts/actions; this
 // file is the view + navigation. Store-mutating actions (Dup, Delete) run now against the store;
-// New/Edit/Load leave for screens C4 does not own (editor §12/C5, Setup §19/C6) and are published
-// as NavRequests — observed only by tests until those land, exactly as Home's intents were.
+// New/Edit lead to the editor (§12/C5). The Profiles branch is for MANAGING profiles only — running
+// one is a separate path (Home → UV Cure / Reflow → Setup, §19), so this screen has no Load.
 //
 // LVGL-only; compiles for firmware and the native_ui_cyd / native_sim host targets.
 #pragma once
@@ -45,7 +45,6 @@ public:
   void onDuplicate(); // Dup within this library, then re-list
   void onDeleteRequested(); // → the confirm dialog
   void onDeleteConfirmed(); // Delete, then back to the list
-  void onLoad();            // → Setup with the selected profile (NAV_PROFILE_LOAD)
 
   // Inspection (tests).
   Page page() const { return page_; }

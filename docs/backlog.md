@@ -373,6 +373,22 @@ existing `IClock`/`IHeaterSwitch` idiom:
   now, the sensor doesn't. Verified on the bench: holding the controller in reset reads
   `matched=1 sawPeer=1 alive=0 state=LINK_NONE` — the latch and the decay disagreeing, exactly as
   intended — and it recovers on its own when telemetry resumes.*
+- [ ] **A10** [A] — physical-oven plant simulator for bench testing with the real
+  controller. A thermal-plant model — heater duty → wall/workpiece temperature via the
+  shared first-order envelopes + lag (reuse `thermal_math.h` / `oven_cal.h` so the sim and
+  the planner/preview agree), passive cooling (no chamber cool fan, §6), plus convection-fan
+  and UV/turntable effects — that consumes the controller's output commands and feeds back
+  **synthetic thermocouple readings**, closing the control loop with no oven. Lets the full
+  run path be exercised end-to-end against the real controller firmware on the two-devkit
+  bench (A8) before mains hardware (D3/D4) exists: the executor's segment sequencing +
+  `RAMP_ASAP`/hold-entry gating (A6), the PID + feedforward (A5), the safety supervisor's
+  clamps/trips (A4a/A4b), and the implicit **backup cooldown to touch-safe** (§5/§6) — e.g.
+  drive a reflow profile and watch it ramp, soak, peak, then coast to 43 °C and report DONE.
+  Form to decide: a controller-side fake `IThermocouples` adapter that runs the plant model
+  on-device from the commanded outputs (loop closes entirely on the controller, host reads
+  telemetry), and/or a host/second-devkit plant node — pick during design; keep the model in
+  `lib/` (host-testable, board-agnostic) with only the injection adapter board-specific.
+  deps: A5, A6, A8. (§5, §6, §8 step 1)
 - [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
   *Shipped as a self-contained hub-and-spoke controller (the `SettingsScreen` pattern): Home →
   Profiles opens a **Cure|Reflow chooser** — **two big Home-style tiles** ("UV CURE PROFILES" /
@@ -421,10 +437,39 @@ existing `IClock`/`IHeaterSwitch` idiom:
   above are in place, but the feature itself is future work) — a fresh flash otherwise shows the §23
   empty state. **Pick context** (Setup → Load) entry lands with C6; the manage-context CRUD is
   complete. Unblocks **C6**.*
-- [ ] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
-  then feasibility-curve preview). deps: C1, B1, B2. *All deps now landed — B1's
-  `compileRecipe()` + `CompileResult` advisories (rate-limited/estimated/fallback flags) are the
-  feasibility-preview data source; the editor mutates `Phase` objects (`phase.h`) directly.* (§12)
+- [x] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
+  then feasibility-curve preview). deps: C1, B1, B2. (§12)
+  *Shipped as `ProfileEditorScreen` (`lib/ui_logic/profile_editor_screen.*`), the `SettingsScreen`
+  hub-and-spoke controller cloned: **Overview** (feasibility curve + one-phase-per-row list + Save)
+  → **Phase editor** (a field list per phase) → the shared numeric keypad → **name entry**. Edits
+  parameters, never the curve (§12): each phase number routes through `NumericFieldConfig` +
+  `create_numeric_keypad` (all wide-range → keypad per the >20-step rule), fans cycle Auto→On→Off
+  in place, UV/motor toggle (cure only), and the cure **Hold** field's label/amber note track the
+  exposure-vs-raw-seconds semantics. Works on a **working copy** via `beginEdit(profile, store,
+  saveAs)`; only Save commits (a stock source or a fresh New routes through name entry, §23 Save-as);
+  Save is gated on `compileRecipe().hardValid` (red word blocks) with an amber word for a
+  physically-optimistic profile (`hasAmber()`) — the shared validator, never a second one. The
+  **Advanced** path (add/delete/reorder phases) is gated on `subj_advanced`. New
+  `profile_templates.h` seeds NEW from the fixed per-mode templates (reflow preheat/soak/reflow/cool,
+  cure warm/cure/cool) + supplies the role labels the nameless `Phase` struct can't carry.
+  **PR2 feasibility preview** extends `profile_facts` + the C4 `profile_curve` widget (the same one,
+  as C4 flagged): `sampleCurve`/`computeFacts` now **fan-Auto-resolve** the achievable curve via
+  `fan_resolver` (so preview and compiled advisories agree on fans); new `anyRampRateLimited` drives
+  an **amber divergence flag** (the requested line goes amber where the oven can't meet it); new
+  `sampleOvershoot` runs the achievable trajectory through the `{a,b,τ}` lag as a faint **closed-loop
+  settling** trace (§12's optional-later, bounded to `kMaxCurvePoints` steps). Wired into `main.cpp`
+  (`SCREEN_EDITOR`; the `NAV_PROFILE_NEW/EDIT` seams C4 reserved are resolved in the composition root
+  off the library's selection; exit returns to the edited mode's list). **The editor is
+  heap-allocated on first use, not a static**: the library's two view-models already fill the static
+  DRAM segment and the editor is just as large, but the two are never co-visible — a static both
+  overflowed `dram0_0_seg` by 3.3 kB. Two build-config facts: the **UI + sim lanes gained nanopb**
+  (the editor validates via the shared `recipe_compiler` → generated `oven.pb.h`; C8's fault overlay
+  will need it too) via a `lib/ui_logic/library.json` (the `lib/protocol` pattern) + `native_ui_cyd`/
+  `sim_common` deps. Host-tested `test_profile_editor` (both geometries, driven through the button
+  seams) + `test_profile_templates` + extended `test_profile_facts`; `fuzz_profile_facts` extended to
+  the iterative overshoot + divergence math (5.2 M+ runs clean). Verified in the sim on the 3.5"
+  (Overview curve with all three traces + amber divergence; Phase editor field list with fan
+  resolution). Unblocks **C6** (Setup loads a library profile as a run template into this editor).*
 - [ ] **C7** [C] — Run/Monitor (3 PRs: layout/telemetry/STOP; projected-vs-actual
   chart + live ETA; cure paused/resume overlay). deps: C3, B2; soft: B6 (resume
   overlay, 3rd PR). (§15)

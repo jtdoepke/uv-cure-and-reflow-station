@@ -173,19 +173,19 @@ void test_open_enabled_with_profiles(void) {
   TEST_ASSERT_TRUE(screen.listModel().canOpen()); // a selectable row exists → Open enabled
 }
 
-void test_new_edit_load_publish_nav_intents(void) {
+void test_new_edit_publish_nav_intents(void) {
   seed(reflow, "LF-245", false, 245.0f, 3);
   screen.begin(lv_screen_active(), cure, reflow);
   screen.openMode(RecipeMode::Reflow);
   screen.openDetail(0);
 
+  // The Profiles branch only manages profiles: New/Edit open the editor. There is no Load intent
+  // (running a profile is a separate path, Home → Setup, §19).
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
   screen.onNew();
   TEST_ASSERT_EQUAL_INT(NAV_PROFILE_NEW, lv_subject_get_int(&subj_nav_request));
   screen.onEdit();
   TEST_ASSERT_EQUAL_INT(NAV_PROFILE_EDIT, lv_subject_get_int(&subj_nav_request));
-  screen.onLoad();
-  TEST_ASSERT_EQUAL_INT(NAV_PROFILE_LOAD, lv_subject_get_int(&subj_nav_request));
 }
 
 int main(int, char **) {
@@ -197,6 +197,6 @@ int main(int, char **) {
   RUN_TEST(test_delete_confirm_removes_and_cancel_keeps);
   RUN_TEST(test_empty_state);
   RUN_TEST(test_open_enabled_with_profiles);
-  RUN_TEST(test_new_edit_load_publish_nav_intents);
+  RUN_TEST(test_new_edit_publish_nav_intents);
   return UNITY_END();
 }
