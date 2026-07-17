@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "codec.h"
 #include "oven.pb.h"
 #include "oven_safety.h"
 #include "setup_responder.h"
@@ -61,8 +62,10 @@ public:
       max_heat = seg.heat_c > max_heat ? seg.heat_c : max_heat;
     }
 
-    // Mode/content mismatch: the declared tag must not contradict the content.
-    if (recipe.mode == oven_Mode_MODE_REFLOW && (has_uv || has_motor)) {
+    // Mode/content mismatch: the declared tag must not contradict the content. The tag is
+    // untrusted, so read it via wireEnum — nanopb can leave recipe.mode holding a raw wire
+    // value outside the enumerators, and an enum-typed load of that is UB (a fuzzer found it).
+    if (protocol::wireEnum(recipe.mode) == oven_Mode_MODE_REFLOW && (has_uv || has_motor)) {
       reason = oven_NakReason_NAK_MODE_CONTENT_MISMATCH;
       return false;
     }

@@ -144,6 +144,20 @@ void test_cure_content_selects_tight_cap(void) {
   TEST_ASSERT_TRUE(v.validateRecipe(reflow, reason));
 }
 
+// An out-of-range mode tag off the wire (nanopb stores proto enums raw, so an untrusted
+// CYD can send any value) must be read without an enum-typed load — that load is UB, which
+// a fuzzer caught on recipe.mode. The bogus tag is simply not REFLOW, so the run is governed
+// by content: plain heat is accepted at the reflow cap; uv content still forces the cure cap.
+void test_out_of_range_mode_tag_handled(void) {
+  RecipeValidator v;
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  const oven_Mode bogus = static_cast<oven_Mode>(120); // a value the enum never defines
+  oven_Recipe plain = recipeWith(bogus, 100.0F, /*uv=*/false, false);
+  TEST_ASSERT_TRUE(v.validateRecipe(plain, reason));
+  oven_Recipe uv_over = recipeWith(bogus, 200.0F, /*uv=*/true, false); // cure cap => rejected
+  TEST_ASSERT_FALSE(v.validateRecipe(uv_over, reason));
+}
+
 // validateStart accepts only the most recently accepted recipe id.
 void test_start_requires_known_recipe(void) {
   RecipeValidator v;
@@ -216,6 +230,7 @@ int main(int, char **) {
   RUN_TEST(test_valid_reflow_accepted);
   RUN_TEST(test_valid_cure_accepted);
   RUN_TEST(test_cure_content_selects_tight_cap);
+  RUN_TEST(test_out_of_range_mode_tag_handled);
   RUN_TEST(test_start_requires_known_recipe);
   RUN_TEST(test_start_session_zero_out_of_range);
   RUN_TEST(test_rejected_recipe_not_remembered);

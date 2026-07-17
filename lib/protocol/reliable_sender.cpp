@@ -80,7 +80,12 @@ void ReliableSender::onAck(const oven_Ack &ack) {
 void ReliableSender::onNak(const oven_Nak &nak) {
   if (state_ == State::Pending && nak.seq == pending_seq_) {
     state_ = State::Nakd;
-    last_nak_reason_ = nak.reason;
+    // nak.reason is untrusted (nanopb stores proto enums raw): a peer could send a value
+    // outside the enumerators, and we STORE it and later hand it out via lastNakReason(), so
+    // it must be a valid enumerator or every read is UB. Unknown reasons fold to UNSPECIFIED
+    // (the generic bucket the UI already shows for codes it doesn't recognize).
+    last_nak_reason_ = wireEnumOr(nak.reason, _oven_NakReason_MIN, _oven_NakReason_MAX,
+                                  oven_NakReason_NAK_UNSPECIFIED);
   }
 }
 

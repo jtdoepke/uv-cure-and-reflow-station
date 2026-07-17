@@ -145,6 +145,23 @@ void test_nak_path(void) {
   TEST_ASSERT_EQUAL_INT(0, r.sink.recipes);
 }
 
+// An out-of-range Nak reason off the wire (nanopb stores proto enums raw, so a peer can send
+// any value) is normalized to UNSPECIFIED — not stored as an invalid enumerator, whose later
+// lastNakReason() read would be UB. onNak is fed directly to isolate the sanitization.
+void test_nak_reason_out_of_range_normalized(void) {
+  RejectValidator v(oven_NakReason_NAK_OUT_OF_RANGE);
+  Rig r(v);
+
+  TEST_ASSERT_TRUE(r.sender.sendRecipe(simpleRecipe(1)));
+  oven_Nak nak = oven_Nak_init_zero;
+  nak.seq = r.sender.pendingSeq();
+  nak.reason = static_cast<oven_NakReason>(99); // a value the enum never defines
+  r.sender.onNak(nak);
+
+  TEST_ASSERT_EQUAL_INT(stateInt(ReliableSender::State::Nakd), stateInt(r.sender.state()));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_UNSPECIFIED, r.sender.lastNakReason());
+}
+
 // Dropped sends are retried until one lands and is Acked.
 void test_retry_until_ack(void) {
   protocol::AcceptAllValidator v;
@@ -320,6 +337,7 @@ int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_ack_happy_path);
   RUN_TEST(test_nak_path);
+  RUN_TEST(test_nak_reason_out_of_range_normalized);
   RUN_TEST(test_retry_until_ack);
   RUN_TEST(test_give_up_after_max_retries);
   RUN_TEST(test_duplicate_seq_suppressed);
