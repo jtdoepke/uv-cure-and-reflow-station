@@ -342,12 +342,45 @@ std::vector<uint8_t> safetyOvertempSeed() {
   return v;
 }
 
+// --- profile_store harness format (fuzz_profile_store.cpp): flags + count + name + 17-byte records
+//     (the phase records reuse putPhase, same as the compiler harness). ---
+
+void putProfileHeader(std::vector<uint8_t> &v, uint8_t flags, uint8_t phaseCount,
+                      const char *name) {
+  v.push_back(flags);
+  v.push_back(phaseCount);
+  const uint8_t nameLen = static_cast<uint8_t>(std::strlen(name));
+  v.push_back(nameLen);
+  for (const char *c = name; *c != '\0'; ++c) {
+    v.push_back(static_cast<uint8_t>(*c));
+  }
+}
+
+// A two-phase reflow profile that round-trips and compiles cleanly (lands in the save/load +
+// compile success path). flags 0x00 = Reflow, not stock; both phases channels-off.
+std::vector<uint8_t> profileStoreReflowSeed() {
+  std::vector<uint8_t> v;
+  putProfileHeader(v, /*flags=*/0x00, /*phaseCount=*/2, "LF-245");
+  putPhase(v, 150.0F, 80.0F, 60.0F, 0.0F, 0x00);
+  putPhase(v, 245.0F, 0.0F, 30.0F, 0.0F, 0x00);
+  return v;
+}
+
+// A one-phase cure stock profile with UV + turntable (exercises the stock flag and the cure
+// exposure→hold compile path). flags 0x03 = Cure | stock; phase flags 0x03 = uv | motor.
+std::vector<uint8_t> profileStoreCureSeed() {
+  std::vector<uint8_t> v;
+  putProfileHeader(v, /*flags=*/0x03, /*phaseCount=*/1, "cure-30");
+  putPhase(v, 80.0F, 0.0F, 0.0F, 30.0F, 0x03);
+  return v;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   const fs::path base = (argc > 1) ? fs::path(argv[1]) : fs::path("fuzz/corpus");
   for (const char *sub : {"frontdoor", "decode", "validator", "compiler", "executor",
-                          "heater_control", "safety_supervisor"}) {
+                          "heater_control", "safety_supervisor", "profile_store"}) {
     fs::create_directories(base / sub);
   }
 
@@ -397,6 +430,10 @@ int main(int argc, char **argv) {
   // safety_supervisor: the L3-gate harness's struct format (recipe + driver, hand-packed).
   writeFile(base / "safety_supervisor" / "run.bin", safetyRunSeed());
   writeFile(base / "safety_supervisor" / "overtemp.bin", safetyOvertempSeed());
+
+  // profile_store: the ProfileStore harness's struct format (header + name + phase records).
+  writeFile(base / "profile_store" / "reflow.bin", profileStoreReflowSeed());
+  writeFile(base / "profile_store" / "cure.bin", profileStoreCureSeed());
 
   std::printf("done\n");
   return 0;

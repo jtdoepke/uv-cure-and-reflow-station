@@ -49,9 +49,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
   (`test/helpers`) and the `Esp32Watchdog` adapter. **A4b** landed the `ResetCause`→`Fault{WATCHDOG}`
   mapping (`SafetySupervisor::noteResetCause`).*
 - **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **D5**.
-- **Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.
-  *Partially landed: **B5** shipped `ISettingsStorage` + a `FakeSettingsStorage` (`lib/storage_port`);
-  **B4** still needs the profile-blob/LittleFS storage port.*
+- ~~**Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.~~
+  *Landed across B5 + B4: **B5** shipped the single-blob settings half (`ISettingsStorage` +
+  `FakeSettingsStorage`, `lib/storage_port`); **B4** shipped the keyed profile-blob half —
+  `IProfileStorage` (`list`/`read`/`write`/`remove` by name) + `FakeProfileStorage`
+  (`test/helpers`) + the `LittleFsProfileStorage` adapter (`src_cyd/`, the repo's first LittleFS
+  user).*
 - **SD/log sink port** (§7) — **B8**.
 
 ## Wave 1 — Ready now (deps satisfied by Wave 0)
@@ -238,8 +241,37 @@ existing `IClock`/`IHeaterSwitch` idiom:
   falls back to the §5 heuristic (conv on while heating, cool on while cooling), flagged so the
   preview labels it estimated. The exact rate/target margins stay §10-open (`kRampMarginFrac`
   placeholder). Host-tested (`test_fan_resolver`).*
-- [ ] **B4** [B] — `ProfileStore` over a storage port; per-mode dirs;
+- [x] **B4** [B] — `ProfileStore` over a storage port; per-mode dirs;
   stock-vs-user semantics. deps: storage port. (§7, §23)
+  *New keyed profile-storage port `IProfileStorage` (`lib/storage_port`) — the multi-entry sibling
+  of B5's single-blob `ISettingsStorage` (list/read/write/remove a blob **by name**; the store owns
+  the byte layout, the adapter stays dumb) — plus `FakeProfileStorage` (`test/helpers`) and the
+  `LittleFsProfileStorage` firmware adapter (`src_cyd/`, one instance per mode dir, the repo's first
+  LittleFS user). Host-tested `ProfileStore` (`lib/app_logic`), one instance per mode, mirrors
+  `SettingsStore` structurally: it is the **first serialization of the `Phase[]` domain model** as a
+  versioned `PersistedBlob` (magic `"PRO1"`, `name` + `mode` + `Phase[]`), with `list`/`load`/`save`/
+  `delete`/`duplicate`. Enforces the two decisions design.md leaves to the store: the §23 **stock
+  read-only rule** (stock-ness is a **blob flag**, not a directory split — matching §7's single-dir
+  phrasing — and save-over/delete of a stock entry are refused, `duplicate` clears the flag) and the
+  §7 **never-mixed guard at the store** (a blob whose `mode` byte isn't this store's — a cross-mode
+  WiFi upload landing in the wrong dir — is ignored by list/load, not just kept apart by the
+  directory). The deserializer is **hardened against untrusted input** (a profile can be pushed over
+  serial/WiFi without a reflash, §7): a malformed/short/bad-magic/wrong-version blob is rejected
+  never mis-parsed, `phaseCount` is bounded to `kMaxPhases`, the name is always NUL-terminated, and
+  `validName` bars path separators / control bytes / `.`/`..` / over-length before any name reaches
+  an adapter. **`kMaxPhases` moved `recipe_compiler.h` → `phase.h`** (the Phase-domain fact, so the
+  persistence layer needn't pull in the compiler/protobuf; the compiler now `static_assert`s it
+  against `kMaxSegments`). `main.cpp` mounts LittleFS at boot and instantiates the two per-mode
+  stores as live production wiring (a boot log exercises the whole store→adapter→LittleFS stack);
+  the library/editor **screens that drive them are C4/C5**. Host-tested (`test_profile_store`,
+  11 cases) **plus a `fuzz/fuzz_profile_store.cpp` harness** (untrusted-blob robustness + a
+  save→load round-trip + a "a loaded profile is always a valid `compileRecipe` input" differential
+  tying into `fuzz_compiler`) — 11M+ runs clean. **Deferred** (noted in §7/§23, not built here): the
+  `data/`-JSON→`uploadfs` stock-seed population + the §24 "Restore stock profiles" action (need a
+  seed source — land with C4 / deployment) and recently-used sort ordering (needs a usage clock the
+  store doesn't own — `list()` returns a deterministic alphabetical base and C4's ViewModel
+  re-sorts). Unblocks **C4** (profile library list/detail) → **C6** (Setup loads a profile as a
+  template).
 - [x] **B5** [B] — `SettingsStore` + per-field `{min, max, step, units}` config +
   boot-time clamp-to-hard-max. deps: storage port (share B4's). (§4, §24)
   *`ISettingsStorage` port (`lib/storage_port`) + host-tested `SettingsStore` (`lib/app_logic`):
@@ -341,7 +373,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
   now, the sensor doesn't. Verified on the bench: holding the controller in reset reads
   `matched=1 sawPeer=1 alive=0 state=LINK_NONE` — the latch and the decay disagreeing, exactly as
   intended — and it recovers on its own when telemetry resumes.*
-- [ ] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
+- [ ] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23) *Both deps now landed —
+  B4's `ProfileStore` (list/load/save/delete/duplicate + `Summary`/stock flags) is the data source;
+  C4 adds the per-mode `ProfileLibraryViewModel` over it (peak/duration row facts computed from a
+  loaded profile's phases via the shared §12 curve math) + the list/detail screen pair, and owns the
+  recently-used sort B4 left to the ViewModel. Wire it to the two `ProfileStore`s already
+  instantiated in `main.cpp`.*
 - [ ] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
   then feasibility-curve preview). deps: C1, B1, B2. *All deps now landed — B1's
   `compileRecipe()` + `CompileResult` advisories (rate-limited/estimated/fallback flags) are the

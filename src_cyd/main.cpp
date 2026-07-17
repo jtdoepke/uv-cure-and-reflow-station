@@ -7,26 +7,28 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
-#include "auto_brightness.h"        // ambient-light -> backlight logic (lib/app_logic, §18)
-#include "cyd_board.h"              // this board's pins, capabilities, orientation, buffers
-#include "cyd_link.h"               // reliability facade (lib/protocol, §9)
-#include "device_info.h"            // board/panel identity for Settings > About (lib/ui_logic)
-#include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
-#include "esp32_clock.h"            // IClock adapter for the link's cadences (firmware glue)
-#include "esp32_serial_transport.h" // ISerialTransport adapter over the link UART (firmware glue)
-#include "frame_link.h"             // TinyFrame framing (lib/protocol)
-#include "home_screen.h"            // UI construction lives in lib/ui_logic (host-testable)
-#include "home_viewmodel.h"         // handshake -> LinkState mapper (lib/ui_logic)
-#include "lgfx_display.h"           // LGFX IDisplay + IBacklight adapter (firmware glue)
-#include "link_params.h"            // shared §9 cadences, incl. the FrameLink tick (lib/protocol)
-#include "lgfx_touch.h"             // LGFX ITouch adapter (firmware glue)
-#include "message_router.h"         // frame -> typed message dispatch (lib/protocol)
-#include "null_ambient_light.h"     // IAmbientLight for a board with no LDR (firmware glue)
-#include "nvs_settings_storage.h"   // NVS-backed ISettingsStorage adapter (firmware glue)
-#include "screen_router.h"          // hub-and-spoke screen manager + cache policy (lib/ui_logic)
-#include "settings_screen.h"        // Settings hub + panels (§24)
-#include "settings_store.h"         // typed device settings (lib/app_logic)
-#include "sleep_controller.h"       // idle sleep/wake policy (lib/app_logic, §17)
+#include "auto_brightness.h"          // ambient-light -> backlight logic (lib/app_logic, §18)
+#include "cyd_board.h"                // this board's pins, capabilities, orientation, buffers
+#include "cyd_link.h"                 // reliability facade (lib/protocol, §9)
+#include "device_info.h"              // board/panel identity for Settings > About (lib/ui_logic)
+#include "esp32_ambient_light.h"      // LDR IAmbientLight adapter (firmware glue)
+#include "esp32_clock.h"              // IClock adapter for the link's cadences (firmware glue)
+#include "esp32_serial_transport.h"   // ISerialTransport adapter over the link UART (firmware glue)
+#include "frame_link.h"               // TinyFrame framing (lib/protocol)
+#include "home_screen.h"              // UI construction lives in lib/ui_logic (host-testable)
+#include "home_viewmodel.h"           // handshake -> LinkState mapper (lib/ui_logic)
+#include "lgfx_display.h"             // LGFX IDisplay + IBacklight adapter (firmware glue)
+#include "link_params.h"              // shared §9 cadences, incl. the FrameLink tick (lib/protocol)
+#include "lgfx_touch.h"               // LGFX ITouch adapter (firmware glue)
+#include "message_router.h"           // frame -> typed message dispatch (lib/protocol)
+#include "null_ambient_light.h"       // IAmbientLight for a board with no LDR (firmware glue)
+#include "nvs_settings_storage.h"     // NVS-backed ISettingsStorage adapter (firmware glue)
+#include "littlefs_profile_storage.h" // LittleFS-backed IProfileStorage adapter (firmware glue)
+#include "profile_store.h"            // per-mode profile library (lib/app_logic, §7/§23)
+#include "screen_router.h"            // hub-and-spoke screen manager + cache policy (lib/ui_logic)
+#include "settings_screen.h"          // Settings hub + panels (§24)
+#include "settings_store.h"           // typed device settings (lib/app_logic)
+#include "sleep_controller.h"         // idle sleep/wake policy (lib/app_logic, §17)
 #include "subjects.h"
 #include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
@@ -54,6 +56,14 @@ static uint32_t last_tick = 0;
 static NvsSettingsStorage g_settings_storage;
 static SettingsStore g_settings(g_settings_storage);
 static SettingsScreen g_settings_screen;
+
+// Profile library (§7/§23), per mode, on LittleFS. Instantiated here as live production wiring so
+// the store + adapter are compiled into the firmware; the library/editor screens that drive them
+// are C4/C5. Separate directories keep cure and reflow profiles unmixed (§7).
+static LittleFsProfileStorage g_cure_profile_storage("/profiles/cure");
+static LittleFsProfileStorage g_reflow_profile_storage("/profiles/reflow");
+static ProfileStore g_cure_profiles(g_cure_profile_storage, RecipeMode::Cure);
+static ProfileStore g_reflow_profiles(g_reflow_profile_storage, RecipeMode::Reflow);
 
 // The display + touch behind their ports (lib/display_port). LGFX itself is touched only here and
 // in my_disp_flush — see lgfx_display.h for why the flush deliberately is not a port call.
@@ -356,6 +366,19 @@ void setup() {
   // cross-screen values so any consumer sees them before Settings is opened.
   g_settings.load();
   settings_publish_subjects(g_settings);
+
+  // Mount the profile-library filesystem (§7). Format on failure so a fresh or corrupt flash still
+  // boots into a usable (empty) library rather than wedging. The library/editor screens land with
+  // C4/C5; the boot log exercises the whole store -> adapter -> LittleFS stack so a regression
+  // surfaces here rather than the first time a screen opens.
+  if (!LittleFS.begin(/*formatOnFail=*/true)) {
+    Serial.println("[fs] LittleFS mount failed — profile library unavailable");
+  } else {
+    ProfileStore::Summary rows[ProfileStore::kMaxListed];
+    Serial.printf("[profiles] cure=%u reflow=%u\n",
+                  (unsigned)g_cure_profiles.list(rows, ProfileStore::kMaxListed),
+                  (unsigned)g_reflow_profiles.list(rows, ProfileStore::kMaxListed));
+  }
 
   g_router.define(SCREEN_HOME, build_home_screen_cb, nullptr, /*cached=*/true);
   g_router.define(SCREEN_SETTINGS, build_settings_screen_cb, nullptr, /*cached=*/false);

@@ -36,7 +36,9 @@ inline constexpr size_t kMaxSegments = 32;
 // Advisory slots. Each meaningful phase emits >=1 segment, so no uploadable recipe carries more
 // than kMaxSegments phases; the array is sized to match and writes past it are simply dropped (only
 // a pathological run of temperature-and-hold-free phases could get there, and it emits nothing).
-inline constexpr size_t kMaxPhases = kMaxSegments;
+// kMaxPhases itself lives in phase.h (the domain fact ProfileStore also sizes to); pin the
+// invariant.
+static_assert(kMaxPhases == kMaxSegments, "advisory slots must match the segment budget");
 
 // Absolute per-mode temperature bounds the compile is validated against. Passed in from the call
 // site (mode + SettingsStore user caps / settings_defaults hard-max); the compiler never picks

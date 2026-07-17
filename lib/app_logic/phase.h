@@ -10,6 +10,7 @@
 // (which only reads it). Pure C++: no LVGL, no Arduino — host-tested under native_logic_cyd.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // Per-phase convection/cooling-fan intent. The default is `Auto`, resolved to on/off at
@@ -22,6 +23,13 @@ enum class FanMode : uint8_t { Auto = 0, On = 1, Off = 2 };
 // compiler enforces. Distinct from the wire `oven_Mode`: this is the editor's domain enum, the
 // compiler stamps the matching `oven_Mode` tag on the Recipe.
 enum class RecipeMode : uint8_t { Cure, Reflow };
+
+// A profile carries at most this many phases. Matches the compiler's 32-segment wire budget
+// (recipe_compiler.h / oven.options): each phase emits >=1 segment, so a longer list could never
+// upload. Lives here — the Phase-domain fact — so ProfileStore (B4) can size its stored array to it
+// without pulling in the compiler/protobuf; recipe_compiler.h static_asserts it against
+// kMaxSegments.
+inline constexpr size_t kMaxPhases = 32;
 
 // One authored phase. A phase compiles to up to two segments (a ramp toward `targetC`, then a hold
 // at it); a degenerate ramp (no temperature change) or a non-positive hold is omitted to conserve
