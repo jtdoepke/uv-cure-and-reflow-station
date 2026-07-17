@@ -38,13 +38,16 @@ Several waves depend on ports that don't exist yet. Each is one pure interface i
 `lib/control_port/` (or a CYD storage port) + a `test/helpers` fake, matching the
 existing `IClock`/`IHeaterSwitch` idiom:
 
-- **Temp-input** (control-sensor readback; §11 `IThermocouples`) — first needed by **A5/A6**, also **A4b**.
+- ~~**Temp-input** (control-sensor readback; §11 `IThermocouples`)~~ *Landed with A6:
+  `lib/control_port/IThermocouples.h` (`TcReading {celsius, fault}`; `workpiece()` + a wall array
+  that is both the cure control sensor and A4b's L3 high-limit input) plus `FakeThermocouples`
+  (`test/helpers`). Consumed by A5/A6/A4b; the real ESP32 TC-front-end adapter is **D4**.*
 - **`IContactor`** (energize-to-close; §4) — **A4a**. *Landed with A4a: `lib/control_port/IContactor.h`
   plus `FakeContactor` (`test/helpers`).*
 - ~~**`IWatchdog`** (kick + reset-cause readback; §9/§11)~~ *Landed with A8:
   `lib/control_port/IWatchdog.h` (`kick()` + `ResetCause lastResetCause()`) plus `FakeWatchdog`
-  (`test/helpers`) and the `Esp32Watchdog` adapter. **A4b** still owns mapping `ResetCause` onto
-  `Fault{WATCHDOG}` emission.*
+  (`test/helpers`) and the `Esp32Watchdog` adapter. **A4b** landed the `ResetCause`→`Fault{WATCHDOG}`
+  mapping (`SafetySupervisor::noteResetCause`).*
 - **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **D5**.
 - **Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.
   *Partially landed: **B5** shipped `ISettingsStorage` + a `FakeSettingsStorage` (`lib/storage_port`);
@@ -175,11 +178,34 @@ existing `IClock`/`IHeaterSwitch` idiom:
   §10-open placeholders** (over-temp margin, stuck-heater rise/window, runtime frac) — the §10
   "over-temp-trip / stuck-heater margins + times" item owns them, tuned against real runs (§8 step
   4). Host-tested (`test_safety_supervisor` +10 cases, `test_fault_sender`).*
-- [ ] **A5** [A] — PID + anti-windup + feedforward hook, tested against a toy
+- [x] **A5** [A] — PID + anti-windup + feedforward hook, tested against a toy
   first-order plant. deps: A3, temp-input port; soft: B2 (feedforward constants). (§5)
-- [ ] **A6** [A] — profile executor: segment sequencing, `RAMP_ASAP` target
+  *New `lib/control_logic/heater_control.h`: class `HeaterControl` (PI + an inert D seam),
+  conditional-integration anti-windup, and the feedforward-duty hook B2's `steadyStateDuty` feeds.
+  Depends only on `IClock`; `update(setpointC, measuredC, ffDuty)` returns a duty clamped to
+  `[dutyMin, dutyMax]`, `reset()` clears the integrator. A non-finite (faulted-TC) measurement maps
+  to OFF — the loop refuses to control blind. Gains (`kp=0.02, ki=0.002, kd=0`) are §10 placeholders.
+  Host-tested against a toy first-order plant (`test_heater_control`) plus a
+  `fuzz/fuzz_heater_control.cpp` invariant harness (duty stays in range under adversarial
+  gains/trajectories incl. NaN/Inf). **Not yet in the live loop** — the ProfileExecutor→PID→heater
+  wiring in `main.cpp` rides in with D4's real temp source (the same logic-tested/hardware-deferred
+  posture A4a took to A8, and A4b to D4).*
+- [x] **A6** [A] — profile executor: segment sequencing, `RAMP_ASAP` target
   gating, hold-entry gate, per-segment watchdog. deps: temp-input port. *Emits the
   setpoint A5's PID tracks — buildable/testable independently of A5.* (§5)
+  *New `lib/control_logic/profile_executor.h`: class `ProfileExecutor`, the run engine that walks an
+  accepted `oven_Recipe` and each tick emits `{setpointC, channel states, segIdx, runState, fault,
+  safe}` — the setpoint A5 tracks and the `safe`/`fault` seam into `SafetySupervisor::trip()` (A4b).
+  Implements the three interps (RAMP_OVER_TIME sweep, RAMP_ASAP target-gated advance, HOLD with the
+  reflow hold-entry gate vs the cure dose timer) and the per-segment watchdog (k×projected-dur,
+  measured-rate floor, absolute stall cap → `TARGET_UNREACHABLE`) whose constants are §10
+  placeholders. Mode-agnostic by construction — the caller selects the control sensor (workpiece in
+  reflow, wall in cure). Robust to a raw, pre-validation recipe: non-finite `heat_c` and
+  out-of-range `interp` are handled without UB (`interp` read via `protocol::wireEnum`), and the
+  emitted setpoint is always finite and clamped to the recipe's own max. **Also shipped the
+  temp-input port** this, A5, and A4b share: `IThermocouples` (`lib/control_port`) + `FakeThermocouples`.
+  Host-tested (`test_profile_executor`) + a `fuzz/fuzz_executor.cpp` liveness harness (the run always
+  leaves RUNNING under any recipe + trajectory). `main.cpp` wiring deferred to D4 as with A5.*
 - [x] **B1** [B] — phase→segment compiler: {target, ramp `x`, hold `y`} → generic
   segments; two-tier validation; exposure→hold-seconds math with fallback/labeling.
   deps: B2. (§5, §12)
