@@ -373,12 +373,39 @@ existing `IClock`/`IHeaterSwitch` idiom:
   now, the sensor doesn't. Verified on the bench: holding the controller in reset reads
   `matched=1 sawPeer=1 alive=0 state=LINK_NONE` — the latch and the decay disagreeing, exactly as
   intended — and it recovers on its own when telemetry resumes.*
-- [ ] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23) *Both deps now landed —
-  B4's `ProfileStore` (list/load/save/delete/duplicate + `Summary`/stock flags) is the data source;
-  C4 adds the per-mode `ProfileLibraryViewModel` over it (peak/duration row facts computed from a
-  loaded profile's phases via the shared §12 curve math) + the list/detail screen pair, and owns the
-  recently-used sort B4 left to the ViewModel. Wire it to the two `ProfileStore`s already
-  instantiated in `main.cpp`.*
+- [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
+  *Shipped as a self-contained hub-and-spoke controller (the `SettingsScreen` pattern): Home →
+  Profiles opens a **Cure|Reflow chooser** (the entry is mode-blind; §23's "never mixed" is enforced
+  by picking a mode first), then the fixed-mode **list** → profile **detail/actions**. New
+  `profile_facts.h` (pure `lib/app_logic`) is the shared derived-fact layer — peak + estimated
+  duration (∫dT/rate + holds) for the row/detail facts, and the **requested/achievable curve point
+  sampling** — computed off a loaded profile's phases via the §12 curve math (`thermal_math`), no
+  `OvenModel` reach-in. New `profile_curve` widget (`lib/ui_logic`) draws those two polylines in a
+  themed instrument box (requested = dim dashed, achievable = accent solid, + the "uncalibrated"
+  note) — the **minimal first cut of C5's feasibility widget** (per the decision to draw a real curve
+  now); C5 extends the *same* widget to amber-divergence flags + closed-loop overshoot, reusing the
+  point math. `ProfileLibraryViewModel` (per mode, pure) supplies rows/facts and the store-mutating
+  actions: **Dup** (owns the `copy` / `copy 2` … suffix naming + collision resolution the store left
+  to the UI) and
+  **Delete** (behind a new reusable `confirm_dialog` — a *simple* confirm, **not** the press-and-hold
+  arm gesture §19/§22 reserve for energizing hazards, and **not** danger-red for the same reason).
+  §23 **stock gating** rendered: Edit → "Save as", Delete disabled. `selectable_list` gained an
+  optional **leading footer action** (the `+ New` button; the settings hub passes none) and
+  `kMaxItems` 12→32 to hold a full library (a `static_assert` in the screen ties it to
+  `ProfileStore::kMaxListed`). **New/Edit/Load** leave for screens C4 does not own (editor §12/C5,
+  Setup §19/C6) — published as `NAV_PROFILE_*` intents, observed only by tests until those land (the
+  posture Home's tile intents held before Settings existed; the *which-profile* + working-copy handoff
+  is a seam C5/C6 own). Wired into `main.cpp` (router `SCREEN_PROFILES`, create-on-demand) over the
+  two `ProfileStore`s already instantiated at boot; the `·` middot separating the row facts was added
+  to `red_hat_mono_14/16` (the pipeline reproduced the committed 14px glyphs byte-for-byte first).
+  Host-tested `test_profile_library` (native_ui_cyd, both geometries — driven through the real button
+  seams so it is geometry-independent) + `test_profile_facts` (native_logic) **plus
+  `fuzz/fuzz_profile_facts.cpp`** (profile_facts is a new consumer of an untrusted loaded `Phase[]`,
+  §7 — facts/curve stay finite + bounded, no NaN reaches `lv_line`; 3.7M+ runs clean).
+  **Deferred** (unchanged from B4): the **recently-used sort** (no usage clock — `list()` stays
+  alphabetical) and the **stock-seed population** (`data/`→`uploadfs`) + §24 "Restore stock profiles"
+  (need a seed source; land with deployment) — a fresh flash shows the §23 empty state. **Pick
+  context** (Setup → Load) entry lands with C6; the manage-context CRUD is complete. Unblocks **C6**.*
 - [ ] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
   then feasibility-curve preview). deps: C1, B1, B2. *All deps now landed — B1's
   `compileRecipe()` + `CompileResult` advisories (rate-limited/estimated/fallback flags) are the
