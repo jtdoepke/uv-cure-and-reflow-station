@@ -161,6 +161,18 @@ void putF32(std::vector<uint8_t> &v, float f) {
   v.insert(v.end(), b, b + sizeof f);
 }
 
+void putU32LE(std::vector<uint8_t> &v, uint32_t x) {
+  v.push_back(static_cast<uint8_t>(x));
+  v.push_back(static_cast<uint8_t>(x >> 8));
+  v.push_back(static_cast<uint8_t>(x >> 16));
+  v.push_back(static_cast<uint8_t>(x >> 24));
+}
+
+void putU16LE(std::vector<uint8_t> &v, uint16_t x) {
+  v.push_back(static_cast<uint8_t>(x));
+  v.push_back(static_cast<uint8_t>(x >> 8));
+}
+
 // flags: bit0 uv, bit1 motor, bits2-3 convFan{0,1,2}, bits4-5 coolFan{0,1,2}.
 void putPhase(std::vector<uint8_t> &v, float target, float ramp, float hold, float exposure,
               uint8_t flags) {
@@ -196,11 +208,52 @@ std::vector<uint8_t> compilerCureSeed() {
   return v;
 }
 
+// --- executor harness format (fuzz_executor.cpp): header + 10-byte segments + 6-byte traj ---
+
+// interp codes match oven_Interp; the harness takes rec[0] % 5, so pass the raw enum values.
+void putExecSeg(std::vector<uint8_t> &v, uint8_t interp, float heatC, uint32_t durMs,
+                uint8_t channels) {
+  v.push_back(interp);
+  putF32(v, heatC);
+  putU32LE(v, durMs);
+  v.push_back(channels);
+}
+
+void putExecTraj(std::vector<uint8_t> &v, float tempC, uint16_t stepBias) {
+  putF32(v, tempC);
+  putU16LE(v, stepBias); // the harness ticks by (1000 + stepBias) ms
+}
+
+// A cure-style (ungated) hold that completes on the time-based dose timer.
+std::vector<uint8_t> executorCompleteSeed() {
+  std::vector<uint8_t> v;
+  v.push_back(0x00); // flags: ungated
+  v.push_back(1);    // one segment
+  putExecSeg(v, /*interp=HOLD*/ 3, /*heatC=*/80.0f, /*durMs=*/3000, /*channels=*/0x00);
+  for (int i = 0; i < 6; ++i) {
+    putExecTraj(v, 80.0f, 0); // 6 x ~1 s ticks > 3 s hold -> DONE
+  }
+  return v;
+}
+
+// A RAMP_ASAP toward a target the flat trajectory never reaches -> the per-segment watchdog
+// must trip TARGET_UNREACHABLE. Seeds the liveness path directly.
+std::vector<uint8_t> executorStallSeed() {
+  std::vector<uint8_t> v;
+  v.push_back(0x00); // flags: ungated (watchdog fires on ASAP regardless)
+  v.push_back(1);    // one segment
+  putExecSeg(v, /*interp=RAMP_ASAP*/ 2, /*heatC=*/200.0f, /*durMs=*/10000, /*channels=*/0x00);
+  for (int i = 0; i < 4; ++i) {
+    putExecTraj(v, 25.0f, 0); // stays cold; the harness keeps ticking until the watchdog trips
+  }
+  return v;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   const fs::path base = (argc > 1) ? fs::path(argv[1]) : fs::path("fuzz/corpus");
-  for (const char *sub : {"frontdoor", "decode", "validator", "compiler"}) {
+  for (const char *sub : {"frontdoor", "decode", "validator", "compiler", "executor"}) {
     fs::create_directories(base / sub);
   }
 
@@ -238,6 +291,10 @@ int main(int argc, char **argv) {
   // compiler: the recipe-compiler harness's struct format (hand-packed, not a wire encoding).
   writeFile(base / "compiler" / "reflow.bin", compilerReflowSeed());
   writeFile(base / "compiler" / "cure.bin", compilerCureSeed());
+
+  // executor: the profile-executor harness's struct format (recipe + trajectory, hand-packed).
+  writeFile(base / "executor" / "complete.bin", executorCompleteSeed());
+  writeFile(base / "executor" / "stall.bin", executorStallSeed());
 
   std::printf("done\n");
   return 0;

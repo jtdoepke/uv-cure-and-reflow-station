@@ -16,6 +16,8 @@
 #include "handshake.h"
 #include "message_router.h"
 #include "oven.pb.h"
+#include "oven_safety.h"
+#include "profile_executor.h"
 #include "session_gate.h"
 #include "setup_responder.h"
 
@@ -31,6 +33,13 @@ public:
         gate_(clock, handshake_) {
     responder_.setSink(*this);
   }
+
+  // Optionally drive a profile executor (A6) off the accepted setup path: a validated
+  // Recipe is load()ed, a matching Start start()s it, an Abort abort()s it. Optional so
+  // the many tests that build a bare ControllerLink (and the not-yet-wired main loop that
+  // has no temp adapter) keep working; the executor is ticked elsewhere (it needs the
+  // measured control temp, which the link never sees). Must outlive this link.
+  void setExecutor(ProfileExecutor &executor) { executor_ = &executor; }
 
   // Send our Hello at boot. boot_nonce must differ across boots of this board — it is
   // what lets the CYD notice a controller restart (watchdog, brownout, crash) and
@@ -58,10 +67,32 @@ public:
   void onRecipe(const oven_Recipe &r) override { responder_.onRecipe(r); }
   void onStart(const oven_Start &s) override { responder_.onStart(s); }
   void onHeartbeat(const oven_Heartbeat &hb) override { gate_.onHeartbeat(hb); }
-  void onAbort() override { gate_.clearSession(); }
+  void onAbort() override {
+    gate_.clearSession();
+    if (executor_ != nullptr) {
+      executor_->abort();
+    }
+  }
 
-  // ISetupSink — an accepted Start authorizes its session.
-  void onStartAccepted(const oven_Start &s) override { gate_.adoptSession(s.session); }
+  // ISetupSink — an accepted Recipe is loaded for execution; an accepted Start
+  // authorizes its session and begins the run.
+  void onRecipeAccepted(const oven_Recipe &r) override {
+    recipe_ = r;
+    have_recipe_ = true;
+    if (executor_ != nullptr) {
+      // Reflow gates the hold-entry on measured workpiece temp; cure holds are dose
+      // timers (§5). Derive that from recipe *content* (uv/motor => cure), never the
+      // untrusted mode tag — the same rule oven_safety uses to pick the cap.
+      const bool gated = oven_safety::deriveMode(r) == oven_Mode_MODE_REFLOW;
+      executor_->load(r, gated);
+    }
+  }
+  void onStartAccepted(const oven_Start &s) override {
+    gate_.adoptSession(s.session);
+    if (executor_ != nullptr && have_recipe_ && s.recipe_id == recipe_.id) {
+      executor_->start();
+    }
+  }
 
 private:
   protocol::AcceptAllValidator default_validator_;
@@ -69,4 +100,7 @@ private:
   protocol::Handshake handshake_;
   protocol::SetupResponder responder_;
   SessionGate gate_;
+  ProfileExecutor *executor_ = nullptr;
+  oven_Recipe recipe_ = oven_Recipe_init_zero;
+  bool have_recipe_ = false;
 };
