@@ -4,7 +4,7 @@
 // rasterizer as the firmware), optionally injects scripted pointer events, and writes
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
-// Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings|alerts] [ACTION...]
+// Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings|alerts|curve] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
@@ -32,7 +32,11 @@
 #include "device_info.h"
 #include "home_screen.h"
 #include "numeric_keypad.h"
+#include "oven_cal.h"
 #include "panel.h"
+#include "phase.h"
+#include "profile_curve.h"
+#include "profile_facts.h"
 #include "selectable_list.h"
 #include "settings_screen.h"
 #include "subjects.h"
@@ -143,6 +147,61 @@ static void build_alert_specimen(lv_obj_t *scr) {
   lv_obj_t *acklbl = lv_label_create(ack);
   lv_label_set_text(acklbl, "Acknowledge");
   lv_obj_center(acklbl);
+}
+
+// --- `--screen curve`: the read-only profile curve widget (§12/§23, C4) ----------------------
+//
+// A representative multi-phase reflow profile rendered through profile_curve + profile_facts, so
+// the requested/achievable line style, the instrument frame, and the "uncalibrated" note can be
+// eyeballed before the full library detail screen hosts it. Constants are illustrative, not a real
+// paste; oven_cal::DEFAULT is uncalibrated, so the achievable curve rate-limits away from the
+// requested one (the divergence the §12 preview exists to show).
+static void build_curve_demo(lv_obj_t *scr) {
+  theme::apply_screen(scr);
+  lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(scr, theme::PAD_S, 0);
+  lv_obj_set_style_pad_row(scr, theme::GAP, 0);
+
+  Phase reflow[4] = {};
+  reflow[0].targetC = 150.0f;
+  reflow[0].rampSeconds = 90.0f;
+  reflow[0].holdSeconds = 90.0f; // preheat + soak
+  reflow[1].targetC = 180.0f;
+  reflow[1].rampSeconds = 60.0f;
+  reflow[1].holdSeconds = 60.0f;
+  reflow[2].targetC = 245.0f;
+  reflow[2].rampSeconds = 35.0f; // deliberately faster than the stub envelope → rate-limited
+  reflow[2].holdSeconds = 30.0f; // reflow peak
+  reflow[3].targetC = 50.0f;
+  reflow[3].rampSeconds = 0.0f; // ASAP cool-down
+
+  static profile_facts::CurvePoint req[profile_facts::kMaxCurvePoints];
+  static profile_facts::CurvePoint ach[profile_facts::kMaxCurvePoints];
+  const size_t nr =
+      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::DEFAULT,
+                                 /*achievable=*/false, 25.0f, req, profile_facts::kMaxCurvePoints);
+  const size_t na =
+      profile_facts::sampleCurve(reflow, 4, RecipeMode::Reflow, oven_cal::DEFAULT,
+                                 /*achievable=*/true, 25.0f, ach, profile_facts::kMaxCurvePoints);
+
+  const profile_facts::ProfileFacts f =
+      profile_facts::computeFacts(reflow, 4, RecipeMode::Reflow, oven_cal::DEFAULT);
+  char peak[24];
+  char dur[24];
+  profile_facts::formatPeak(f.peakC, /*fahrenheit=*/false, peak, sizeof(peak));
+  profile_facts::formatDuration(f.totalSeconds, dur, sizeof(dur));
+
+  lv_obj_t *title = lv_label_create(scr);
+  lv_label_set_text(title, "LF-245");
+  lv_obj_t *curve = create_profile_curve(scr, req, nr, ach, na, !oven_cal::CALIBRATED).root;
+  (void)curve;
+
+  char facts[48];
+  std::snprintf(facts, sizeof(facts), "%s \xC2\xB7 %s \xC2\xB7 4 phases", peak,
+                dur); // · separators
+  lv_obj_t *facts_label = lv_label_create(scr);
+  lv_label_set_text(facts_label, facts);
+  theme::apply_caption(facts_label);
 }
 
 // Non-persistent in-memory storage so the sim can build a SettingsStore (layout review only —
@@ -258,7 +317,7 @@ static bool parse_i32(const char *s, int32_t *out) {
 
 static int usage(const char *argv0) {
   std::fprintf(stderr,
-               "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings|alerts]\n"
+               "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings|alerts|curve]\n"
                "          [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
                "         frame PATH (unsettled capture - for photographing animation)\n"
@@ -334,6 +393,8 @@ int main(int argc, char **argv) {
     create_numeric_keypad(lv_screen_active(), keypad_vm, "Target temp");
   } else if (screen == "alerts") {
     build_alert_specimen(lv_screen_active());
+  } else if (screen == "curve") {
+    build_curve_demo(lv_screen_active());
   } else if (screen == "home") {
     create_home_screen(lv_screen_active());
   } else {
