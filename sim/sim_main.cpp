@@ -4,7 +4,8 @@
 // rasterizer as the firmware), optionally injects scripted pointer events, and writes
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
-// Usage: program [--out PATH] [--screen home|stepper|keypad|list|settings|alerts|curve] [ACTION...]
+// Usage: program [--out PATH] [--screen
+// home|stepper|keypad|list|settings|alerts|curve|profile-library] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
@@ -26,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,8 @@
 #include "phase.h"
 #include "profile_curve.h"
 #include "profile_facts.h"
+#include "profile_library_screen.h"
+#include "profile_store.h"
 #include "selectable_list.h"
 #include "settings_screen.h"
 #include "subjects.h"
@@ -211,6 +215,53 @@ struct SimSettingsStorage : ISettingsStorage {
   bool save(const uint8_t *, size_t) override { return true; }
 };
 
+// In-memory IProfileStorage for the profile-library demo — the sim seeds a handful of profiles at
+// build time so the list/detail can be reviewed without LittleFS (its own storage, not a test
+// helper, matching SimSettingsStorage above).
+struct SimProfileStorage : IProfileStorage {
+  std::map<std::string, std::vector<uint8_t>> blobs;
+  size_t list(ProfileEntry *out, size_t cap) override {
+    size_t i = 0;
+    for (auto &kv : blobs) {
+      if (i < cap) {
+        std::strncpy(out[i].name, kv.first.c_str(), kProfileNameCap - 1);
+        out[i].name[kProfileNameCap - 1] = '\0';
+      }
+      ++i;
+    }
+    return blobs.size();
+  }
+  size_t read(const char *name, uint8_t *buf, size_t cap) override {
+    auto it = blobs.find(name);
+    if (it == blobs.end() || it->second.size() > cap) {
+      return 0;
+    }
+    std::memcpy(buf, it->second.data(), it->second.size());
+    return it->second.size();
+  }
+  bool write(const char *name, const uint8_t *buf, size_t len) override {
+    blobs[name].assign(buf, buf + len);
+    return true;
+  }
+  bool remove(const char *name) override { return blobs.erase(name) > 0; }
+};
+
+// Seed one profile through the real ProfileStore::save() so the byte layout is exactly
+// production's.
+static void seed_profile(ProfileStore &store, const char *name, bool stock, const Phase *phases,
+                         size_t count) {
+  ProfileStore::StoredProfile p;
+  std::strncpy(p.name, name, kProfileNameCap - 1);
+  p.name[kProfileNameCap - 1] = '\0';
+  p.mode = store.mode();
+  p.stock = stock;
+  p.phaseCount = count;
+  for (size_t i = 0; i < count && i < kMaxPhases; ++i) {
+    p.phases[i] = phases[i];
+  }
+  store.save(p);
+}
+
 // The env sets LODEPNG_NO_COMPILE_ALLOCATORS: LVGL's copy would otherwise route these
 // through lv_malloc, whose small builtin pool can't hold zlib's compression state.
 extern "C" void *lodepng_malloc(size_t size) {
@@ -317,7 +368,8 @@ static bool parse_i32(const char *s, int32_t *out) {
 
 static int usage(const char *argv0) {
   std::fprintf(stderr,
-               "Usage: %s [--out PATH] [--screen home|stepper|keypad|list|settings|alerts|curve]\n"
+               "Usage: %s [--out PATH] [--screen "
+               "home|stepper|keypad|list|settings|alerts|curve|profile-library]\n"
                "          [ACTION...]\n"
                "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
                "         frame PATH (unsettled capture - for photographing animation)\n"
@@ -365,6 +417,11 @@ int main(int argc, char **argv) {
   SimSettingsStorage sim_storage;
   SettingsStore settings_store(sim_storage);
   SettingsScreen settings;
+  SimProfileStorage cure_storage;
+  SimProfileStorage reflow_storage;
+  ProfileStore cure_profiles(cure_storage, RecipeMode::Cure);
+  ProfileStore reflow_profiles(reflow_storage, RecipeMode::Reflow);
+  ProfileLibraryScreen profiles;
   if (screen == "settings") {
     // The full Settings hub over an in-memory store (defaults). Navigate with click actions.
     settings_store.load();
@@ -395,6 +452,41 @@ int main(int argc, char **argv) {
     build_alert_specimen(lv_screen_active());
   } else if (screen == "curve") {
     build_curve_demo(lv_screen_active());
+  } else if (screen == "profile-library") {
+    // The full §23 library over seeded in-memory stores. `--screen profile-library` opens the
+    // Cure|Reflow chooser; click into a mode, highlight a row, Open for the detail/curve. A stock
+    // profile (🔒) shows the read-only gating (Delete disabled, Edit → Save as).
+    Phase lf245[4] = {};
+    lf245[0].targetC = 150.0f;
+    lf245[0].rampSeconds = 90.0f;
+    lf245[0].holdSeconds = 90.0f;
+    lf245[1].targetC = 180.0f;
+    lf245[1].rampSeconds = 60.0f;
+    lf245[1].holdSeconds = 60.0f;
+    lf245[2].targetC = 245.0f;
+    lf245[2].rampSeconds = 35.0f;
+    lf245[2].holdSeconds = 30.0f;
+    lf245[3].targetC = 50.0f;
+    Phase sac305[3] = {};
+    sac305[0].targetC = 165.0f;
+    sac305[0].rampSeconds = 100.0f;
+    sac305[0].holdSeconds = 90.0f;
+    sac305[1].targetC = 249.0f;
+    sac305[1].rampSeconds = 40.0f;
+    sac305[1].holdSeconds = 30.0f;
+    sac305[2].targetC = 50.0f;
+    seed_profile(reflow_profiles, "LF-245", /*stock=*/false, lf245, 4);
+    seed_profile(reflow_profiles, "SAC305", /*stock=*/true, sac305, 3);
+    // A cure profile so the chooser's other library is not empty.
+    Phase cure[2] = {};
+    cure[0].targetC = 60.0f;
+    cure[0].rampSeconds = 0.0f;
+    cure[0].uv = true;
+    cure[0].motor = true;
+    cure[0].exposurePerSurface = 45.0f;
+    cure[1].targetC = 40.0f;
+    seed_profile(cure_profiles, "Resin-A", /*stock=*/false, cure, 2);
+    profiles.begin(lv_screen_active(), cure_profiles, reflow_profiles);
   } else if (screen == "home") {
     create_home_screen(lv_screen_active());
   } else {

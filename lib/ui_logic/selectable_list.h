@@ -28,7 +28,11 @@ struct SelectableListItem {
 
 class SelectableListModel {
 public:
-  static constexpr int kMaxItems = 12;
+  // Sized to hold a full profile library (§23): ProfileStore lists up to 32 profiles, and the
+  // library binds the whole list to one model so ▲/▼ can walk all of them. The settings hub uses a
+  // handful. A profile_library_screen static_assert ties this to ProfileStore::kMaxListed (this
+  // header stays free of the app_logic/protobuf include a store dependency would drag in).
+  static constexpr int kMaxItems = 32;
 
   // Prepare the model for a fresh list. Call after lv_init() and before building the view. Copies
   // up to kMaxItems items (the structs, not the borrowed strings) and selects the first enabled
@@ -72,16 +76,28 @@ private:
   void *open_ud_ = nullptr;
 };
 
+// An optional footer button to the LEFT of ▲/▼/Open — the §23 profile library's `+ New`, which the
+// settings hub has no use for. Its click is a plain event (its own user_data), independent of the
+// model's selection, so it can trigger a create/exit action rather than acting on the highlight.
+struct LeadingAction {
+  const char *label = nullptr;      // nullptr → no leading button (the plain 3-button footer)
+  lv_event_cb_t on_click = nullptr; // fired on LV_EVENT_CLICKED
+  void *user_data = nullptr;
+};
+
 // Handles into the built list so callers/tests can inspect or drive widgets.
 struct SelectableList {
   lv_obj_t *root;
   lv_obj_t *list; // the scrolling row container
   lv_obj_t *rows[SelectableListModel::kMaxItems];
+  lv_obj_t *btn_leading; // the optional leading action (nullptr when none)
   lv_obj_t *btn_up;
   lv_obj_t *btn_down;
   lv_obj_t *btn_open;
 };
 
 // Build the list + footer under `parent`. `model` must be init()'d first and must outlive the
-// returned widgets (they bind its subject and hold it as callback user_data).
-SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &model);
+// returned widgets (they bind its subject and hold it as callback user_data). `leading`, when its
+// label is non-null, prepends a fourth footer button (e.g. `+ New`).
+SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &model,
+                                      const LeadingAction &leading = {});

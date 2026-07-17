@@ -25,9 +25,11 @@ enum LinkState {
   LINK_SCHEMA = 2, // handshake schema-hash mismatch
 };
 
-// Placeholder navigation intent. Home publishes one of these on a tile tap; a real screen
-// manager consumes it when the destination screens land (C4/C6). Until then it is observed
-// only by tests.
+// Navigation intent. A screen publishes one on a tap; a subject-level observer in main.cpp (which
+// survives screen swaps) routes it. Home drives NAV_PROFILES/NAV_SETTINGS today; the profile
+// library (C4) drives the NAV_PROFILE_* trio below. The intents whose destination screens have not
+// landed yet (the editor §12/C5, Setup §19/C6) are still observed only by tests — the same posture
+// Home's tile intents held before Settings existed.
 enum NavRequest {
   NAV_NONE = 0,
   NAV_CURE_SETUP,
@@ -35,6 +37,13 @@ enum NavRequest {
   NAV_PROFILES,
   NAV_CALIBRATE,
   NAV_SETTINGS,
+  // Profile-library actions that leave for a screen C4 does not own. The *which profile* + editable
+  // working-copy handoff is a seam C5/C6 own (a name/mode buffer beside this int); C4 only signals
+  // the intent. NEW → editor on a fresh template; EDIT → editor on the selected profile; LOAD →
+  // Setup with the selected profile as the run template.
+  NAV_PROFILE_NEW,
+  NAV_PROFILE_EDIT,
+  NAV_PROFILE_LOAD,
 };
 
 extern lv_subject_t subj_chamber_temp; // int, °C

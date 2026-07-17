@@ -179,7 +179,8 @@ lv_obj_t *make_footer_button(lv_obj_t *parent, const char *text, SelectableListM
 
 } // namespace
 
-SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &model) {
+SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &model,
+                                      const LeadingAction &leading) {
   SelectableList ui{};
   ui.root = parent;
   lv_subject_t *sel = model.selectedSubject();
@@ -245,12 +246,27 @@ SelectableList create_selectable_list(lv_obj_t *parent, SelectableListModel &mod
     ui.rows[i] = row;
   }
 
-  // --- Footer: Up / Down / Open (big buttons — the real touch targets) ---
+  // --- Footer: [+ New] Up / Down / Open (big buttons — the real touch targets) ---
   lv_obj_t *footer = lv_obj_create(parent);
   theme::apply_row(footer);
   lv_obj_set_width(footer, lv_pct(100));
   lv_obj_set_height(footer, theme::SECONDARY_H);
   lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_ROW);
+
+  // Optional leading action (§23 `+ New`): a plain-event button with its own user_data, so it acts
+  // independently of the highlight rather than through an intent on the model.
+  if (leading.label != nullptr) {
+    ui.btn_leading = lv_button_create(footer);
+    theme::apply_secondary(ui.btn_leading);
+    lv_obj_set_flex_grow(ui.btn_leading, 1);
+    lv_obj_set_height(ui.btn_leading, lv_pct(100));
+    lv_obj_t *label = lv_label_create(ui.btn_leading);
+    lv_label_set_text(label, leading.label);
+    lv_obj_center(label);
+    if (leading.on_click != nullptr) {
+      lv_obj_add_event_cb(ui.btn_leading, leading.on_click, LV_EVENT_CLICKED, leading.user_data);
+    }
+  }
 
   // Up/Down show Font Awesome chevrons (LV_SYMBOL_UP/DOWN, 0xF077/0xF078) — carried by the 14 px
   // default font (see fonts/README.md). Open keeps a word since no matching glyph is embedded.
