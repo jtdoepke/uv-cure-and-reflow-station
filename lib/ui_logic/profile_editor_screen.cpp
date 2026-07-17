@@ -29,6 +29,64 @@ int32_t toInt(float v) {
 // controller measures its own). Matches profile_facts / recipe_compiler.
 constexpr float kAmbientC = profile_facts::kDefaultAmbientC;
 
+// --- Name-entry keyboard map (§12/§26) ---------------------------------------------------------
+// LVGL's default keyboard uses control glyphs the body font deliberately doesn't carry — the
+// newline ↵ (0xF8A2) isn't even in Font Awesome free — and its 12-column layout makes each key
+// far too narrow on a 320 px panel. This is a compact map for short profile/phase names: letters,
+// ⌫ backspace (0xF55A, added to the body font to match the numeric keypad) and ✓ accept
+// (LV_SYMBOL_OK → LV_EVENT_READY) — every glyph present in the font. Mode switches use the literal
+// "abc"/"ABC"/"1#" strings the keyboard's own handler matches. There is no cancel key: the header
+// Back button is the single cancel path (back()). Dropping the cursor/newline/hide/cancel keys
+// widens every remaining key.
+// The maps + ctrl arrays are static: LVGL keeps the pointers, so they must outlive the keyboard.
+constexpr unsigned KB_CTL = LV_KEYBOARD_CTRL_BUTTON_FLAGS; // a mode-switch / OK key
+constexpr unsigned KB_BSP =
+    LV_BUTTONMATRIX_CTRL_CHECKED; // backspace (styled, wide; repeats on hold)
+constexpr unsigned KB_POP = LV_BUTTONMATRIX_CTRL_POPOVER;   // enlarge the key in a popover on press
+constexpr unsigned KB_NRP = LV_BUTTONMATRIX_CTRL_NO_REPEAT; // one char per touch (no auto-repeat)
+
+// A ctrl-map entry: relative width + optional flags, cast to the strongly-typed LVGL enum (LVGL's
+// own C maps rely on the implicit int→enum conversion this C++ TU doesn't get).
+constexpr lv_buttonmatrix_ctrl_t kbw(unsigned width, unsigned flags = 0) {
+  return static_cast<lv_buttonmatrix_ctrl_t>(width | flags);
+}
+
+// A character key: width 1, a phone-style popover preview above it while pressed (the narrow keys
+// are easy to fat-finger, so the popover shows which letter is under the touch), and no auto-repeat
+// so holding to read the preview types exactly one character rather than a run of them.
+constexpr lv_buttonmatrix_ctrl_t P = kbw(1, KB_POP | KB_NRP);
+
+// Hand-aligned so each map row mirrors the on-screen row (and its ctrl entry lines up beneath it).
+// clang-format off
+const char *const kNameKbLower[] = {
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
+    "ABC", "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", " ", LV_SYMBOL_OK, ""};
+const char *const kNameKbUpper[] = {
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
+    "abc", "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", " ", LV_SYMBOL_OK, ""};
+// Shared 32-entry ctrl map for the two letter layouts (identical key geometry).
+const lv_buttonmatrix_ctrl_t kNameKbCtrl[] = {
+    P, P, P, P, P, P, P, P, P, P,                                                           // q..p
+    P, P, P, P, P, P, P, P, P,                                                               // a..l
+    kbw(2, KB_CTL), P, P, P, P, P, P, P, kbw(2, KB_BSP),                                     // ABC z..m ⌫
+    kbw(2, KB_CTL), kbw(6), kbw(2, KB_CTL)};                                                 // 1# space ✓
+
+const char *const kNameKbSpecial[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+    "-", "_", "/", ":", ";", "(", ")", "&", "@", "\n",
+    "abc", ".", ",", "?", "!", "'", "+", "#", LV_SYMBOL_BACKSPACE, "\n",
+    " ", LV_SYMBOL_OK, ""};
+const lv_buttonmatrix_ctrl_t kNameKbSpecialCtrl[] = {
+    P, P, P, P, P, P, P, P, P, P,                                                           // 1..0
+    P, P, P, P, P, P, P, P, P,                                                               // - _ / : ; ( ) & @
+    kbw(2, KB_CTL), P, P, P, P, P, P, P, kbw(2, KB_BSP),                                     // abc . , ? ! ' + # ⌫
+    kbw(8), kbw(2, KB_CTL)};                                                                 // space ✓
+// clang-format on
+
 } // namespace
 
 // Captureless thunks — a friend of ProfileEditorScreen so they can reach its private navigation and
@@ -68,10 +126,6 @@ struct EditorThunks {
     auto *s = static_cast<ProfileEditorScreen *>(lv_event_get_user_data(e));
     s->commitName(lv_textarea_get_text(s->name_ta_));
   }
-  static void name_cancel(lv_event_t *e) {
-    static_cast<ProfileEditorScreen *>(lv_event_get_user_data(e))
-        ->showPage(ProfileEditorScreen::Page::Overview);
-  }
 };
 
 // --- Lifecycle ---
@@ -89,6 +143,7 @@ void ProfileEditorScreen::beginEdit(const ProfileStore::StoredProfile &working,
   }
   selected_phase_ = 0;
   field_sel_ = 0;
+  naming_phase_ = -1;
   page_ = Page::Overview;
   recompute();
 }
@@ -176,7 +231,9 @@ void ProfileEditorScreen::back() {
     showPage(Page::PhaseEditor);
     break;
   case Page::NameEntry:
-    showPage(Page::Overview);
+    // The header Back is the only cancel path (the keyboard has no ✗): a phase rename returns to
+    // the phase editor, a profile-name (Save-as) entry to the overview.
+    showPage(naming_phase_ >= 0 ? Page::PhaseEditor : Page::Overview);
     break;
   }
 }
@@ -233,8 +290,11 @@ void ProfileEditorScreen::rebuildOverviewRows() {
   const char *labels[kMaxPhases];
   SelectableListItem items[kMaxPhases];
   for (size_t i = 0; i < n; ++i) {
-    labels[i] =
-        profile_templates::phaseLabel(mode_, i, n, phase_label_[i], sizeof(phase_label_[i]));
+    // The phase's stored, operator-editable name (phase.h) — copied into a stable buffer so the
+    // borrowed row pointer survives the page.
+    std::strncpy(phase_label_[i], working_.phases[i].name, sizeof(phase_label_[i]) - 1);
+    phase_label_[i][sizeof(phase_label_[i]) - 1] = '\0';
+    labels[i] = phase_label_[i];
     // Compact one-row summary: target, ramp (MAX when ASAP), and hold when present (§12).
     const Phase &p = working_.phases[i];
     char ramp[12];
@@ -290,14 +350,15 @@ void ProfileEditorScreen::buildOverview() {
   profile_facts::TimeSpan uv[kMaxPhases];
   const size_t nuv = profile_facts::sampleUvSpans(working_.phases, working_.phaseCount, mode_,
                                                   *model_, kAmbientC, uv, kMaxPhases);
-  // Phase labels parallel to the boundaries: the authored role labels, then "Cool" for the implicit
+  // Phase labels parallel to the boundaries: each phase's stored name, then "Cool" for the implicit
   // passive cool-down the samplers append when the run ends hot (implicit_cool.h, §6).
-  char namebuf[profile_facts::kMaxCurvePhases][16];
+  char namebuf[profile_facts::kMaxCurvePhases][kPhaseNameCap];
   const char *names[profile_facts::kMaxCurvePhases];
   const size_t authored = working_.phaseCount > kMaxPhases ? kMaxPhases : working_.phaseCount;
   for (size_t i = 0; i < authored; ++i) {
-    names[i] = profile_templates::phaseLabel(mode_, i, working_.phaseCount, namebuf[i],
-                                             sizeof(namebuf[i]));
+    std::strncpy(namebuf[i], working_.phases[i].name, sizeof(namebuf[i]) - 1);
+    namebuf[i][sizeof(namebuf[i]) - 1] = '\0';
+    names[i] = namebuf[i];
   }
   if (nb > authored) {
     names[authored] = kImplicitCoolLabel;
@@ -416,11 +477,8 @@ void ProfileEditorScreen::buildPhaseEditor() {
   }
   const Phase &p = currentPhase();
 
-  // Header: which phase, "<Role> (i/N)".
-  char role_buf[24];
-  const char *role = profile_templates::phaseLabel(mode_, selected_phase_, working_.phaseCount,
-                                                   role_buf, sizeof(role_buf));
-  std::snprintf(header_buf_, sizeof(header_buf_), "%s (%d/%u)", role, selected_phase_ + 1,
+  // Header: which phase, "<Name> (i/N)" — the phase's stored, editable name.
+  std::snprintf(header_buf_, sizeof(header_buf_), "%s (%d/%u)", p.name, selected_phase_ + 1,
                 static_cast<unsigned>(working_.phaseCount));
   buildHeader(header_buf_);
 
@@ -445,6 +503,8 @@ void ProfileEditorScreen::buildPhaseEditor() {
     ++n;
   };
 
+  // Name — free-text, opens the keyboard (value borrows p.name, stable in the working copy).
+  add(FieldRow::Name, "Name", p.name, "Rename");
   // Target.
   std::snprintf(field_value_[0], sizeof(field_value_[0]),
                 "%d \xC2\xB0"
@@ -517,6 +577,9 @@ void ProfileEditorScreen::onFieldOpen(int index) {
   field_sel_ = index;
   Phase &p = currentPhase();
   switch (field_rows_[index]) {
+  case FieldRow::Name:
+    openPhaseName(selected_phase_);
+    break;
   case FieldRow::Target:
     openField(NumField::Target);
     break;
@@ -660,6 +723,9 @@ void ProfileEditorScreen::addPhase() {
   }
   working_.phases[at] = profile_templates::blankPhase();
   ++working_.phaseCount;
+  // A new phase is off the canonical template, so it seeds a generic "Phase N" name; the operator
+  // renames it from the phase editor. Never leave it nameless (phases carry an explicit name).
+  profile_templates::seedPhaseName(mode_, at, working_.phaseCount, working_.phases[at]);
   selected_phase_ = static_cast<int>(at);
   recompute();
   if (page_ == Page::Overview) {
@@ -723,10 +789,20 @@ void ProfileEditorScreen::onSave() {
     return; // Save is disabled in the UI; guard the seam too
   }
   if (save_as_ || working_.name[0] == '\0') {
+    naming_phase_ = -1; // the profile name (Save-as), not a phase rename
     showPage(Page::NameEntry);
     return;
   }
   doSave();
+}
+
+void ProfileEditorScreen::openPhaseName(int index) {
+  if (index < 0 || static_cast<size_t>(index) >= working_.phaseCount) {
+    return;
+  }
+  selected_phase_ = index;
+  naming_phase_ = index; // the keyboard now targets this phase's name
+  showPage(Page::NameEntry);
 }
 
 void ProfileEditorScreen::doSave() {
@@ -741,6 +817,21 @@ void ProfileEditorScreen::doSave() {
 }
 
 void ProfileEditorScreen::commitName(const char *name) {
+  // Phase rename: lighter validation (a phase name is not a filesystem key), write into the phase,
+  // and return to the phase editor. No Save — a rename is just another working-copy edit.
+  if (naming_phase_ >= 0) {
+    if (static_cast<size_t>(naming_phase_) >= working_.phaseCount ||
+        !ProfileStore::validPhaseName(name)) {
+      return; // stay on the keyboard until a valid name is given
+    }
+    Phase &p = working_.phases[naming_phase_];
+    std::strncpy(p.name, name, kPhaseNameCap - 1);
+    p.name[kPhaseNameCap - 1] = '\0';
+    naming_phase_ = -1;
+    showPage(Page::PhaseEditor);
+    return;
+  }
+  // Profile name (Save-as, §23): filesystem-key validation, then commit the whole profile.
   if (!ProfileStore::validName(name)) {
     return; // stay on name entry until a valid name is given
   }
@@ -752,22 +843,47 @@ void ProfileEditorScreen::commitName(const char *name) {
 
 void ProfileEditorScreen::buildNameEntry() {
   configParent();
-  buildHeader("Name");
+  const bool phase = naming_phase_ >= 0 && static_cast<size_t>(naming_phase_) < working_.phaseCount;
+  buildHeader(phase ? "Rename phase" : "Name");
+
+  // The buffer being edited + its cap depend on the target (a phase name is shorter than a profile
+  // name, so clamp the textarea to the tighter limit).
+  const char *cur = phase ? working_.phases[naming_phase_].name : working_.name;
+  const uint32_t cap = static_cast<uint32_t>((phase ? kPhaseNameCap : kProfileNameCap) - 1);
 
   name_ta_ = lv_textarea_create(parent_);
   lv_textarea_set_one_line(name_ta_, true);
-  lv_textarea_set_max_length(name_ta_, kProfileNameCap - 1);
-  lv_textarea_set_placeholder_text(name_ta_, "Profile name");
-  if (working_.name[0] != '\0') {
-    lv_textarea_set_text(name_ta_, working_.name);
+  lv_textarea_set_max_length(name_ta_, cap);
+  lv_textarea_set_placeholder_text(name_ta_, phase ? "Phase name" : "Profile name");
+  if (cur[0] != '\0') {
+    lv_textarea_set_text(name_ta_, cur);
   }
   lv_obj_set_width(name_ta_, lv_pct(100));
 
+  // A flex-grow spacer pins the keyboard to the bottom while the field sits under the header.
+  lv_obj_t *spacer = lv_obj_create(parent_);
+  lv_obj_remove_style_all(spacer);
+  lv_obj_set_width(spacer, lv_pct(100));
+  lv_obj_set_flex_grow(spacer, 1);
+  lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+
   lv_obj_t *kb = lv_keyboard_create(parent_);
+  lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_LOWER, kNameKbLower, kNameKbCtrl);
+  lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_UPPER, kNameKbUpper, kNameKbCtrl);
+  lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_SPECIAL, kNameKbSpecial, kNameKbSpecialCtrl);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+  lv_keyboard_set_popovers(kb, true); // honor the POPOVER ctrl flags — enlarge each pressed key
   lv_keyboard_set_textarea(kb, name_ta_);
-  lv_obj_set_flex_grow(kb, 1);
+  // Bound the height so 4 rows read ~square, not tall-and-narrow (mm-authored, capped so it still
+  // fits the short landscape panel). flex_grow would stretch it over the whole lower screen.
+  int32_t kb_h = panel::pxFromMmX10(360); // ~36 mm of keys
+  const int32_t kb_cap = (panel::H * 55) / 100;
+  if (kb_h > kb_cap) {
+    kb_h = kb_cap;
+  }
+  lv_obj_set_width(kb, lv_pct(100));
+  lv_obj_set_height(kb, kb_h);
   lv_obj_add_event_cb(kb, EditorThunks::name_ok, LV_EVENT_READY, this);
-  lv_obj_add_event_cb(kb, EditorThunks::name_cancel, LV_EVENT_CANCEL, this);
 }
 
 // --- Accessors ---

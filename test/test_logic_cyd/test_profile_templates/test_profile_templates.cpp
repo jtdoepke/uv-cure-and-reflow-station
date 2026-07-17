@@ -79,12 +79,32 @@ void test_blank_phase_is_valid_input(void) {
   TEST_ASSERT_TRUE(r.hardValid);
 }
 
+// defaultTemplate seeds each phase's stored name from its canonical role (phases are never
+// nameless).
+void test_default_template_seeds_phase_names(void) {
+  const ProfileStore::StoredProfile r = profile_templates::defaultTemplate(RecipeMode::Reflow);
+  TEST_ASSERT_EQUAL_UINT(profile_templates::kReflowPhases, r.phaseCount);
+  TEST_ASSERT_EQUAL_STRING("Preheat", r.phases[0].name);
+  TEST_ASSERT_EQUAL_STRING("Soak", r.phases[1].name);
+  TEST_ASSERT_EQUAL_STRING("Reflow", r.phases[2].name);
+
+  const ProfileStore::StoredProfile c = profile_templates::defaultTemplate(RecipeMode::Cure);
+  TEST_ASSERT_EQUAL_STRING("Warm", c.phases[0].name);
+  TEST_ASSERT_EQUAL_STRING("Cure", c.phases[1].name);
+
+  // seedPhaseName off-template falls back to "Phase N".
+  Phase p;
+  profile_templates::seedPhaseName(RecipeMode::Reflow, 3, 5, p);
+  TEST_ASSERT_EQUAL_STRING("Phase 4", p.name);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_reflow_template_is_hard_valid);
   RUN_TEST(test_cure_template_is_hard_valid);
   RUN_TEST(test_cure_template_has_uv_content);
   RUN_TEST(test_role_labels_track_structure);
+  RUN_TEST(test_default_template_seeds_phase_names);
   RUN_TEST(test_blank_phase_is_valid_input);
   return UNITY_END();
 }

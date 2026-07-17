@@ -82,7 +82,7 @@ void test_overview_to_phase_to_field_and_back(void) {
   editor.openPhase(1); // Soak
   TEST_ASSERT_EQUAL_INT((int)Page::PhaseEditor, (int)editor.page());
   TEST_ASSERT_EQUAL_INT(1, editor.selectedPhase());
-  editor.onFieldOpen(0); // Target row
+  editor.onFieldOpen(1); // Target row (row 0 is Name)
   TEST_ASSERT_EQUAL_INT((int)Page::FieldEditor, (int)editor.page());
   editor.back(); // field → phase editor
   TEST_ASSERT_EQUAL_INT((int)Page::PhaseEditor, (int)editor.page());
@@ -94,8 +94,8 @@ void test_overview_to_phase_to_field_and_back(void) {
 
 void test_edit_target_via_keypad(void) {
   begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), true);
-  editor.openPhase(0); // Preheat, target 150
-  editor.onFieldOpen(0);
+  editor.openPhase(0);   // Preheat, target 150
+  editor.onFieldOpen(1); // Target row (row 0 is Name)
   keypad_enter(160);
   TEST_ASSERT_EQUAL_INT((int)Page::PhaseEditor, (int)editor.page());
   TEST_ASSERT_EQUAL_FLOAT(160.0f, editor.working().phases[0].targetC);
@@ -104,8 +104,8 @@ void test_edit_target_via_keypad(void) {
 void test_target_keypad_clamps_to_mode_cap(void) {
   begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), true);
   editor.openPhase(0);
-  editor.onFieldOpen(0);
-  keypad_enter(999); // reflow cap default 250 — the keypad refuses digits past max
+  editor.onFieldOpen(1); // Target row (row 0 is Name)
+  keypad_enter(999);     // reflow cap default 250 — the keypad refuses digits past max
   TEST_ASSERT_LESS_OR_EQUAL_FLOAT(250.0f, editor.working().phases[0].targetC);
   TEST_ASSERT_TRUE(editor.hardValid());
 }
@@ -114,11 +114,11 @@ void test_fan_cycles_auto_on_off(void) {
   begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), true);
   editor.openPhase(0);
   TEST_ASSERT_EQUAL_INT((int)FanMode::Auto, (int)editor.working().phases[0].convFan);
-  editor.onFieldOpen(3); // Conv fan row
+  editor.onFieldOpen(4); // Conv fan row (Name, Target, Ramp, Hold, ConvFan)
   TEST_ASSERT_EQUAL_INT((int)FanMode::On, (int)editor.working().phases[0].convFan);
-  editor.onFieldOpen(3);
+  editor.onFieldOpen(4);
   TEST_ASSERT_EQUAL_INT((int)FanMode::Off, (int)editor.working().phases[0].convFan);
-  editor.onFieldOpen(3);
+  editor.onFieldOpen(4);
   TEST_ASSERT_EQUAL_INT((int)FanMode::Auto, (int)editor.working().phases[0].convFan);
 }
 
@@ -126,10 +126,57 @@ void test_cure_uv_motor_toggle(void) {
   begin(cure_store, profile_templates::defaultTemplate(RecipeMode::Cure), true);
   editor.openPhase(0); // Warm — uv off by default
   TEST_ASSERT_FALSE(editor.working().phases[0].uv);
-  editor.onFieldOpen(4); // UV row (cure-only; after Target/Ramp/Hold/ConvFan)
+  editor.onFieldOpen(5); // UV row (cure-only; after Name/Target/Ramp/Hold/ConvFan)
   TEST_ASSERT_TRUE(editor.working().phases[0].uv);
-  editor.onFieldOpen(5); // Motor row
+  editor.onFieldOpen(6); // Motor row
   TEST_ASSERT_TRUE(editor.working().phases[0].motor);
+}
+
+// --- phase rename (Name row → keyboard) ---
+
+void test_rename_phase_via_name_row(void) {
+  begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), true);
+  editor.openPhase(1); // Soak
+  TEST_ASSERT_EQUAL_STRING("Soak", editor.working().phases[1].name);
+  editor.onFieldOpen(0); // Name row → free-text keyboard
+  TEST_ASSERT_EQUAL_INT((int)Page::NameEntry, (int)editor.page());
+  editor.commitName("Bake");
+  // Rename returns to the phase editor (not a Save) and updates only the target phase.
+  TEST_ASSERT_EQUAL_INT((int)Page::PhaseEditor, (int)editor.page());
+  TEST_ASSERT_EQUAL_STRING("Bake", editor.working().phases[1].name);
+  TEST_ASSERT_EQUAL_STRING("Preheat", editor.working().phases[0].name);
+  TEST_ASSERT_FALSE(editor.savedOk()); // a rename does not commit the profile
+}
+
+void test_empty_phase_name_rejected(void) {
+  begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), true);
+  editor.openPhase(0);
+  editor.onFieldOpen(0); // Name row
+  editor.commitName(""); // empty → validPhaseName rejects; stay on the keyboard
+  TEST_ASSERT_EQUAL_INT((int)Page::NameEntry, (int)editor.page());
+  TEST_ASSERT_EQUAL_STRING("Preheat", editor.working().phases[0].name); // unchanged
+}
+
+// The keyboard has no cancel key; the header Back cancels — a phase rename must return to the phase
+// editor (not the overview) and leave the name untouched.
+void test_phase_rename_back_returns_to_phase_editor(void) {
+  begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), true);
+  editor.openPhase(1);   // Soak
+  editor.onFieldOpen(0); // Name row → keyboard
+  TEST_ASSERT_EQUAL_INT((int)Page::NameEntry, (int)editor.page());
+  editor.back(); // header Back cancels the rename
+  TEST_ASSERT_EQUAL_INT((int)Page::PhaseEditor, (int)editor.page());
+  TEST_ASSERT_EQUAL_STRING("Soak", editor.working().phases[1].name); // unchanged
+}
+
+// A profile-name (Save-as) entry's Back returns to the overview instead.
+void test_profile_name_back_returns_to_overview(void) {
+  begin(reflow_store, profile_templates::defaultTemplate(RecipeMode::Reflow), /*saveAs=*/true);
+  editor.onSave(); // no name yet → name entry (naming_phase_ = -1)
+  TEST_ASSERT_EQUAL_INT((int)Page::NameEntry, (int)editor.page());
+  editor.back();
+  TEST_ASSERT_EQUAL_INT((int)Page::Overview, (int)editor.page());
+  TEST_ASSERT_FALSE(editor.savedOk());
 }
 
 // --- save ---
@@ -218,6 +265,10 @@ int main(int, char **) {
   RUN_TEST(test_target_keypad_clamps_to_mode_cap);
   RUN_TEST(test_fan_cycles_auto_on_off);
   RUN_TEST(test_cure_uv_motor_toggle);
+  RUN_TEST(test_rename_phase_via_name_row);
+  RUN_TEST(test_empty_phase_name_rejected);
+  RUN_TEST(test_phase_rename_back_returns_to_phase_editor);
+  RUN_TEST(test_profile_name_back_returns_to_overview);
   RUN_TEST(test_named_save_writes_and_exits);
   RUN_TEST(test_new_save_routes_through_name_entry);
   RUN_TEST(test_invalid_name_stays_on_name_entry);

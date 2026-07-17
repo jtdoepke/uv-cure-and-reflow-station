@@ -31,10 +31,23 @@ enum class RecipeMode : uint8_t { Cure, Reflow };
 // kMaxSegments.
 inline constexpr size_t kMaxPhases = 32;
 
+// A phase's operator-visible name including the NUL terminator (15 usable chars — enough for the
+// role labels "Preheat"/"Reflow"/"Turntable" and a short rename on a 320px row). A UI/authoring
+// fact only: it never crosses the wire (recipe_compiler.h reads only the numeric/channel fields),
+// so it is not a filesystem key like the profile name (kProfileNameCap) and carries no
+// path-separator restriction — just a bounded, NUL-terminated string the store defends on load.
+inline constexpr size_t kPhaseNameCap = 16;
+
 // One authored phase. A phase compiles to up to two segments (a ramp toward `targetC`, then a hold
 // at it); a degenerate ramp (no temperature change) or a non-positive hold is omitted to conserve
 // the 32-segment wire budget (oven.options).
 struct Phase {
+  // Operator-visible name, seeded from the phase's role at creation (profile_templates.h) and
+  // editable in C5. Every phase always carries an explicit name — display reads this directly, no
+  // positional derivation. Trivially-copyable POD (a fixed char array) so the store/compiler keep
+  // memcpy'ing Phase without a serializer.
+  char name[kPhaseNameCap] = {};
+
   float targetC = 0.0f;     // phase setpoint, deg C
   float rampSeconds = 0.0f; // approach time; 0 => RAMP_ASAP (drive to target, controller-gated §5)
 

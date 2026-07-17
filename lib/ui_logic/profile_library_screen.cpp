@@ -3,8 +3,8 @@
 #include <initializer_list>
 
 #include "confirm_dialog.h"
+#include "implicit_cool.h" // kImplicitCoolLabel for the appended passive cool-down (§6)
 #include "profile_curve.h"
-#include "profile_templates.h"
 #include "subjects.h"
 #include "theme.h"
 
@@ -288,14 +288,13 @@ void ProfileLibraryScreen::buildDetail() {
   const size_t nb =
       current_->samplePhaseBoundaries(selected_, bounds, profile_facts::kMaxCurvePhases);
   const size_t nuv = current_->sampleUvSpans(selected_, uv, kMaxPhases);
-  // Phase labels parallel to the boundaries: the authored role labels (indexed by the authored
+  // Phase labels parallel to the boundaries: each phase's stored name (indexed by the authored
   // count, not nb), then "Cool" for the implicit passive cool-down phase (implicit_cool.h, §6).
-  char namebuf[profile_facts::kMaxCurvePhases][16];
+  char namebuf[profile_facts::kMaxCurvePhases][kPhaseNameCap];
   const char *names[profile_facts::kMaxCurvePhases];
-  const size_t authored = current_->phaseCount(selected_);
+  const size_t authored = current_->phaseNames(selected_, namebuf, profile_facts::kMaxCurvePhases);
   for (size_t i = 0; i < authored && i < nb; ++i) {
-    names[i] = profile_templates::phaseLabel(current_->mode(), i, authored, namebuf[i],
-                                             sizeof(namebuf[i]));
+    names[i] = namebuf[i];
   }
   if (nb > authored) {
     names[authored] = kImplicitCoolLabel;

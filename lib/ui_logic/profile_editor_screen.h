@@ -57,7 +57,9 @@ public:
   void
   onFieldOpen(int index); // Phase-editor row → keypad (numeric) / cycle (fan) / toggle (uv/motor)
   void onSave();          // Overview Save → name entry if needed, else commit + exit
-  void commitName(const char *name); // Name-entry OK: adopt a valid name, then Save (§23 Save-as)
+  void openPhaseName(int index);     // Phase-editor Name row → keyboard targeting that phase's name
+  void commitName(const char *name); // Name-entry OK: routes to the profile name (Save, §23
+                                     // Save-as) or the phase being renamed (naming_phase_)
 
   // Advanced structure edits (§12; the UI only shows these when subj_advanced, but the methods are
   // always callable so tests can drive them directly). Each mutates the working copy +
@@ -84,8 +86,8 @@ private:
   enum class NumField { None, Target, Ramp, Hold };
   // What a phase-editor row does. The row SET differs by mode (cure adds UV/motor), so a built-row
   // → action map identifies the action rather than the raw index (the SettingsScreen DisplayRow
-  // idiom).
-  enum class FieldRow { Target, Ramp, Hold, ConvFan, Uv, Motor };
+  // idiom). Name opens the free-text keyboard (like the profile name, but targeting this phase).
+  enum class FieldRow { Name, Target, Ramp, Hold, ConvFan, Uv, Motor };
 
   // Page builders (each clears `parent_` and lays out its own content).
   void buildOverview();
@@ -135,21 +137,23 @@ private:
   ValueStepperViewModel stepper_vm_;
   NumericKeypadViewModel keypad_vm_;
 
-  // Row index → action for the currently built phase-editor field list.
-  FieldRow field_rows_[6]{};
+  // Row index → action for the currently built phase-editor field list (Name + up to 6 fields).
+  FieldRow field_rows_[7]{};
   int field_row_count_ = 0;
 
   // Formatted strings — members so the borrowed pointers the list rows hold stay valid while a page
   // is shown (the SettingsScreen *_value_[] discipline).
   char phase_label_[kMaxPhases][24]{};
   char phase_value_[kMaxPhases][24]{};
-  char field_value_[6][24]{};
+  char field_value_[7][24]{};
   char hold_label_[16]{};
   char header_buf_[32]{};
 
-  // Name-entry (the free-text exception, §12/§26).
+  // Name-entry (the free-text exception, §12/§26). `naming_phase_` selects the target: -1 = the
+  // profile name (Save-as), >=0 = that phase's name (rename). Set before showing Page::NameEntry.
   lv_obj_t *name_ta_ = nullptr;
   char name_buf_[kProfileNameCap]{};
+  int naming_phase_ = -1;
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;

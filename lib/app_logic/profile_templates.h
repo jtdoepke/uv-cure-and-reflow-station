@@ -8,15 +8,18 @@
 // profile seeded from that template. (The Advanced path may then add/remove/reorder phases, at
 // which point the role labels fall back to generic "Phase N".)
 //
-// The Phase struct carries no name (phase.h) — a role label is a UI fact, derived from mode + the
-// phase's position in the canonical template — so it lives here beside the template that defines
-// the roles, not in the domain model. Kept pure (no LVGL/Arduino) so the templates can be asserted
-// compileRecipe()-clean under native_logic_cyd. The seeded values are conservative defaults; the
-// operator edits them, and validation is the compiler's (recipe_compiler.h), never a second copy.
+// A Phase now carries an explicit stored name (phase.h); this file owns the *seed* for it — the
+// role a phase plays at its position in the canonical template. The name is seeded here at creation
+// (defaultTemplate + seedPhaseName) and thereafter is plain editable text; there is no runtime
+// positional derivation. phaseLabel() survives only as the seed-string source (and the "Phase N"
+// fallback for an off-template Advanced add). Kept pure (no LVGL/Arduino) so the templates can be
+// asserted compileRecipe()-clean under native_logic_cyd. The seeded values are conservative
+// defaults; the operator edits them, and validation is the compiler's (recipe_compiler.h).
 #pragma once
 
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 
 #include "phase.h"
 #include "profile_store.h"
@@ -47,6 +50,17 @@ inline const char *phaseLabel(RecipeMode mode, size_t index, size_t count, char 
   }
   std::snprintf(buf, n, "Phase %zu", index + 1);
   return buf;
+}
+
+// Seed `p.name` from the phase's role at position `index` of a `count`-phase `mode` profile (the
+// fixed role, or "Phase N" off-template). Used at template creation and Advanced "+ Add" so a phase
+// is never nameless — phases carry an explicit stored name (phase.h); after seeding it is just
+// editable text.
+inline void seedPhaseName(RecipeMode mode, size_t index, size_t count, Phase &p) {
+  char buf[kPhaseNameCap];
+  const char *role = phaseLabel(mode, index, count, buf, sizeof(buf));
+  std::strncpy(p.name, role, kPhaseNameCap - 1);
+  p.name[kPhaseNameCap - 1] = '\0';
 }
 
 // A single generic phase — what Advanced "+ Add" appends, and the fallback when a template is
@@ -100,6 +114,10 @@ inline ProfileStore::StoredProfile defaultTemplate(RecipeMode mode) {
     t.phases[1].motor = true;
     // The implicit cool-down (implicit_cool.h) brings the chamber back to a touch-safe temperature
     // from here — no authored cool phase.
+  }
+  // Stamp each phase's name from its canonical role (Preheat/Soak/Reflow, Warm/Cure).
+  for (size_t i = 0; i < t.phaseCount; ++i) {
+    seedPhaseName(mode, i, t.phaseCount, t.phases[i]);
   }
   return t;
 }

@@ -89,7 +89,7 @@ public:
   }
 
   // The count of *authored* phases (clamped to kMaxPhases) — what the curve's phase-name labels
-  // index with phaseLabel(). The curve's boundaries carry one extra entry (the implicit cool-down,
+  // index (via phaseNames()). The curve's boundaries carry one extra entry (the implicit cool-down,
   // §6) when the run ends hot; the caller appends "Cool" for that, so it must not fold it into the
   // count.
   size_t phaseCount(size_t i) const {
@@ -98,6 +98,25 @@ public:
       return 0;
     }
     return p.phaseCount > kMaxPhases ? kMaxPhases : p.phaseCount;
+  }
+
+  // Copy each authored phase's stored name (phase.h) for profile `i` into `out` (writing at most
+  // `cap`, each NUL-terminated), for the detail curve's phase-name labels. One store load; returns
+  // the number written.
+  size_t phaseNames(size_t i, char (*out)[kPhaseNameCap], size_t cap) const {
+    ProfileStore::StoredProfile p;
+    if (!loadDetail(i, p)) {
+      return 0;
+    }
+    size_t n = p.phaseCount > kMaxPhases ? kMaxPhases : p.phaseCount;
+    if (n > cap) {
+      n = cap;
+    }
+    for (size_t k = 0; k < n; ++k) {
+      std::strncpy(out[k], p.phases[k].name, kPhaseNameCap - 1);
+      out[k][kPhaseNameCap - 1] = '\0';
+    }
+    return n;
   }
 
   // Fill the detail curve's requested / achievable point series for profile `i`. Returns point

@@ -182,6 +182,26 @@ public:
     return true;
   }
 
+  // A phase name (phase.h) is authoring text, NOT a filesystem key — so this is lighter than
+  // validName(): non-empty, no control bytes, and fits kPhaseNameCap. No path-separator rule (a
+  // phase name never reaches an adapter). Applied at the editor's rename commit; the load path
+  // separately NUL-terminates an untrusted blob's phase names (copyOut).
+  static bool validPhaseName(const char *name) {
+    if (name == nullptr || name[0] == '\0') {
+      return false;
+    }
+    size_t len = 0;
+    for (const char *c = name; *c != '\0'; ++c) {
+      if (static_cast<unsigned char>(*c) < 0x20) {
+        return false; // control / non-printable
+      }
+      if (++len >= kPhaseNameCap) {
+        return false; // no room for the NUL
+      }
+    }
+    return true;
+  }
+
 private:
   // Fixed-layout on-flash representation. Explicit magic/version/padding make a layout change a
   // deliberate version bump (an old blob then fails the check and is skipped) — the SettingsStore
@@ -233,6 +253,7 @@ private:
     out.phaseCount = b.phaseCount <= kMaxPhases ? b.phaseCount : kMaxPhases;
     for (size_t i = 0; i < out.phaseCount; ++i) {
       out.phases[i] = b.phases[i];
+      out.phases[i].name[kPhaseNameCap - 1] = '\0'; // an untrusted blob's phase name may lack a NUL
     }
   }
 

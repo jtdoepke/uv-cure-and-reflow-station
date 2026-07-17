@@ -7,6 +7,7 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "helpers/fake_profile_storage.h"
@@ -24,6 +25,7 @@ namespace {
 // A phase with distinct, recoverable values per field so a round-trip can prove each one persisted.
 Phase mkPhase(float t) {
   Phase p;
+  std::snprintf(p.name, kPhaseNameCap, "P%d", static_cast<int>(t));
   p.targetC = t;
   p.rampSeconds = t + 5.0f;
   p.holdSeconds = t + 11.0f;
@@ -84,6 +86,7 @@ void test_save_load_round_trip(void) {
     TEST_ASSERT_EQUAL_INT(a.uv, b.uv);
     TEST_ASSERT_EQUAL_INT(a.motor, b.motor);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(a.convFan), static_cast<int>(b.convFan));
+    TEST_ASSERT_EQUAL_STRING(a.name, b.name);
   }
 }
 
@@ -263,6 +266,36 @@ void test_name_validation(void) {
   TEST_ASSERT_EQUAL_INT(0, fs.writeCalls);
 }
 
+// A phase name is authoring text, not a filename key: lighter rule (non-empty, printable, fits).
+void test_phase_name_validation(void) {
+  TEST_ASSERT_FALSE(ProfileStore::validPhaseName(""));
+  TEST_ASSERT_FALSE(ProfileStore::validPhaseName(nullptr));
+  TEST_ASSERT_FALSE(ProfileStore::validPhaseName("bad\tname")); // control byte
+  char toolong[kPhaseNameCap + 4];
+  std::memset(toolong, 'x', sizeof(toolong));
+  toolong[sizeof(toolong) - 1] = '\0';
+  TEST_ASSERT_FALSE(ProfileStore::validPhaseName(toolong));
+  // Unlike a profile name, path separators are fine — a phase name never reaches an adapter.
+  TEST_ASSERT_TRUE(ProfileStore::validPhaseName("Reflow"));
+  TEST_ASSERT_TRUE(ProfileStore::validPhaseName("a/b"));
+}
+
+// An untrusted blob may carry a phase name with no NUL in its 16-byte field; load() must always
+// return a terminated name so downstream string use cannot run off the end.
+void test_untrusted_phase_name_terminated(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, RecipeMode::Reflow);
+  StoredProfile p = mkProfile("Bad", RecipeMode::Reflow, false, 1);
+  // Fill the whole name field with non-NUL bytes (a hostile, unterminated name).
+  std::memset(p.phases[0].name, 'A', kPhaseNameCap);
+  TEST_ASSERT_TRUE(store.save(p));
+
+  StoredProfile out;
+  TEST_ASSERT_TRUE(store.load("Bad", out));
+  TEST_ASSERT_EQUAL_UINT(kPhaseNameCap - 1, std::strlen(out.phases[0].name)); // truncated + NUL'd
+  TEST_ASSERT_EQUAL_CHAR('\0', out.phases[0].name[kPhaseNameCap - 1]);
+}
+
 // --- Phase-count bounds: full list persists; empty and over-cap are refused ---
 
 void test_phase_count_bounds(void) {
@@ -301,6 +334,8 @@ int main(int, char **) {
   RUN_TEST(test_mode_mismatch_ignored);
   RUN_TEST(test_corrupt_blobs_rejected);
   RUN_TEST(test_name_validation);
+  RUN_TEST(test_phase_name_validation);
+  RUN_TEST(test_untrusted_phase_name_terminated);
   RUN_TEST(test_phase_count_bounds);
   return UNITY_END();
 }

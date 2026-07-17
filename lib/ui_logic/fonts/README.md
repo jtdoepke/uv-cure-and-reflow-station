@@ -35,7 +35,11 @@ It is deliberately **not** a `-D LV_FONT_DEFAULT=&red_hat_mono_16` build flag: t
 `red_hat_mono_14/16` carry ASCII `0x20–0x7F` + `°` (`0xB0`) + `·` (`0xB7`, the middot separating
 the profile library's row facts "peak 245° · ~6:10", §23/C4) plus the Font Awesome glyphs the
 chrome uses: `0xF053` (`LV_SYMBOL_LEFT` ‹), `0xF00C` (✓), `0xF00D` (✗), `0xF071` (⚠),
-`0xF077`/`0xF078` (▲/▼). `red_hat_mono_28/32` are used **per-widget** (not the global default) for
+`0xF077`/`0xF078` (▲/▼), and `0xF55A` (`LV_SYMBOL_BACKSPACE` ⌫, the name-entry keyboard's backspace,
+§12/C5 — the keyboard's ✓/✗/mode keys reuse the OK/CLOSE glyphs and ASCII already here). Note the
+default on-screen keyboard's newline glyph (`0xF8A2`) is **not** in Font Awesome 6 Free, so the
+name-entry keyboard uses a custom map that avoids it (`profile_editor_screen.cpp`).
+`red_hat_mono_28/32` are used **per-widget** (not the global default) for
 big numeric readouts + glove-sized keys — the value-stepper's value + `−/+` glyphs (§24) and the
 keypad's digits + `⌫`/`✓`/`✕` keys (§26), applied via `lv_obj_set_style_text_font`. They carry
 ASCII + `°` plus only `0xF00C` (✓), `0xF00D` (✗), `0xF55A` (⌫).
@@ -77,7 +81,7 @@ curl -sSL -o fa-solid-900.ttf \
 
 npx -y lv_font_conv \
   --font RedHatMono-SemiBold.ttf -r '0x20-0x7F,0xB0,0xB7' \
-  --font fa-solid-900.ttf -r '0xF053,0xF00C,0xF00D,0xF071,0xF077,0xF078' \
+  --font fa-solid-900.ttf -r '0xF053,0xF00C,0xF00D,0xF071,0xF077,0xF078,0xF55A' \
   --size 14 --bpp 4 --format lvgl --no-compress \
   -o red_hat_mono_14.c
 ```

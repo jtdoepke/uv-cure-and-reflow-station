@@ -1404,6 +1404,11 @@ them. "Curve editor" = parameter editor + non-interactive preview.
   channel toggles, not the structure. Matches how solder profiles are specified,
   fits the screen. Create-from-scratch = a new profile seeded from the default
   template. Phases compile to the generic multi-channel segment recipe (§5).
+- **Each phase carries an editable name**, seeded from its template role
+  (*Preheat/Soak/Reflow*, *Warm/Cure*; an Advanced-added phase seeds *Phase N*) and
+  renameable from the phase editor's Name row via the on-screen keyboard. The name is a
+  UI/authoring label only — it is stored in the profile but **never crosses the wire**
+  (the compiled recipe carries segments, not names), so renaming needs no protocol change.
 - **Advanced (progressive disclosure)** — add / remove / **reorder** generic
   segments via up/down buttons (no drag). For non-standard profiles; more ways to
   make an invalid one, so it's behind an explicit "Advanced" affordance.
@@ -1441,7 +1446,8 @@ steps, so per the §24 rule they skip the stepper), and each channel is a
 ┌──────────────────────────────────────┐
 │ ‹ Back            Soak (2/3)          │  header: back + which phase
 ├──────────────────────────────────────┤
-│  Target                    165 °C   › │  ← selected; Open → keypad (§26)
+│  Name                        Soak   › │  ← selected; Open → on-screen keyboard (rename)
+│  Target                    165 °C   › │  Open → keypad (§26)
 │  Ramp                       ASAP    › │  (Ramp at min = ASAP / MAX)
 │  Hold                        90 s   › │
 │  Conv fan               [ AUTO ] (on) │  the only chamber fan; tri-state Auto/On/Off;
@@ -1452,8 +1458,9 @@ steps, so per the §24 rule they skip the stepper), and each channel is a
 └───────────────┴───────────┴──────────┘
 ```
 
-- **▲/▼** move the field highlight (auto-scroll — 6 fields, ~4–5 visible); **`Open`**
-  acts on it: a numeric field → the constrained keypad (§26; wide-range per the
+- **▲/▼** move the field highlight (auto-scroll — Name + up to 6 fields, ~4–5 visible);
+  **`Open`** acts on it: the **Name** row → the on-screen keyboard (rename this phase); a
+  numeric field → the constrained keypad (§26; wide-range per the
   §24 >20-step rule); `uv` → flips on/off; a
   **fan** → cycles **Auto → On → Off**. On `Auto`, the row shows the resolved state in
   parentheses (e.g. `(on)`) so you see what calibration chose (§5). Default = `Auto`.
@@ -1474,7 +1481,9 @@ steps, so per the §24 rule they skip the stepper), and each channel is a
   temps/times all exceed the §24 >20-step rule, so no +/− stepper here (hammering
   ± across a 60–250 °C range is the failure the rule exists for) and never inline
   mini-steppers. Channel settings are **full-width toggle rows**. No free text except
-  the profile **name** (on-screen keyboard, large keys, rare — on save-as).
+  the profile **name** (on save-as) and **per-phase names** (Name row) — both via the
+  on-screen keyboard: a compact name-tuned layout with large keys, per-key popover
+  previews, and no auto-repeat; the header **Back** is the cancel (no on-keyboard ✗).
 - **Safety-limit clamp:** editor ceilings (the keypad's `max`) = the **mode's max-temp *setting*** (device
   settings — default **UV 100 °C / reflow 250 °C**, itself bounded by the mode's
   firmware absolute hard-max — reflow 300 °C, §4). UI prevents authoring an
