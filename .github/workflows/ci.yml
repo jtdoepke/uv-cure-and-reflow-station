@@ -45,8 +45,12 @@ jobs:
       # Same toolchain provisioning as a dev clone: mise installs pio + the pinned protoc
       # (tools/schema_hash_extra_script.py needs protoc; the pin keeps the schema hash
       # reproducible). mise-action caches the tool installs itself.
+      # clang is pinned in mise.toml only for the local `make fuzz` workflow (a couple GB of LLVM);
+      # CI never fuzzes, so skip that download here.
       - name: Install toolchain (mise)
         uses: jdx/mise-action@v2
+        env:
+          MISE_DISABLE_TOOLS: clang
 
       # Fast host tests: pure logic behind the ports + LVGL headless UI. `native` uses the
       # runner's system GCC (no toolchain download needed).

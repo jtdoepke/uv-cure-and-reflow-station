@@ -13,3 +13,11 @@ __pycache__/
 
 # WiFi credentials for the esp32dev_cyd_uidev env (copy include/secrets.h.example)
 include/secrets.h
+
+# libFuzzer failure artifacts (make fuzz): dropped in the run dir, reproduce with
+# `.pio/build/fuzz_<name>/program <file>`. The committed corpus (fuzz/corpus/**) is NOT ignored.
+crash-*
+timeout-*
+oom-*
+leak-*
+slow-unit-*

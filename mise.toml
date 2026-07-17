@@ -38,3 +38,14 @@ node = "latest"
 "pipx:clang-tidy" = "20.1.0"
 "pipx:platformio" = { version = "latest", uvx_args = "--with protobuf>=3.19.1 --with grpcio-tools>=1.43.0" }
 protoc = "35.1"
+# clang is the ONLY heavyweight pin: it exists solely for the `make fuzz` workflow (libFuzzer is
+# clang-only; GCC has no -fsanitize=fuzzer). Pinned to 20.1.8 to track the clang-format pin above.
+# CI never fuzzes, so its mise step sets MISE_DISABLE_TOOLS=clang to skip this (see ci.yml).
+#
+# Backend: the default asdf `clang` backend (mise-llvm) SOURCE-BUILDS clang on distros without a
+# matching prebuilt (needs cmake/ninja, hours) — unusable. The vfox-clang backend fetches a prebuilt
+# toolchain via pixi instead, which works. It exposes only a `clang` driver (no `clang++`) and is not
+# wired to a C++ stdlib, so tools/fuzz_clang_extra_script.py drives it as `clang --driver-mode=g++`
+# with `--gcc-toolchain` pointed at the system GCC (libstdc++). A system GCC is therefore a fuzz
+# prerequisite; see fuzz/README.md.
+"vfox:mise-plugins/vfox-clang" = "20.1.8"

@@ -1,6 +1,6 @@
 # Convenience wrappers. PlatformIO remains the source of truth for builds/tests.
 .PHONY: help format format-check lint check hooks compiledb tidy test build sim sim-shot \
-	perf perf-baseline perf-diff perf-device \
+	perf perf-baseline perf-diff perf-device fuzz fuzz-corpus fuzz-seed \
 	dev-flash dev-status dev-shot dev-touch touch-calib
 .DEFAULT_GOAL := help
 
@@ -58,6 +58,30 @@ build:     ## Firmware compile-check (both MCUs + both bench envs + the on-targe
 # thing standing between them and bit-rot. It was broken for exactly this reason: nothing built it.
 	pio test -e embedded --without-testing --without-uploading
 	pio test -e embedded_cyd35 --without-testing --without-uploading
+
+# ---------- Fuzzing (host-only, libFuzzer; clang comes from mise — see fuzz/README.md) ----------
+# Auto-discovery is the extensibility hinge: every fuzz/fuzz_<name>.cpp is a harness with env
+# fuzz_<name> and corpus fuzz/corpus/<name>. Dropping a new one needs no edit here.
+FUZZ_ENVS   := $(patsubst fuzz/fuzz_%.cpp,fuzz_%,$(wildcard fuzz/fuzz_*.cpp))
+FUZZ_TIME   ?= 60                                    # seconds per harness for `make fuzz`
+FUZZ_TARGET ?=                                       # e.g. FUZZ_TARGET=frontdoor runs only that one
+FUZZ_RUN    := $(if $(FUZZ_TARGET),fuzz_$(FUZZ_TARGET),$(FUZZ_ENVS))
+
+fuzz:      ## Build + run each libFuzzer harness: make fuzz [FUZZ_TARGET=frontdoor] [FUZZ_TIME=60]
+# New coverage-expanding inputs are written to a scratch dir under .pio (git-ignored) so the
+# committed seed corpus stays pristine; the committed corpus is passed read-only as a second dir.
+	@for e in $(FUZZ_RUN); do echo "== $$e =="; pio run -e $$e >/dev/null; \
+		mkdir -p .pio/fuzz/$${e#fuzz_}; \
+		.pio/build/$$e/program .pio/fuzz/$${e#fuzz_} fuzz/corpus/$${e#fuzz_} \
+			-max_len=1200 -max_total_time=$(FUZZ_TIME) -print_final_stats=1 || exit 1; done
+
+fuzz-corpus: ## Fast regression: load+run every committed corpus once, no mutation (must exit 0)
+	@for e in $(FUZZ_RUN); do echo "== $$e =="; pio run -e $$e >/dev/null; \
+		.pio/build/$$e/program fuzz/corpus/$${e#fuzz_} -runs=0 || exit 1; done
+
+fuzz-seed: ## Regenerate the committed seed corpus (fuzz/corpus/**) from the real encoder
+	pio run -e fuzz_seedgen >/dev/null
+	.pio/build/fuzz_seedgen/program
 
 # Headless UI screenshot loop (see the ui-development skill). SIM_OUT sets the PNG path;
 # ARGS is the action script, e.g. make sim-shot ARGS="click 160 120 wait 300".

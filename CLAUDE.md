@@ -96,6 +96,10 @@ invocations (`make help` lists them).
 - Upload + monitor: `pio run -t upload -t monitor` (115200 baud)
 - Host tests: `make test` — runs the UI suites at **both** geometries (`native_ui_cyd` +
   `native_ui_cyd_35`), which is what keeps the portrait/landscape branches honest
+- Fuzz the untrusted-input pipeline: `make fuzz` (or `make fuzz-corpus` for the fast
+  seed-replay regression) — libFuzzer harnesses in `fuzz/`. Needs clang, which is pinned
+  in `mise.toml` for this (the one heavyweight tool; CI skips it). Details → `fuzz/README.md`;
+  local-only, not a CI gate.
 - See the UI / simulate clicks: `make sim-shot ARGS="click 160 120"` → Read
   `.pio/sim/ui.png`; add `SIM_PANEL=35` for the 3.5" portrait panel (details →
   ui-development skill)
