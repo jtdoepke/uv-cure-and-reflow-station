@@ -24,6 +24,7 @@
 #include "null_ambient_light.h"       // IAmbientLight for a board with no LDR (firmware glue)
 #include "nvs_settings_storage.h"     // NVS-backed ISettingsStorage adapter (firmware glue)
 #include "littlefs_profile_storage.h" // LittleFS-backed IProfileStorage adapter (firmware glue)
+#include "profile_library_screen.h"   // §23 profile library screen pair (lib/ui_logic, C4)
 #include "profile_store.h"            // per-mode profile library (lib/app_logic, §7/§23)
 #include "screen_router.h"            // hub-and-spoke screen manager + cache policy (lib/ui_logic)
 #include "settings_screen.h"          // Settings hub + panels (§24)
@@ -64,6 +65,7 @@ static LittleFsProfileStorage g_cure_profile_storage("/profiles/cure");
 static LittleFsProfileStorage g_reflow_profile_storage("/profiles/reflow");
 static ProfileStore g_cure_profiles(g_cure_profile_storage, RecipeMode::Cure);
 static ProfileStore g_reflow_profiles(g_reflow_profile_storage, RecipeMode::Reflow);
+static ProfileLibraryScreen g_profile_library; // §23 list/detail over the two stores (C4)
 
 // The display + touch behind their ports (lib/display_port). LGFX itself is touched only here and
 // in my_disp_flush — see lgfx_display.h for why the flush deliberately is not a port call.
@@ -174,23 +176,37 @@ static void bench_link_stimulus() {
 // costs ~9-14 kB of the 64 kB LVGL pool. Settings stays create-on-demand: it is stateful (scroll /
 // drill-down / selection), so a cached instance would NOT be pixel-identical to a rebuild — caching
 // it would need a reset-on-show hook (ScreenRouter supports one) and is low-ROI (rarely revisited).
-enum : int { SCREEN_HOME = 0, SCREEN_SETTINGS = 1 };
+enum : int { SCREEN_HOME = 0, SCREEN_SETTINGS = 1, SCREEN_PROFILES = 2 };
 static ScreenRouter g_router;
 
 static void go_home() {
-  lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping Settings re-triggers
+  lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping a hub tile re-triggers
   g_router.show(SCREEN_HOME);
 }
 
-// Home publishes a NAV_SETTINGS intent on its Settings tile; this observer (on the subject, so it
-// survives screen swaps) routes to the Settings hub, whose Back fires on_settings_exit -> go_home.
+// Home publishes a NAV_* intent on its tiles; these observers (on the subject, so they survive
+// screen swaps) route to the destination hub, whose Back fires the matching exit -> go_home.
 static void on_settings_exit(void *) {
   go_home();
 }
 
+static void on_profiles_exit(void *) {
+  go_home();
+}
+
 static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
-  if (lv_subject_get_int(subject) == NAV_SETTINGS) {
+  switch (lv_subject_get_int(subject)) {
+  case NAV_SETTINGS:
     g_router.show(SCREEN_SETTINGS);
+    break;
+  case NAV_PROFILES:
+    g_router.show(SCREEN_PROFILES);
+    break;
+  default:
+    // NAV_PROFILE_NEW/EDIT/LOAD (editor §12/C5, Setup §19/C6) have no destination yet — the profile
+    // library publishes them, and this observer ignores them until those screens land. The same
+    // holds for NAV_CURE_SETUP/REFLOW_SETUP/CALIBRATE.
+    break;
   }
 }
 
@@ -201,6 +217,11 @@ static void build_home_screen_cb(void *, lv_obj_t *scr) {
 static void build_settings_screen_cb(void *, lv_obj_t *scr) {
   g_settings_screen.setExitHandler(on_settings_exit, nullptr);
   g_settings_screen.begin(scr, g_settings);
+}
+
+static void build_profile_library_cb(void *, lv_obj_t *scr) {
+  g_profile_library.setExitHandler(on_profiles_exit, nullptr);
+  g_profile_library.begin(scr, g_cure_profiles, g_reflow_profiles);
 }
 
 // Wake the display the instant the machine leaves idle — a HOT chamber, a run start, or a
@@ -382,8 +403,9 @@ void setup() {
 
   g_router.define(SCREEN_HOME, build_home_screen_cb, nullptr, /*cached=*/true);
   g_router.define(SCREEN_SETTINGS, build_settings_screen_cb, nullptr, /*cached=*/false);
+  g_router.define(SCREEN_PROFILES, build_profile_library_cb, nullptr, /*cached=*/false);
   g_router.show(SCREEN_HOME);
-  // Watch for the Home → Settings navigation intent (persists across screen rebuilds).
+  // Watch for the Home → Settings / Profiles navigation intents (persist across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);
   // Wake immediately on any non-idle machine state (HOT / running / fault) — §17/§22.
   lv_subject_add_observer(&subj_run_state, on_run_state, nullptr);
