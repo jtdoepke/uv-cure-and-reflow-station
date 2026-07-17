@@ -15,10 +15,14 @@
 //   compiler  : the recipe-compiler harness's own struct format (header + phase records, see
 //               fuzz_compiler.cpp). Not a wire encoding — this harness fuzzes a CYD-side producer,
 //               so there is no protocol message to reuse the encoder for; the seed is hand-packed.
+//   heater_control : the PI-loop harness's struct format (gain header + tick records, see
+//               fuzz_heater_control.cpp). Also hand-packed — controller-side control math, no wire
+//               message to reuse the encoder for.
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <vector>
 
 #include "ISerialTransport.h"
@@ -249,11 +253,59 @@ std::vector<uint8_t> executorStallSeed() {
   return v;
 }
 
+// --- heater-control harness format (fuzz_heater_control.cpp): 20-byte gain header + 15-byte ticks
+// ---
+
+void putHeaterHeader(std::vector<uint8_t> &v, float kp, float ki, float kd, float tauS,
+                     float dutyMax) {
+  putF32(v, kp);
+  putF32(v, ki);
+  putF32(v, kd);
+  putF32(v, tauS);
+  putF32(v, dutyMax);
+}
+
+// flags bit0 = reset() before this tick.
+void putHeaterTick(std::vector<uint8_t> &v, float setpointC, float measuredC, float ffDuty,
+                   uint16_t stepMs, uint8_t flags) {
+  putF32(v, setpointC);
+  putF32(v, measuredC);
+  putF32(v, ffDuty);
+  putU16LE(v, stepMs);
+  v.push_back(flags);
+}
+
+// A well-behaved feedforward-assisted approach to a 100 °C setpoint, then a reset — lands the seed
+// in the ordinary control regime the fuzzer mutates outward from.
+std::vector<uint8_t> heaterHoldSeed() {
+  std::vector<uint8_t> v;
+  putHeaterHeader(v, /*kp=*/0.02f, /*ki=*/0.002f, /*kd=*/0.0f, /*tauS=*/0.0f, /*dutyMax=*/1.0f);
+  const float meas[] = {25.0f, 50.0f, 75.0f, 90.0f, 100.0f, 100.0f};
+  for (float m : meas) {
+    putHeaterTick(v, /*setpoint=*/100.0f, m, /*ff=*/0.75f, /*stepMs=*/1000, /*flags=*/0x00);
+  }
+  putHeaterTick(v, 100.0f, 100.0f, 0.75f, 1000, /*flags=*/0x01); // exercise reset()
+  return v;
+}
+
+// A faulted control channel (NaN measurement) with an active derivative gain — seeds the fail-safe
+// path and the D seam together.
+std::vector<uint8_t> heaterFaultSeed() {
+  std::vector<uint8_t> v;
+  putHeaterHeader(v, 0.05f, 0.005f, 0.1f, 2.0f, 1.0f);
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  putHeaterTick(v, 100.0f, 80.0f, 0.0f, 1000, 0x00);
+  putHeaterTick(v, 100.0f, nan, 0.0f, 1000, 0x00);   // blind control → OFF
+  putHeaterTick(v, 100.0f, 85.0f, 0.0f, 1000, 0x00); // recovers; D term sees the jump
+  return v;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   const fs::path base = (argc > 1) ? fs::path(argv[1]) : fs::path("fuzz/corpus");
-  for (const char *sub : {"frontdoor", "decode", "validator", "compiler", "executor"}) {
+  for (const char *sub :
+       {"frontdoor", "decode", "validator", "compiler", "executor", "heater_control"}) {
     fs::create_directories(base / sub);
   }
 
@@ -295,6 +347,10 @@ int main(int argc, char **argv) {
   // executor: the profile-executor harness's struct format (recipe + trajectory, hand-packed).
   writeFile(base / "executor" / "complete.bin", executorCompleteSeed());
   writeFile(base / "executor" / "stall.bin", executorStallSeed());
+
+  // heater_control: the PI-loop harness's struct format (gain header + tick records, hand-packed).
+  writeFile(base / "heater_control" / "hold.bin", heaterHoldSeed());
+  writeFile(base / "heater_control" / "fault.bin", heaterFaultSeed());
 
   std::printf("done\n");
   return 0;
