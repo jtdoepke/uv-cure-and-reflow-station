@@ -808,6 +808,23 @@ is no OTA, and OTA is the controller's only field-reflash path once the oven is 
   a Home → Settings transition took **~3 s** on real glass. It also compounded with the
   translucent tiles, whose every press forces the canvas beneath them to recomposite. The
   simulator will not warn you — it renders the same pixels, just on a host CPU.
+- **The DRAM budget is a hard *link-time* ceiling, and `LV_MEM_SIZE` sits inside it — it is a
+  static pool, not runtime heap.** The static `dram0_0_seg` segment holds LVGL's `LV_MEM_SIZE`
+  pool (a static array — the linker symbol `work_mem_int`), the WiFi stack's static objects, and
+  every app global; only the draw buffers are `malloc`'d from the runtime heap, not from here.
+  **Measured 2026-07-17 on the 3.5":** at `LV_MEM_SIZE = 80 kB` a **clean** build overflows
+  `dram0_0_seg` by ~15.7 kB. That 64→80 kB popover bump (C5, backlog) was in fact *never* linkable
+  from clean — it only ever built because **an `lv_conf.h` edit does not force an LVGL recompile on
+  an incremental build** (the "clean if an `lv_conf` edit seems ignored" gotcha), so incremental
+  builds silently reused a stale 64 kB pool object and the overflow stayed hidden. Reverted to
+  LVGL's upstream default **64 kB**, which fits with headroom (RAM 37.8%) and still runs the
+  keyboard popovers. **Runtime heap is comfortable — 105.6 kB free with WiFi joined + the full UI**
+  (the `_uidev` build, 60 kB pool). So the binding constraint for a WiFi/OTA firmware is *static*
+  DRAM, not heap: the WiFi core's static objects push a 64 kB-pool `_uidev` link ~1 kB over the
+  edge, so a radio build needs the pool ≤ ~60 kB (or moved onto the heap via a custom LVGL
+  allocator). OTA itself has runtime room. **Always verify a memory change with a clean firmware
+  build (`pio run -t clean`), never an incremental one** — an incremental link can pass while a
+  clean link overflows.
 - **The 3.5"'s contrast is a real design input, not a defect to tune out.** Its blacks sit grey
   at every backlight level, which is a property of the glass, and the §14 palette is built on
   colour against near-black — so it has less headroom here than the palette assumes.

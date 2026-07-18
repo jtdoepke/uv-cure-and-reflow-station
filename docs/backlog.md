@@ -483,8 +483,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
   ✗), height-bounded + bottom-pinned, with per-key **popover previews** (`lv_keyboard_set_popovers`)
   and no auto-repeat. Added `⌫` (0xF55A) to the body fonts `red_hat_mono_14/16` (the default
   keyboard's newline ↵ 0xF8A2 isn't in Font Awesome free — hence the custom map), and bumped
-  `LV_MEM_SIZE` 64→80 kB so the popover's compositing layer allocates cleanly (runtime heap, not
-  static RAM). Host-tested (`test_profile_store` name round-trip + untrusted NUL-term,
+  `LV_MEM_SIZE` 64→80 kB for the popover's compositing layer. **[Corrected 2026-07-17: that
+  parenthetical was wrong — `LV_MEM_SIZE` is a STATIC pool (`work_mem_int` in `dram0_0_seg`), not
+  runtime heap, and 80 kB overflows a clean build by ~15.7 kB; it only ever linked because
+  incremental builds reused a stale pool object (an `lv_conf.h` edit doesn't retrigger the LVGL
+  recompile). Reverted to 64 kB. See the DRAM-budget note in design.md "Consequences worth
+  knowing".]** Host-tested (`test_profile_store` name round-trip + untrusted NUL-term,
   `test_profile_templates` seeded names, `test_profile_editor` rename + Back-cancel seams at both
   geometries); verified in the sim and on the 3.5" hardware.*
 - [ ] **C7** [C] — Run/Monitor (3 PRs: layout/telemetry/STOP; projected-vs-actual
