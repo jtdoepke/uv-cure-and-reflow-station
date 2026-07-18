@@ -89,11 +89,14 @@ private:
   Pending pending_ = Pending::None;
   Page return_page_ = Page::Chooser; // where an error's Back goes (the last stable page)
 
-  ProfileLibraryViewModel cure_vm_;
-  ProfileLibraryViewModel reflow_vm_;
-  ProfileLibraryViewModel *current_ = nullptr; // the shown mode's VM (&cure_vm_ / &reflow_vm_)
-  SelectableListModel list_model_;             // the mode-scoped list (the chooser is two tiles)
-  lv_obj_t *rename_ta_ = nullptr;              // the Rename page's textarea (read on the ✓ key)
+  // One view-model, re-init'd with the mode on openMode (only one mode's library is ever shown —
+  // two full caches wasted ~3 KB of the scarce DRAM). current_ keeps the existing *current_ call
+  // sites working. model_ is stored so openMode can re-init.
+  const OvenModel *model_ = nullptr;
+  ProfileLibraryViewModel vm_;
+  ProfileLibraryViewModel *current_ = &vm_;
+  SelectableListModel list_model_; // the mode-scoped list (the chooser is two tiles)
+  lv_obj_t *rename_ta_ = nullptr;  // the Rename page's textarea (read on the ✓ key)
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;

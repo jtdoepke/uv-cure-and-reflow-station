@@ -61,9 +61,8 @@ void ProfileLibraryScreen::begin(lv_obj_t *parent, ManagementClient &client,
                                  const OvenModel &model) {
   parent_ = parent;
   client_ = &client;
-  cure_vm_.init(client, oven_Mode_MODE_CURE, model);
-  reflow_vm_.init(client, oven_Mode_MODE_REFLOW, model);
-  showChooser();
+  model_ = &model;
+  showChooser(); // the one view-model is init'd per mode in openMode()
 }
 
 void ProfileLibraryScreen::setExitHandler(void (*cb)(void *), void *user_data) {
@@ -121,7 +120,8 @@ void ProfileLibraryScreen::showChooser() {
 
 void ProfileLibraryScreen::openMode(RecipeMode mode) {
   mode_ = mode;
-  current_ = mode == RecipeMode::Cure ? &cure_vm_ : &reflow_vm_;
+  current_ = &vm_;
+  vm_.init(*client_, phase_codec::modeToWire(mode), *model_);
   current_->setFahrenheit(lv_subject_get_int(&subj_units) != 0);
   selected_ = 0;
   return_page_ = Page::Chooser;

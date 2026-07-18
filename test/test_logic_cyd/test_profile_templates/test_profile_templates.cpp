@@ -23,7 +23,7 @@ static Caps cureCaps() {
 }
 
 void test_reflow_template_is_hard_valid(void) {
-  const ProfileStore::StoredProfile t = profile_templates::defaultTemplate(RecipeMode::Reflow);
+  const ProfileDraft t = profile_templates::defaultTemplate(RecipeMode::Reflow);
   TEST_ASSERT_EQUAL_UINT(profile_templates::kReflowPhases, t.phaseCount);
   TEST_ASSERT_EQUAL_INT((int)RecipeMode::Reflow, (int)t.mode);
   TEST_ASSERT_FALSE(t.stock);
@@ -34,7 +34,7 @@ void test_reflow_template_is_hard_valid(void) {
 }
 
 void test_cure_template_is_hard_valid(void) {
-  const ProfileStore::StoredProfile t = profile_templates::defaultTemplate(RecipeMode::Cure);
+  const ProfileDraft t = profile_templates::defaultTemplate(RecipeMode::Cure);
   TEST_ASSERT_EQUAL_UINT(profile_templates::kCurePhases, t.phaseCount);
   TEST_ASSERT_EQUAL_INT((int)RecipeMode::Cure, (int)t.mode);
   const CompileResult r = compileRecipe(t.phases, t.phaseCount, RecipeMode::Cure,
@@ -45,7 +45,7 @@ void test_cure_template_is_hard_valid(void) {
 // The cure template's UV/motor phase must stay cure-only content — a reflow compile of it must be
 // rejected (content-derived cap, §4), proving the template is genuinely cure-shaped.
 void test_cure_template_has_uv_content(void) {
-  const ProfileStore::StoredProfile t = profile_templates::defaultTemplate(RecipeMode::Cure);
+  const ProfileDraft t = profile_templates::defaultTemplate(RecipeMode::Cure);
   bool anyUv = false;
   for (size_t i = 0; i < t.phaseCount; ++i) {
     anyUv = anyUv || t.phases[i].uv;
@@ -85,14 +85,14 @@ void test_blank_phase_is_valid_input(void) {
 // defaultTemplate seeds each phase's stored name from its canonical role (phases are never
 // nameless).
 void test_default_template_seeds_phase_names(void) {
-  const ProfileStore::StoredProfile r = profile_templates::defaultTemplate(RecipeMode::Reflow);
+  const ProfileDraft r = profile_templates::defaultTemplate(RecipeMode::Reflow);
   TEST_ASSERT_EQUAL_UINT(profile_templates::kReflowPhases, r.phaseCount);
   TEST_ASSERT_EQUAL_STRING("Preheat", r.phases[0].name);
   TEST_ASSERT_EQUAL_STRING("Soak", r.phases[1].name);
   TEST_ASSERT_EQUAL_STRING("Reflow", r.phases[2].name);
   TEST_ASSERT_EQUAL_STRING("Cool", r.phases[3].name);
 
-  const ProfileStore::StoredProfile c = profile_templates::defaultTemplate(RecipeMode::Cure);
+  const ProfileDraft c = profile_templates::defaultTemplate(RecipeMode::Cure);
   TEST_ASSERT_EQUAL_STRING("Warm", c.phases[0].name);
   TEST_ASSERT_EQUAL_STRING("Cure", c.phases[1].name);
 

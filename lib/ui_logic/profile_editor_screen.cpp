@@ -73,14 +73,15 @@ struct EditorThunks {
 
 // --- Lifecycle ---
 
-void ProfileEditorScreen::beginEdit(const ProfileStore::StoredProfile &working,
-                                    ProfileStore &target, bool saveAs, const OvenModel &model) {
-  working_ = working;
-  target_ = &target;
+void ProfileEditorScreen::beginNew(const ProfileDraft &seed, ManagementClient &client, bool saveAs,
+                                   const OvenModel &model) {
+  client_ = &client;
   model_ = &model;
   save_as_ = saveAs;
   saved_ok_ = false;
-  mode_ = working.mode;
+  pending_ = Pending::None;
+  working_ = seed;
+  mode_ = seed.mode;
   if (working_.phaseCount > kMaxPhases) {
     working_.phaseCount = kMaxPhases;
   }
@@ -91,9 +92,72 @@ void ProfileEditorScreen::beginEdit(const ProfileStore::StoredProfile &working,
   recompute();
 }
 
+void ProfileEditorScreen::beginExisting(oven_Mode mode, const char *name, ManagementClient &client,
+                                        bool saveAs, const OvenModel &model) {
+  client_ = &client;
+  model_ = &model;
+  save_as_ = saveAs;
+  saved_ok_ = false;
+  mode_ = phase_codec::modeFromWire(mode);
+  working_ = ProfileDraft{};
+  working_.mode = mode_;
+  selected_phase_ = 0;
+  field_sel_ = 0;
+  naming_phase_ = -1;
+  recompute(); // a valid empty state until the fetch lands
+  // Fetch the profile from the controller (§9); render() shows Loading, poll() adopts it on Ready.
+  if (client_->requestGet(mode, name)) {
+    pending_ = Pending::Fetch;
+    page_ = Page::Loading;
+  } else {
+    pending_ = Pending::None;
+    page_ = Page::Error;
+  }
+}
+
 void ProfileEditorScreen::render(lv_obj_t *parent) {
   parent_ = parent;
   showPage(page_);
+}
+
+// Drive the async fetch/save (called every loop after client.service()).
+void ProfileEditorScreen::poll() {
+  if (pending_ == Pending::None || client_ == nullptr || client_->busy()) {
+    return;
+  }
+  if (client_->failed()) {
+    pending_ = Pending::None;
+    client_->clear();
+    page_ = Page::Error;
+    if (parent_ != nullptr) {
+      showPage(Page::Error);
+    }
+    return;
+  }
+  // Ready.
+  if (pending_ == Pending::Fetch) {
+    const oven_Profile &p = client_->profile();
+    working_.phaseCount = phase_codec::phasesFromWire(p, working_.phases, kMaxPhases);
+    std::strncpy(working_.name, p.name, sizeof(working_.name) - 1);
+    working_.name[sizeof(working_.name) - 1] = '\0';
+    working_.stock = p.stock;
+    working_.mode = phase_codec::modeFromWire(p.mode);
+    mode_ = working_.mode;
+    client_->clear();
+    pending_ = Pending::None;
+    recompute();
+    page_ = Page::Overview;
+    if (parent_ != nullptr) {
+      showPage(Page::Overview);
+    }
+  } else if (pending_ == Pending::Save) {
+    client_->clear();
+    pending_ = Pending::None;
+    saved_ok_ = true;
+    if (on_exit_ != nullptr) {
+      on_exit_(exit_ud_); // Save committed → leave; the library rebuilds
+    }
+  }
 }
 
 void ProfileEditorScreen::setExitHandler(void (*cb)(void *), void *user_data) {
@@ -155,9 +219,37 @@ void ProfileEditorScreen::showPage(Page page) {
   case Page::NameEntry:
     buildNameEntry();
     break;
+  case Page::Loading:
+    buildLoading("Loading...");
+    break;
+  case Page::Error:
+    buildError();
+    break;
   case Page::FieldEditor:
     break; // built by openField(), never showPage()
   }
+}
+
+void ProfileEditorScreen::buildLoading(const char *msg) {
+  configParent();
+  buildHeader("Profile");
+  lv_obj_t *lbl = lv_label_create(parent_);
+  lv_label_set_text(lbl, msg);
+  lv_obj_set_flex_grow(lbl, 1);
+  lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+  theme::apply_caption(lbl);
+}
+
+void ProfileEditorScreen::buildError() {
+  configParent();
+  buildHeader("Profile");
+  lv_obj_t *lbl = lv_label_create(parent_);
+  lv_label_set_text(lbl, "Couldn't reach the controller.\nGo back and try again.");
+  lv_obj_set_width(lbl, lv_pct(100));
+  lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_flex_grow(lbl, 1);
+  lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+  theme::apply_caption(lbl);
 }
 
 void ProfileEditorScreen::back() {
@@ -177,6 +269,14 @@ void ProfileEditorScreen::back() {
     // The header Back is the only cancel path (the keyboard has no ✗): a phase rename returns to
     // the phase editor, a profile-name (Save-as) entry to the overview.
     showPage(naming_phase_ >= 0 ? Page::PhaseEditor : Page::Overview);
+    break;
+  case Page::Loading:
+  case Page::Error:
+    // Nothing to go back to within the editor (the fetch failed or is in flight) — leave it.
+    pending_ = Pending::None;
+    if (on_exit_ != nullptr) {
+      on_exit_(exit_ud_);
+    }
     break;
   }
 }
@@ -752,13 +852,21 @@ void ProfileEditorScreen::openPhaseName(int index) {
 }
 
 void ProfileEditorScreen::doSave() {
-  saved_ok_ = target_->save(working_);
-  if (saved_ok_) {
-    if (on_exit_ != nullptr) {
-      on_exit_(exit_ud_);
-    }
+  if (client_ == nullptr) {
+    return;
+  }
+  // Push the working copy to the controller (§9). A saved profile is always user-owned (a Save-as
+  // of a stock source forks it); the controller stamps the authoritative mode. poll() completes it.
+  oven_Profile w = phase_codec::profileToWire(working_.name, working_.mode, /*stock=*/false,
+                                              working_.phases, working_.phaseCount);
+  if (client_->requestPut(w)) {
+    pending_ = Pending::Save;
+    page_ = Page::Loading;
+    showPage(Page::Loading);
   } else {
-    showPage(Page::Overview); // a rejected save (e.g. name taken by a stock profile) → back to edit
+    page_ =
+        Page::Error; // a rejected save (client busy) → the error page; Back returns to the library
+    showPage(Page::Error);
   }
 }
 
@@ -767,7 +875,7 @@ void ProfileEditorScreen::commitName(const char *name) {
   // and return to the phase editor. No Save — a rename is just another working-copy edit.
   if (naming_phase_ >= 0) {
     if (static_cast<size_t>(naming_phase_) >= working_.phaseCount ||
-        !ProfileStore::validPhaseName(name)) {
+        !profile_names::validPhase(name)) {
       return; // stay on the keyboard until a valid name is given
     }
     Phase &p = working_.phases[naming_phase_];
@@ -778,7 +886,7 @@ void ProfileEditorScreen::commitName(const char *name) {
     return;
   }
   // Profile name (Save-as, §23): filesystem-key validation, then commit the whole profile.
-  if (!ProfileStore::validName(name)) {
+  if (!profile_names::valid(name)) {
     return; // stay on name entry until a valid name is given
   }
   std::strncpy(working_.name, name, kProfileNameCap - 1);

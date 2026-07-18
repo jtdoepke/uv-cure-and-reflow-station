@@ -7,31 +7,31 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
-#include "auto_brightness.h"          // ambient-light -> backlight logic (lib/app_logic, §18)
-#include "cyd_board.h"                // this board's pins, capabilities, orientation, buffers
-#include "cyd_link.h"                 // reliability facade (lib/protocol, §9)
-#include "device_info.h"              // board/panel identity for Settings > About (lib/ui_logic)
-#include "esp32_ambient_light.h"      // LDR IAmbientLight adapter (firmware glue)
-#include "esp32_clock.h"              // IClock adapter for the link's cadences (firmware glue)
-#include "esp32_serial_transport.h"   // ISerialTransport adapter over the link UART (firmware glue)
-#include "frame_link.h"               // TinyFrame framing (lib/protocol)
-#include "home_screen.h"              // UI construction lives in lib/ui_logic (host-testable)
-#include "home_viewmodel.h"           // handshake -> LinkState mapper (lib/ui_logic)
-#include "lgfx_display.h"             // LGFX IDisplay + IBacklight adapter (firmware glue)
-#include "link_params.h"              // shared §9 cadences, incl. the FrameLink tick (lib/protocol)
-#include "lgfx_touch.h"               // LGFX ITouch adapter (firmware glue)
-#include "message_router.h"           // frame -> typed message dispatch (lib/protocol)
-#include "null_ambient_light.h"       // IAmbientLight for a board with no LDR (firmware glue)
-#include "nvs_settings_storage.h"     // NVS-backed ISettingsStorage adapter (firmware glue)
-#include "littlefs_profile_storage.h" // LittleFS-backed IProfileStorage adapter (firmware glue)
-#include "profile_editor_screen.h"    // §12 profile editor screen pair (lib/ui_logic, C5)
-#include "profile_library_screen.h"   // §23 profile library screen pair (lib/ui_logic, C4)
-#include "profile_store.h"            // per-mode profile library (lib/app_logic, §7/§23)
-#include "profile_templates.h"        // per-mode default phase templates (lib/app_logic, §12/C5)
-#include "screen_router.h"            // hub-and-spoke screen manager + cache policy (lib/ui_logic)
-#include "settings_screen.h"          // Settings hub + panels (§24)
-#include "settings_store.h"           // typed device settings (lib/app_logic)
-#include "sleep_controller.h"         // idle sleep/wake policy (lib/app_logic, §17)
+#include "auto_brightness.h"        // ambient-light -> backlight logic (lib/app_logic, §18)
+#include "cyd_board.h"              // this board's pins, capabilities, orientation, buffers
+#include "cyd_link.h"               // reliability facade (lib/protocol, §9)
+#include "device_info.h"            // board/panel identity for Settings > About (lib/ui_logic)
+#include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
+#include "esp32_clock.h"            // IClock adapter for the link's cadences (firmware glue)
+#include "esp32_serial_transport.h" // ISerialTransport adapter over the link UART (firmware glue)
+#include "frame_link.h"             // TinyFrame framing (lib/protocol)
+#include "home_screen.h"            // UI construction lives in lib/ui_logic (host-testable)
+#include "home_viewmodel.h"         // handshake -> LinkState mapper (lib/ui_logic)
+#include "lgfx_display.h"           // LGFX IDisplay + IBacklight adapter (firmware glue)
+#include "link_params.h"            // shared §9 cadences, incl. the FrameLink tick (lib/protocol)
+#include "lgfx_touch.h"             // LGFX ITouch adapter (firmware glue)
+#include "message_router.h"         // frame -> typed message dispatch (lib/protocol)
+#include "management_client.h"      // remote profile/settings client (lib/app_logic, §9; Wave R3b)
+#include "mem_settings_storage.h"   // in-RAM ISettingsStorage (settings live on the controller now)
+#include "null_ambient_light.h"     // IAmbientLight for a board with no LDR (firmware glue)
+#include "profile_editor_screen.h"  // §12 profile editor screen pair (lib/ui_logic, C5)
+#include "profile_library_screen.h" // §23 profile library screen pair (lib/ui_logic, C4)
+#include "profile_templates.h"      // per-mode default phase templates (lib/app_logic, §12/C5)
+#include "screen_router.h"          // hub-and-spoke screen manager + cache policy (lib/ui_logic)
+#include "settings_codec.h"         // Settings <-> oven_Settings at the wire boundary (Wave R3b)
+#include "settings_screen.h"        // Settings hub + panels (§24)
+#include "settings_store.h"         // typed device settings (lib/app_logic)
+#include "sleep_controller.h"       // idle sleep/wake policy (lib/app_logic, §17)
 #include "subjects.h"
 #include "schema.h" // shared wire-contract identity (lib/protocol)
 #if defined(UI_DEV_TOOLS)
@@ -63,25 +63,23 @@ static uint8_t *draw_buf2 = nullptr; // second buffer: render next chunk while t
 #endif
 static uint32_t last_tick = 0;
 
-// Device settings, persisted in NVS. Loaded at boot; the Settings screen (§24) edits them.
-static NvsSettingsStorage g_settings_storage;
+// Device settings (§24). REVISED (Wave R3b): they persist on the CONTROLLER now (§4/§7), so the
+// CYD keeps an in-RAM SettingsStore synced over the link — fetched on connect, pushed on change
+// (see the settings-sync in loop()). The Settings screen still edits this local store unchanged.
+static MemSettingsStorage g_settings_storage;
 static SettingsStore g_settings(g_settings_storage);
 static SettingsScreen g_settings_screen;
 
-// Profile library (§7/§23), per mode, on LittleFS. Instantiated here as live production wiring so
-// the store + adapter are compiled into the firmware; the library/editor screens that drive them
-// are C4/C5. Separate directories keep cure and reflow profiles unmixed (§7).
-static LittleFsProfileStorage g_cure_profile_storage("/profiles/cure");
-static LittleFsProfileStorage g_reflow_profile_storage("/profiles/reflow");
-static ProfileStore g_cure_profiles(g_cure_profile_storage, RecipeMode::Cure);
-static ProfileStore g_reflow_profiles(g_reflow_profile_storage, RecipeMode::Reflow);
-static ProfileLibraryScreen g_profile_library; // §23 list/detail over the two stores (C4)
+// The profile library (§23) is a remote client of the controller's store now (Wave R3b): no CYD
+// ProfileStore/LittleFS. The library + editor screens drive the shared ManagementClient (defined
+// below, after the link stack). Separate cure/reflow scoping lives on the controller (§7).
+static ProfileLibraryScreen g_profile_library;
 
-// §12 editor over the two stores (C5). Heap-allocated on first edit rather than a static: the
-// library's two view-models already fill the static DRAM segment (32×32 name buffers each), and the
-// editor is just as large; since the two screens are never co-visible, keeping the editor out of
-// .bss until it is first needed is what lets both fit on this no-PSRAM board. Never freed — a
-// singleton screen (like the other resident screens), so there is no delete-during-event hazard.
+// §12 editor (C5). Heap-allocated on first edit rather than a static: the library's two view-models
+// already fill the static DRAM segment (32-row caches each), and the editor is just as large; since
+// the two screens are never co-visible, keeping the editor out of .bss until first needed is what
+// lets both fit on this no-PSRAM board. Never freed — a singleton screen, so no delete-during-event
+// hazard.
 static ProfileEditorScreen *g_profile_editor = nullptr;
 static ProfileEditorScreen &profile_editor() {
   if (g_profile_editor == nullptr) {
@@ -137,6 +135,11 @@ static Esp32SerialTransport g_link_uart(linkSerial());
 static protocol::MessageRouter g_link_router;
 static protocol::FrameLink g_link(g_link_uart, TF_MASTER, g_link_router); // CYD = TF_MASTER
 static protocol::CydLink g_cyd_link(g_link, g_link_clk);
+
+// The remote profile/settings client (§9; Wave R3b). Shares the same FrameLink; CydLink forwards
+// the management reply frames to it (setAppObserver in setup()). The library + editor screens and
+// the settings-sync all drive it (single-outstanding, idle-context UI traffic).
+static ManagementClient g_mgmt_client(g_link, g_link_clk);
 
 #if defined(CYD_BENCH_LINK)
 // A8 bench stimulus (§8 step 1) — NOT production behavior; §19/C6's Setup/Confirm owns starting
@@ -206,10 +209,6 @@ static ScreenRouter g_router;
 // back on that mode's list, not the mode-blind chooser).
 static RecipeMode g_editor_mode = RecipeMode::Reflow;
 
-static ProfileStore &store_for(RecipeMode m) {
-  return m == RecipeMode::Cure ? g_cure_profiles : g_reflow_profiles;
-}
-
 static void go_home() {
   lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping a hub tile re-triggers
   g_router.show(SCREEN_HOME);
@@ -240,20 +239,25 @@ static void on_editor_exit(void *) {
 // (subjects.h) is resolved here, in the composition root, off the library's own selection state.
 static void open_editor_new() {
   g_editor_mode = g_profile_library.mode();
-  profile_editor().beginEdit(profile_templates::defaultTemplate(g_editor_mode),
-                             store_for(g_editor_mode), /*saveAs=*/true);
+  // NEW seeds the mode's default template locally (synchronous); name entry supplies the name on
+  // Save, which pushes to the controller (§9).
+  profile_editor().beginNew(profile_templates::defaultTemplate(g_editor_mode), g_mgmt_client,
+                            /*saveAs=*/true);
   g_router.show(SCREEN_EDITOR);
 }
 
 static void open_editor_edit() {
   g_editor_mode = g_profile_library.mode();
-  ProfileStore::StoredProfile p;
   const int sel = g_profile_library.selected();
-  if (sel < 0 || !g_profile_library.vm().loadDetail(static_cast<size_t>(sel), p)) {
-    return; // nothing selected / unreadable — stay put
+  if (sel < 0) {
+    return; // nothing selected — stay put
   }
+  // EDIT fetches the highlighted profile from the controller by name (the editor shows Loading); a
+  // stock one edits as Save-as (§23). The name comes from the library's cached row.
   const bool save_as = g_profile_library.vm().editIsSaveAs(static_cast<size_t>(sel));
-  profile_editor().beginEdit(p, store_for(g_editor_mode), save_as);
+  profile_editor().beginExisting(phase_codec::modeToWire(g_editor_mode),
+                                 g_profile_library.vm().name(static_cast<size_t>(sel)),
+                                 g_mgmt_client, save_as);
   g_router.show(SCREEN_EDITOR);
 }
 
@@ -290,7 +294,7 @@ static void build_settings_screen_cb(void *, lv_obj_t *scr) {
 
 static void build_profile_library_cb(void *, lv_obj_t *scr) {
   g_profile_library.setExitHandler(on_profiles_exit, nullptr);
-  g_profile_library.begin(scr, g_cure_profiles, g_reflow_profiles);
+  g_profile_library.begin(scr, g_mgmt_client);
 }
 
 // Create-on-demand like Settings: the editor is stateful (which page / phase / field), so a cached
@@ -306,6 +310,85 @@ static void build_profile_editor_cb(void *, lv_obj_t *scr) {
 // re-reads the store on entry, so nothing stale is shown.
 static void reset_profile_library_cb(void *) {
   g_profile_library.showChooser();
+}
+
+// --- Settings sync (Wave R3b): settings persist on the controller; keep the local cache in step
+// ---
+static bool g_settings_dirty = false;   // a local edit awaits push
+static bool g_settings_fetched = false; // the one-time fetch-on-connect done
+enum class SettingsSync { Idle, Fetching, Pushing };
+static SettingsSync g_ss_state = SettingsSync::Idle;
+
+// MemSettingsStorage fires this whenever the store writes (a settings edit) → queue a push.
+static void on_settings_saved(void *) {
+  g_settings_dirty = true;
+}
+
+// Copy fetched settings into the local store WITHOUT persisting (setters don't save, so no push
+// loop), then republish the cross-screen subjects (units/caps/Advanced, §24).
+static void adopt_settings(const oven_Settings &w) {
+  const Settings s = settings_codec::fromWire(w);
+  g_settings.setUnits(s.units);
+  g_settings.setAutoBrightness(s.autoBrightness);
+  g_settings.setAdvancedUnlocked(s.advancedUnlocked);
+  g_settings.setBrightnessBias(s.brightnessBias);
+  g_settings.setScreenBrightnessPct(s.screenBrightnessPct);
+  g_settings.setIdleTimeoutMin(s.idleTimeoutMin);
+  g_settings.setUvMaxCap(s.uvMaxCap);
+  g_settings.setReflowMaxCap(s.reflowMaxCap);
+  settings_publish_subjects(g_settings);
+}
+
+// Drive fetch-on-connect + push-on-change over the shared client, only when it is free — the
+// profile screens have priority; settings sync is background (fetch is one-time at boot; a push
+// happens while on the Settings screen, clear of the profile screens). Call every loop, BEFORE
+// poll_screens() so a screen's own reply is left for the screen to consume.
+static void service_settings_sync() {
+  using Op = ManagementClient::Op;
+  if (g_ss_state == SettingsSync::Fetching) {
+    if (g_mgmt_client.busy()) {
+      return;
+    }
+    if (g_mgmt_client.ready() && g_mgmt_client.lastOp() == Op::SettingsGet) {
+      adopt_settings(g_mgmt_client.settings());
+      g_settings_fetched = true;
+    }
+    g_mgmt_client.clear();
+    g_ss_state = SettingsSync::Idle;
+    return;
+  }
+  if (g_ss_state == SettingsSync::Pushing) {
+    if (g_mgmt_client.busy()) {
+      return;
+    }
+    g_mgmt_client.clear();
+    g_ss_state = SettingsSync::Idle;
+    return;
+  }
+  if (!g_mgmt_client.idle() || !g_cyd_link.linkAlive()) {
+    return; // client busy with a screen's request, or no controller yet
+  }
+  if (!g_settings_fetched) {
+    if (g_mgmt_client.requestSettingsGet()) {
+      g_ss_state = SettingsSync::Fetching;
+    }
+  } else if (g_settings_dirty) {
+    g_settings_dirty = false;
+    if (g_mgmt_client.requestSettingsPut(settings_codec::toWire(g_settings.values()))) {
+      g_ss_state = SettingsSync::Pushing;
+    } else {
+      g_settings_dirty = true; // client busy — retry next loop
+    }
+  }
+}
+
+// Poll the async profile screens (Wave R3b): consume a completed list/detail/action or editor
+// fetch/save and rebuild. Each is a no-op unless that screen is awaiting a reply.
+static void poll_screens() {
+  g_profile_library.poll();
+  if (g_profile_editor != nullptr) {
+    g_profile_editor->poll();
+  }
 }
 
 // Wake the display the instant the machine leaves idle — a HOT chamber, a run start, or a
@@ -472,23 +555,12 @@ void setup() {
   // UI does not (device_info.h). Before any screen is built, so About can never render a default.
   ui_set_device_info(DeviceInfo{kBoardName, "dev", kPanelName});
 
-  // Load persisted settings and clamp caps to the current hard-max (§4/§24), then publish the
-  // cross-screen values so any consumer sees them before Settings is opened.
-  g_settings.load();
+  // Start on the factory-default settings, publishing the cross-screen values so any consumer sees
+  // them before Settings opens. The real values are FETCHED from the controller once the link is up
+  // (settings live there now, §4/§7; service_settings_sync in loop), then re-published.
+  g_settings.load(); // in-RAM cache empty → defaults
   settings_publish_subjects(g_settings);
-
-  // Mount the profile-library filesystem (§7). Format on failure so a fresh or corrupt flash still
-  // boots into a usable (empty) library rather than wedging. The library/editor screens land with
-  // C4/C5; the boot log exercises the whole store -> adapter -> LittleFS stack so a regression
-  // surfaces here rather than the first time a screen opens.
-  if (!LittleFS.begin(/*formatOnFail=*/true)) {
-    Serial.println("[fs] LittleFS mount failed — profile library unavailable");
-  } else {
-    ProfileStore::Summary rows[ProfileStore::kMaxListed];
-    Serial.printf("[profiles] cure=%u reflow=%u\n",
-                  (unsigned)g_cure_profiles.list(rows, ProfileStore::kMaxListed),
-                  (unsigned)g_reflow_profiles.list(rows, ProfileStore::kMaxListed));
-  }
+  g_settings_storage.setOnSaved(on_settings_saved, nullptr); // a settings edit → queue a push
 
   g_router.define(SCREEN_HOME, build_home_screen_cb, nullptr, /*cached=*/true);
   g_router.define(SCREEN_SETTINGS, build_settings_screen_cb, nullptr, /*cached=*/false);
@@ -515,6 +587,10 @@ void setup() {
   // seq 1 and have its first Start mistaken for a duplicate — Acked, but the session silently
   // never adopted (see ReliableSender::setSeqBase).
   g_cyd_link.sender().setSeqBase(esp_random());
+  // The management client shares the link: CydLink forwards profile/settings reply frames to it,
+  // and it seeds its own seq base per boot (same dedup reason as the setup path, §9; Wave R3b).
+  g_mgmt_client.setSeqBase(esp_random());
+  g_cyd_link.setAppObserver(g_mgmt_client);
   g_link_router.setObserver(g_cyd_link); // without this every frame is dropped, silently
   // Hello; service() retransmits until the controller answers. The nonce must be fresh every
   // boot: it is how the controller spots that we restarted and re-announces itself, so the link
@@ -555,6 +631,12 @@ void loop() {
     last_link_tick = now;
     g_link.tick();
   }
+  // Profile/settings remote client (§9; Wave R3b): retry/timeout, then the background settings sync
+  // (before poll_screens so a screen's own reply is left for the screen), then the async screen
+  // polls (list/detail/action/editor fetch/save land here).
+  g_mgmt_client.service();
+  service_settings_sync();
+  poll_screens();
 #if defined(CYD_BENCH_LINK)
   bench_link_stimulus();
 #endif

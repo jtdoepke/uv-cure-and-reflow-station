@@ -80,10 +80,12 @@ inline constexpr uint32_t kLinkBaud = 115200; // §9: 115200 8N1
 
 // The tick cadence is protocol::kLinkTickMs (lib/protocol/link_params.h) — a protocol fact shared
 // with the controller, not a board one.
-inline constexpr size_t kLinkRxBuf = 512;  // we receive Telemetry/Ack — modest
-inline constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SENDBUF_LEN (1024)
-// (Wave R3 raises these + the -D TF_*=2048 env bump once the on-CYD stores free the DRAM: as a UI
-// remote the CYD then RECEIVES ProfileList/ProfileData ~1542 B and SENDS a 32-phase ProfilePut.)
+// As a UI remote (Wave R3b) the CYD RECEIVES ProfileList/ProfileData (~1542 B — RX must hold a
+// whole one) and SENDS a 32-phase ProfilePut (1486 B — TX must exceed TF_SENDBUF_LEN, now 2048).
+// These are HardwareSerial ring buffers (runtime heap), not the static DRAM the store removal
+// freed.
+inline constexpr size_t kLinkRxBuf = 2048;
+inline constexpr size_t kLinkTxBuf = 4096;
 
 // --- Ambient light (§18) ---
 // A capability expressed as data, not as an #if: the Settings screen that shows the

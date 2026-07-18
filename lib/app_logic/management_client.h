@@ -98,12 +98,13 @@ public:
   // --- Result inspection ---
   State state() const { return state_; }
   Op lastOp() const { return op_; }
+  bool idle() const { return state_ == State::Idle; }
   bool busy() const { return state_ == State::Busy; }
   bool ready() const { return state_ == State::Ready; }
   bool failed() const { return state_ == State::Failed; }
-  const oven_ProfileList &list() const { return list_; }      // valid after a List
-  const oven_Profile &profile() const { return profile_; }    // valid after a Get
-  const oven_Settings &settings() const { return settings_; } // valid after a SettingsGet
+  const oven_ProfileList &list() const { return reply_.list; }   // valid after a List
+  const oven_Profile &profile() const { return reply_.profile; } // valid after a Get
+  const oven_Settings &settings() const { return settings_; }    // valid after a SettingsGet
   oven_NakReason lastNak() const { return nak_; }
 
   // Ack a terminal result, returning to Idle so the next request can go. No-op while Busy.
@@ -118,7 +119,7 @@ public:
   // --- IMessageObserver (reply types; forwarded by CydLink) ---
   void onProfileList(const oven_ProfileList &m) override {
     if (rc_.busy() && m.seq == rc_.pendingSeq()) {
-      list_ = m;
+      reply_.list = m;
       state_ = State::Ready;
       rc_.onReply(m.seq);
     }
@@ -126,7 +127,7 @@ public:
   void onProfileData(const oven_ProfileData &m) override {
     if (rc_.busy() && m.seq == rc_.pendingSeq()) {
       if (m.has_profile) {
-        profile_ = m.profile;
+        reply_.profile = m.profile;
       }
       state_ = State::Ready;
       rc_.onReply(m.seq);
@@ -181,8 +182,13 @@ private:
   protocol::RequestClient rc_;
   Op op_ = Op::None;
   State state_ = State::Idle;
-  oven_ProfileList list_ = oven_ProfileList_init_zero;
-  oven_Profile profile_ = oven_Profile_init_zero;
+  // list and profile are never both valid (a List reply vs a Get reply), so they share storage to
+  // save ~1.5 KB of the scarce CYD DRAM (Wave R3b). The accessors return the one the last op set;
+  // reading the other would be a mismatched op the caller never does. settings is separate (tiny).
+  union Reply {
+    oven_ProfileList list;
+    oven_Profile profile;
+  } reply_ = {};
   oven_Settings settings_ = oven_Settings_init_zero;
   oven_NakReason nak_ = oven_NakReason_NAK_UNSPECIFIED;
 };

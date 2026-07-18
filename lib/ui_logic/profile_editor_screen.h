@@ -23,26 +23,41 @@
 
 #include <lvgl.h>
 
+#include "management_client.h" // the remote store client (Wave R3b)
 #include "numeric_keypad_viewmodel.h"
+#include "oven.pb.h"
 #include "oven_cal.h"
-#include "profile_store.h"
+#include "phase_codec.h"     // Phase[] <-> oven_Profile at the wire boundary
+#include "profile_draft.h"   // the editor's store-free working profile
 #include "recipe_compiler.h" // compileRecipe / CompileResult / Caps (validation, §12)
 #include "selectable_list.h"
 #include "value_stepper_viewmodel.h"
 
 class ProfileEditorScreen {
 public:
-  enum class Page { Overview, PhaseEditor, FieldEditor, NameEntry };
+  // Loading/Error are the async states the remote store added (Wave R3b): opening an existing
+  // profile fetches it and Save pushes it, both round-trips to the controller (§9).
+  enum class Page { Overview, PhaseEditor, FieldEditor, NameEntry, Loading, Error };
 
-  // Set the profile to edit + where Save writes it. `working` is copied into an internal buffer
-  // (the caller's is untouched until Save). `saveAs` forces name entry on the first Save (a fresh
-  // New, or a stock source whose factory reference must survive, §23). `model` supplies the
-  // calibration the feasibility preview/validation run against (default = the compiled-in
-  // constants; tests pass a toy model). Does not touch LVGL — render() builds the UI.
-  void beginEdit(const ProfileStore::StoredProfile &working, ProfileStore &target, bool saveAs,
-                 const OvenModel &model = oven_cal::kDefaultModel);
+  // Start editing a FRESH profile (New, or a stock source cloned via Save-as). `seed` is copied
+  // into the internal working copy — a template (profile_templates.h) or, for a stock Save-as, the
+  // fetched source. `saveAs` forces name entry on the first Save (§23). Synchronous: no fetch.
+  // `client` is where Save pushes (requestPut); `model` supplies the preview/validation
+  // calibration.
+  void beginNew(const ProfileDraft &seed, ManagementClient &client, bool saveAs = true,
+                const OvenModel &model = oven_cal::kDefaultModel);
 
-  // Build the current page under `parent` (the router build cb; call after beginEdit(), after
+  // Start editing an EXISTING profile by name: fetches it from the controller (§9) and shows
+  // Loading until it arrives. `saveAs` (stock source) still forces name entry on Save. Asynchronous
+  // — render() shows the spinner; poll() adopts the profile when the reply lands.
+  void beginExisting(oven_Mode mode, const char *name, ManagementClient &client, bool saveAs,
+                     const OvenModel &model = oven_cal::kDefaultModel);
+
+  // Drive the async state machine: call every loop after client.service(). Adopts a fetched profile
+  // or completes a Save; a no-op unless the editor is waiting on a reply.
+  void poll();
+
+  // Build the current page under `parent` (the router build cb; call after begin*(), after
   // lv_init() + ui_subjects_init()).
   void render(lv_obj_t *parent);
 
@@ -73,7 +88,7 @@ public:
   Page page() const { return page_; }
   RecipeMode mode() const { return mode_; }
   int selectedPhase() const { return selected_phase_; }
-  const ProfileStore::StoredProfile &working() const { return working_; }
+  const ProfileDraft &working() const { return working_; }
   bool hardValid() const { return validation_.hardValid; }
   bool hasAmber() const { return validation_.hasAmber(); }
   bool savedOk() const { return saved_ok_; } // last onSave() committed to the store
@@ -82,6 +97,10 @@ public:
   ValueStepperViewModel &stepperVm() { return stepper_vm_; }
 
 private:
+  // What the editor's outstanding request is for (Wave R3b async): a fetch on beginExisting, or the
+  // Save push. poll() dispatches on it when the reply lands.
+  enum class Pending { None, Fetch, Save };
+
   // Which numeric field a keypad edit targets (the phase-editor's editable numbers).
   enum class NumField { None, Target, Ramp, Hold };
   // What a phase-editor row does. The row SET differs by mode (cure adds UV/motor), so a built-row
@@ -93,6 +112,8 @@ private:
   void buildOverview();
   void buildPhaseEditor();
   void buildNameEntry();
+  void buildLoading(const char *msg);  // spinner while a fetch/save is in flight (Wave R3b)
+  void buildError();                   // "couldn't reach the controller" + Back
   void buildHeader(const char *title); // ‹ Back + title into parent_
   void configParent();
   void clearParent();
@@ -115,13 +136,14 @@ private:
   Phase &currentPhase();
   const Phase &currentPhase() const;
   void recompute(); // refresh validation_ from the working copy
-  void doSave();    // write the working copy to target_ and exit
+  void doSave();    // push the working copy to the controller (requestPut) and exit on success
 
   lv_obj_t *parent_ = nullptr;
   Page page_ = Page::Overview;
 
-  ProfileStore::StoredProfile working_{};
-  ProfileStore *target_ = nullptr;
+  ProfileDraft working_{};
+  ManagementClient *client_ = nullptr; // the remote store (Save pushes, Edit fetched, §9)
+  Pending pending_ = Pending::None;
   const OvenModel *model_ = &oven_cal::kDefaultModel;
   bool save_as_ = false;
   bool saved_ok_ = false;

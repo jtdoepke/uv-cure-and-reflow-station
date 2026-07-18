@@ -22,7 +22,7 @@
 #include <cstring>
 
 #include "phase.h"
-#include "profile_store.h"
+#include "profile_draft.h" // the editor's store-free working profile (Wave R3b)
 
 namespace profile_templates {
 
@@ -78,8 +78,8 @@ inline Phase blankPhase() {
 // editor's name-entry supplies it on the first Save); stock is false (a user profile from the
 // start). Targets sit within the factory caps (reflow ≤250, cure ≤100) so a fresh template is
 // hard-valid on the default settings; the operator edits from here.
-inline ProfileStore::StoredProfile defaultTemplate(RecipeMode mode) {
-  ProfileStore::StoredProfile t;
+inline ProfileDraft defaultTemplate(RecipeMode mode) {
+  ProfileDraft t;
   t.name[0] = '\0';
   t.mode = mode;
   t.stock = false;
