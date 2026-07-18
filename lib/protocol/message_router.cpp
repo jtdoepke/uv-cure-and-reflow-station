@@ -68,6 +68,55 @@ void MessageRouter::onFrame(uint8_t type, const uint8_t *payload, size_t len) {
     ok = route(oven_Fault_fields, oven_Fault{}, payload, len,
                [&](const oven_Fault &m) { obs.onFault(m); });
     break;
+  // Profile & settings management (design.md §9; added 2026-07-17).
+  case kTfTypeProfileListReq:
+    ok = route(oven_ProfileListReq_fields, oven_ProfileListReq{}, payload, len,
+               [&](const oven_ProfileListReq &m) { obs.onProfileListReq(m); });
+    break;
+  case kTfTypeProfileGetReq:
+    ok = route(oven_ProfileGetReq_fields, oven_ProfileGetReq{}, payload, len,
+               [&](const oven_ProfileGetReq &m) { obs.onProfileGetReq(m); });
+    break;
+  case kTfTypeProfilePut:
+    ok = route(oven_ProfilePut_fields, oven_ProfilePut{}, payload, len,
+               [&](const oven_ProfilePut &m) { obs.onProfilePut(m); });
+    break;
+  case kTfTypeProfileDelete:
+    ok = route(oven_ProfileDelete_fields, oven_ProfileDelete{}, payload, len,
+               [&](const oven_ProfileDelete &m) { obs.onProfileDelete(m); });
+    break;
+  case kTfTypeProfileDup:
+    ok = route(oven_ProfileDup_fields, oven_ProfileDup{}, payload, len,
+               [&](const oven_ProfileDup &m) { obs.onProfileDup(m); });
+    break;
+  case kTfTypeProfileRename:
+    ok = route(oven_ProfileRename_fields, oven_ProfileRename{}, payload, len,
+               [&](const oven_ProfileRename &m) { obs.onProfileRename(m); });
+    break;
+  case kTfTypeSettingsGetReq:
+    ok = route(oven_SettingsGetReq_fields, oven_SettingsGetReq{}, payload, len,
+               [&](const oven_SettingsGetReq &m) { obs.onSettingsGetReq(m); });
+    break;
+  case kTfTypeSettingsPut:
+    ok = route(oven_SettingsPut_fields, oven_SettingsPut{}, payload, len,
+               [&](const oven_SettingsPut &m) { obs.onSettingsPut(m); });
+    break;
+  case kTfTypeProfileList:
+    ok = route(oven_ProfileList_fields, oven_ProfileList{}, payload, len,
+               [&](const oven_ProfileList &m) { obs.onProfileList(m); });
+    break;
+  case kTfTypeProfileData:
+    ok = route(oven_ProfileData_fields, oven_ProfileData{}, payload, len,
+               [&](const oven_ProfileData &m) { obs.onProfileData(m); });
+    break;
+  case kTfTypeSettingsData:
+    ok = route(oven_SettingsData_fields, oven_SettingsData{}, payload, len,
+               [&](const oven_SettingsData &m) { obs.onSettingsData(m); });
+    break;
+  case kTfTypeMgmtResult:
+    ok = route(oven_MgmtResult_fields, oven_MgmtResult{}, payload, len,
+               [&](const oven_MgmtResult &m) { obs.onMgmtResult(m); });
+    break;
   default:
     obs.onUnknownType(type, payload, len);
     return;

@@ -14,6 +14,7 @@
 #include "IClock.h"
 #include "frame_link.h"
 #include "handshake.h"
+#include "management_responder.h"
 #include "message_router.h"
 #include "oven.pb.h"
 #include "oven_safety.h"
@@ -41,6 +42,12 @@ public:
   // measured control temp, which the link never sees). Must outlive this link.
   void setExecutor(ProfileExecutor &executor) { executor_ = &executor; }
 
+  // Optionally attach the profile/settings management responder (design.md §9; Wave R2). Optional
+  // so the many tests that build a bare ControllerLink keep working; the responder needs the
+  // per-mode stores, which are firmware wiring. When attached, the profile-management request
+  // frames route to it and a peer reboot clears its dedup cache alongside the setup responder's.
+  void setManagementResponder(ManagementResponder &mgmt) { mgmt_ = &mgmt; }
+
   // Send our Hello at boot. boot_nonce must differ across boots of this board — it is
   // what lets the CYD notice a controller restart (watchdog, brownout, crash) and
   // re-announce itself, without which we would never re-match and would sit refusing
@@ -62,11 +69,48 @@ public:
   void onHello(const oven_Hello &h) override {
     if (handshake_.onPeerHello(h)) {
       responder_.reset();
+      if (mgmt_ != nullptr) {
+        mgmt_->reset();
+      }
     }
   }
   void onRecipe(const oven_Recipe &r) override { responder_.onRecipe(r); }
   void onStart(const oven_Start &s) override { responder_.onStart(s); }
   void onHeartbeat(const oven_Heartbeat &hb) override { gate_.onHeartbeat(hb); }
+
+  // Profile management (design.md §9) — forwarded to the responder when one is attached. The
+  // router dispatches through this single observer (ControllerLink), so it relays the request
+  // frames the way it already relays Recipe/Start to the setup responder.
+  void onProfileListReq(const oven_ProfileListReq &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileListReq(m);
+    }
+  }
+  void onProfileGetReq(const oven_ProfileGetReq &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileGetReq(m);
+    }
+  }
+  void onProfilePut(const oven_ProfilePut &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfilePut(m);
+    }
+  }
+  void onProfileDelete(const oven_ProfileDelete &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileDelete(m);
+    }
+  }
+  void onProfileDup(const oven_ProfileDup &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileDup(m);
+    }
+  }
+  void onProfileRename(const oven_ProfileRename &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileRename(m);
+    }
+  }
   void onAbort() override {
     gate_.clearSession();
     if (executor_ != nullptr) {
@@ -101,6 +145,7 @@ private:
   protocol::SetupResponder responder_;
   SessionGate gate_;
   ProfileExecutor *executor_ = nullptr;
+  ManagementResponder *mgmt_ = nullptr;
   oven_Recipe recipe_ = oven_Recipe_init_zero;
   bool have_recipe_ = false;
 };

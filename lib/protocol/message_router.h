@@ -40,6 +40,22 @@ struct IMessageObserver {
   virtual void onDone(const oven_Done &) {}
   virtual void onFault(const oven_Fault &) {}
 
+  // Profile & settings management (design.md §9; added 2026-07-17). Requests are handled by
+  // the controller's responder; replies by the CYD's client. Default no-ops, so a role
+  // overrides only its half.
+  virtual void onProfileListReq(const oven_ProfileListReq &) {}
+  virtual void onProfileGetReq(const oven_ProfileGetReq &) {}
+  virtual void onProfilePut(const oven_ProfilePut &) {}
+  virtual void onProfileDelete(const oven_ProfileDelete &) {}
+  virtual void onProfileDup(const oven_ProfileDup &) {}
+  virtual void onProfileRename(const oven_ProfileRename &) {}
+  virtual void onSettingsGetReq(const oven_SettingsGetReq &) {}
+  virtual void onSettingsPut(const oven_SettingsPut &) {}
+  virtual void onProfileList(const oven_ProfileList &) {}
+  virtual void onProfileData(const oven_ProfileData &) {}
+  virtual void onSettingsData(const oven_SettingsData &) {}
+  virtual void onMgmtResult(const oven_MgmtResult &) {}
+
   // A frame whose type id isn't in the known set (payload valid only for the
   // call, same rule as IFrameHandler).
   virtual void onUnknownType(uint8_t /*type*/, const uint8_t * /*payload*/, size_t /*len*/) {}

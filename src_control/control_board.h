@@ -51,10 +51,13 @@ inline constexpr uint32_t kLinkBaud = 115200; // §9: 115200 8N1
 
 // TinyFrame emits a whole frame in one TF_WriteImpl call and ignores the byte count
 // (lib/protocol/frame_link.cpp), so a short write truncates a frame mid-flight with no resume
-// path. Sizing the TX ring above TF_SENDBUF_LEN (1024, TF_Config.h) keeps HardwareSerial::write
-// a buffered copy that never comes up short. RX covers a full Recipe landing between poll()s.
-inline constexpr size_t kLinkTxBuf = 2048;
-inline constexpr size_t kLinkRxBuf = 1024;
+// path. Sizing the TX ring above TF_SENDBUF_LEN (2048 here, -D in platformio.ini) keeps
+// HardwareSerial::write a buffered copy that never comes up short; RX holds a full frame between
+// poll()s. Raised 2026-07-17 (Wave R2) for the profile-management frames the controller now serves:
+// it SENDS ProfileList/ProfileData (~1542 B, so TX > TF_SENDBUF_LEN) and RECEIVES a 32-phase
+// ProfilePut (1486 B, so RX holds a whole one).
+inline constexpr size_t kLinkTxBuf = 4096;
+inline constexpr size_t kLinkRxBuf = 2048;
 
 // The tick cadence is protocol::kLinkTickMs (lib/protocol/link_params.h) — a protocol fact shared
 // with the CYD, not a board one.

@@ -83,6 +83,28 @@ enum NakReason {
   NAK_MODE_CONTENT_MISMATCH = 3;
   NAK_WORKPIECE_TC_INVALID = 4;
   NAK_UNKNOWN_RECIPE = 5;
+  // Profile/settings management verdicts (design.md §9 "Profile & settings management").
+  NAK_STOCK_READONLY = 6; // save-over / delete / rename of a stock profile (§23)
+  NAK_NAME_INVALID = 7;   // bad name: empty, too long, path chars, or a clash on write
+  NAK_NOT_FOUND = 8;      // no such profile in that mode's store
+  NAK_STORE_FULL = 9;     // the mode library is at capacity
+}
+
+// Per-phase convection-fan intent a *stored* profile carries (design.md §5). Mirrors the
+// CYD's FanMode. Only the compiled Recipe carries a resolved on/off (Segment.conv_fan is a
+// bare bool); the stored profile keeps the AUTO intent so it re-resolves if calibration
+// changes. Values match lib/app_logic/phase.h FanMode {Auto=0, On=1, Off=2}.
+enum FanMode {
+  FAN_MODE_AUTO = 0;
+  FAN_MODE_ON = 1;
+  FAN_MODE_OFF = 2;
+}
+
+// Temperature display unit for the settings blob (design.md §24). Matches
+// lib/app_logic/settings_store.h TempUnits {Celsius=0, Fahrenheit=1}.
+enum TempUnits {
+  TEMP_UNITS_CELSIUS = 0;
+  TEMP_UNITS_FAHRENHEIT = 1;
 }
 
 // One executable step. Fans are resolved on/off — the CYD applies any "Auto"
@@ -168,4 +190,124 @@ message Done {
 message Fault {
   uint32 session = 1;
   FaultCode code = 2;
+}
+
+// ============================================================================
+// Profile & settings management (design.md §9 "Profile & settings management").
+//
+// ADDED with the 2026-07-17 "CYD is a UI remote" split (§2): the profile library +
+// device settings now persist on the CONTROLLER, and the CYD browses/edits them as a
+// remote client. These ride the request/reply path — seq-correlated, single-outstanding,
+// retried until the reply lands, deduped so a resend never double-applies. All behind the
+// schema-hash gate (only Hello is frozen). frame-type ids in lib/protocol/messages.h.
+//
+// The profile domain model (Phase/Profile) is now a WIRE type — the same schema a future
+// PC authoring tool would target. Repeated/string caps live in oven.options.
+// ============================================================================
+
+// One authored phase (the editor's ramp-x/hold-y domain form, §5/§12). Mirrors
+// lib/app_logic/phase.h Phase. Compiles to Segment[] at run-start (that path is
+// unchanged); this type is for STORAGE + editing, so it keeps the pre-compile fields
+// (fan intent, exposure) a Segment doesn't carry.
+message Phase {
+  string name = 1;                // operator-visible, <= kPhaseNameCap
+  float target_c = 2;             // phase setpoint, deg C
+  float ramp_s = 3;               // approach time; 0 => RAMP_ASAP
+  float hold_s = 4;               // reflow: raw soak seconds
+  float exposure_per_surface = 5; // cure: UV dose (compiler derives hold_s), else ignored
+  bool uv = 6;                    // UV lamp on (cure)
+  bool motor = 7;                 // turntable on (cure)
+  FanMode fan_mode = 8;           // convection-fan intent (AUTO resolved at compile time)
+}
+
+// One stored profile: a named, mode-scoped Phase[] with the stock/user flag (§23).
+message Profile {
+  Mode mode = 1;
+  string name = 2; // <= kProfileNameCap; the store's filesystem key
+  bool stock = 3;  // read-only factory reference (§23)
+  repeated Phase phases = 4;
+}
+
+// A lightweight list row (design.md §23): enough to render the library without loading
+// every Phase[]. peak_c / total_s are the derived facts ("peak 245° · ~6:10").
+message ProfileSummary {
+  string name = 1;
+  bool stock = 2;
+  float peak_c = 3;  // hottest phase target
+  uint32 total_s = 4; // estimated total run seconds (incl. cool-down)
+}
+
+// The device-settings blob (design.md §24). Mirrors lib/app_logic/settings_store.h Settings.
+message Settings {
+  TempUnits units = 1;
+  bool auto_brightness = 2;
+  bool advanced_unlocked = 3;
+  int32 brightness_bias = 4;
+  int32 screen_brightness_pct = 5;
+  int32 idle_timeout_min = 6;
+  int32 uv_max_cap = 7;
+  int32 reflow_max_cap = 8;
+}
+
+// --- Requests (CYD -> controller). Each carries seq for correlation + dedup. ---
+
+message ProfileListReq {
+  uint32 seq = 1;
+  Mode mode = 2;
+}
+message ProfileGetReq {
+  uint32 seq = 1;
+  Mode mode = 2;
+  string name = 3;
+}
+message ProfilePut {
+  uint32 seq = 1;
+  Profile profile = 2;
+}
+message ProfileDelete {
+  uint32 seq = 1;
+  Mode mode = 2;
+  string name = 3;
+}
+message ProfileDup {
+  uint32 seq = 1;
+  Mode mode = 2;
+  string src = 3;
+  string dst = 4; // the CYD pre-deconflicts dst against its cached list (§23)
+}
+message ProfileRename {
+  uint32 seq = 1;
+  Mode mode = 2;
+  string old_name = 3;
+  string new_name = 4;
+}
+message SettingsGetReq {
+  uint32 seq = 1;
+}
+message SettingsPut {
+  uint32 seq = 1;
+  Settings settings = 2;
+}
+
+// --- Replies (controller -> CYD). seq echoes the request. ---
+
+message ProfileList {
+  uint32 seq = 1;
+  repeated ProfileSummary profiles = 2;
+}
+message ProfileData {
+  uint32 seq = 1;
+  Profile profile = 2;
+}
+message SettingsData {
+  uint32 seq = 1;
+  Settings settings = 2;
+}
+// The management verdict — reply to Put/Delete/Dup/Rename/SettingsPut, and the negative
+// reply to a Get/List (e.g. reason=NAK_NOT_FOUND). Kept distinct from setup-path Ack/Nak
+// so management traffic has its own seq space and can never perturb the authorization path.
+message MgmtResult {
+  uint32 seq = 1;
+  bool ok = 2;
+  NakReason reason = 3; // meaningful only when ok=false
 }

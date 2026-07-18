@@ -243,6 +243,9 @@ existing `IClock`/`IHeaterSwitch` idiom:
   placeholder). Host-tested (`test_fan_resolver`).*
 - [x] **B4** [B] — `ProfileStore` over a storage port; per-mode dirs;
   stock-vs-user semantics. deps: storage port. (§7, §23)
+  **RE-HOMED 2026-07-17 (Wave R2):** the store + port move CYD → controller
+  (`lib/control_logic`), storing `oven_Profile`; the CYD becomes a remote client (R3).
+  The store logic/tests below are reused near-verbatim, just on the other board.
   *New keyed profile-storage port `IProfileStorage` (`lib/storage_port`) — the multi-entry sibling
   of B5's single-blob `ISettingsStorage` (list/read/write/remove a blob **by name**; the store owns
   the byte layout, the adapter stays dumb) — plus `FakeProfileStorage` (`test/helpers`) and the
@@ -274,6 +277,9 @@ existing `IClock`/`IHeaterSwitch` idiom:
   template).
 - [x] **B5** [B] — `SettingsStore` + per-field `{min, max, step, units}` config +
   boot-time clamp-to-hard-max. deps: storage port (share B4's). (§4, §24)
+  **RE-HOMED 2026-07-17 (Wave R2):** the store + port move CYD → controller; the CYD
+  reads/writes via a `SettingsClient` over the link (R3). Bonus: the per-mode caps now
+  live on the safety MCU, resolving the §4 defense-in-depth open.
   *`ISettingsStorage` port (`lib/storage_port`) + host-tested `SettingsStore` (`lib/app_logic`):
   versioned blob, load-time re-clamp to current bounds, `NumericFieldConfig`-driven validation
   shared with the numeric editors. NVS/Preferences adapter is thin `src_cyd/` glue. Shipped the
@@ -390,6 +396,9 @@ existing `IClock`/`IHeaterSwitch` idiom:
   `lib/` (host-testable, board-agnostic) with only the injection adapter board-specific.
   deps: A5, A6, A8. (§5, §6, §8 step 1)
 - [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
+  **REWIRED 2026-07-17 (Wave R3):** the view-model binds to a `ProfileClient` (remote,
+  over the link) instead of a local `ProfileStore`, gaining loading/error states; the
+  curve/facts math stays CYD-side, fed by the fetched `Profile`.
   *Shipped as a self-contained hub-and-spoke controller (the `SettingsScreen` pattern): Home →
   Profiles opens a **Cure|Reflow chooser** — **two big Home-style tiles** ("UV CURE PROFILES" /
   "REFLOW PROFILES"), a direct tap rather than a menu since there are only two profile types (the
@@ -439,6 +448,9 @@ existing `IClock`/`IHeaterSwitch` idiom:
   complete. Unblocks **C6**.*
 - [x] **C5** [C] — profile editor (2 PRs: overview + phase-editor field list;
   then feasibility-curve preview). deps: C1, B1, B2. (§12)
+  **REWIRED 2026-07-17 (Wave R3):** still edits an in-RAM `Phase[]` working copy (preview
+  unchanged), but opening fetches via `ProfileGetReq` and Save issues `ProfilePut` over
+  the link (a `phase_codec` at the wire boundary), gaining a saving/save-failed state.
   *Shipped as `ProfileEditorScreen` (`lib/ui_logic/profile_editor_screen.*`), the `SettingsScreen`
   hub-and-spoke controller cloned: **Overview** (feasibility curve + one-phase-per-row list + Save)
   → **Phase editor** (a field list per phase) → the shared numeric keypad → **name entry**. Edits
@@ -565,7 +577,46 @@ existing `IClock`/`IHeaterSwitch` idiom:
   thresholds. deps: D5, D4, D6. (§8 step 4)
 - [ ] **D8** [D] — custom PCB (same ESP32 target); move firmware over unchanged,
   re-verify safety on real hardware. deps: D7. (§8 step 5)
-- [ ] **D9** [D] — WiFi/OTA (several PRs): HTTP data server; bundle format +
-  validation; ESP32 ROM-loader client; `OtaController` state machine
-  (host-testable with fakes); OTA wizard screens; partition-fit measurement.
-  deps: D6·tools pipeline, hardware, GPIO0/EN control lines wired. (§21, §25, §27; §8 step 6)
+- [ ] **D9** [D] — WiFi/OTA **on the controller** (several PRs; REVISED 2026-07-17 per
+  the §2 CYD-is-a-remote change, see Wave R below): WiFi + HTTP data server **on the
+  controller's radio**; controller **self-OTA over WiFi** (standard A/B — the old
+  CYD-as-ISP / ESP32 ROM-loader client / GPIO0-EN leg is **dropped**); `OtaController`
+  state machine (host-testable with fakes); OTA wizard screens (CYD renders, controller
+  acts); controller partition-fit (app twice + LittleFS in 4 MB) measurement.
+  **New opens (§10):** the **CYD's own** field-reflash path once WiFi leaves it (USB vs
+  controller-as-ISP), and the **data-server↔CYD-SD bridge** (logs are on the CYD's SD).
+  deps: D6·tools pipeline, hardware, Wave R. (§21, §25, §27; §8 step 6)
+
+## Wave R — CYD-is-a-UI-remote re-architecture (2026-07-17; storage + protocol)
+
+The §2 revision: the CYD ran out of static DRAM to host the profile/settings stores +
+WiFi alongside LVGL (§6a), so those responsibilities move to the controller and the CYD
+becomes a remote client. This wave lands the **storage + protocol** move (the memory win
+→ bigger render buffers); WiFi/OTA/data-server stay design-only (D9). Details →
+design.md §2/§7/§9/§11/§21/§25/§27. Ordered; each ~one PR.
+
+- [ ] **R1** [A] — **protocol expansion.** Add typed `Phase`/`Profile`/`ProfileSummary`/
+  `Settings` + management messages (`ProfileList/Get/Put/Delete/Dup/Rename`,
+  `SettingsGet/Put`) to `proto/oven.proto` + `oven.options`; new `kTfType*` ids
+  (`0x19+`) + router cases + `IMessageObserver` virtuals; the new **request/reply**
+  reliability pair (`RequestClient`/`RequestResponder`, request→data-reply) in
+  `lib/protocol`. Host round-trip tests (`native_control`). *Schema hash changes —
+  expected (matched-pair reflash).* deps: none. (§9)
+- [ ] **R2** [A/B] — **controller owns the stores.** Relocate `IProfileStorage`/
+  `ISettingsStorage`; move `ProfileStore`/`SettingsStore` → `lib/control_logic` (store
+  `oven_Profile`); `LittleFsProfileStorage`/settings adapter in `src_control`; controller
+  partition + `board_build.filesystem=littlefs` + `uploadfs` stock seeds via updated
+  `tools/gen_profiles.cpp`; `ProfileResponder`/`SettingsResponder` into `ControllerLink`.
+  Move `fuzz_profile_store` to the control context; add `fuzz_profile_wire` (controller
+  parsing untrusted management frames — it is the safety MCU). deps: R1. (§7/§11/§23)
+- [ ] **R3** [B/C] — **CYD remote client.** `phase_codec` (`Phase↔oven_Phase`);
+  `ProfileClient`/`SettingsClient` (`lib/app_logic`) over the request/reply path; rewire
+  `ProfileLibraryViewModel`, `ProfileEditorScreen`, `SettingsScreen` to async with
+  **loading / error / saving** states. Drop the CYD's LittleFS/NVS/`ProfileStore`/
+  `SettingsStore` + mount + `data/` + `filesystem=littlefs`. `native_logic_cyd` +
+  `native_ui_cyd`(+`_35`) tests against a fake client. deps: R1, R2. (§12/§23/§24)
+- [ ] **R4** [C] — **reclaim the memory (the payoff).** With the stores + WiFi gone from
+  production, raise `DRAW_BUF_LINES` (`include/cyd_board.h`, toward 48–60 per §6a's
+  measured menu) and optionally restore the 80 kB LVGL pool — each **clean-build verified**
+  (`pio run -t clean`). Re-measure with `make perf` + the on-glass perf probe. deps: R3.
+  (§6a)

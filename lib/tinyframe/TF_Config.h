@@ -39,10 +39,21 @@ typedef uint8_t TF_COUNT;  // listener-loop counters
 
 //----------------------------- PARAMETERS ----------------------------------
 
-// Sized for the largest message: a Recipe with 32 segments (oven.options) is
-// well under 1 KiB encoded. Revisit with real numbers in backlog A1.
+// Sized for the largest message. The historical default is a 32-segment Recipe (~1 KiB).
+// The §2 "CYD is a UI remote" split (2026-07-17) added profile-management frames whose worst
+// case is a full-library ProfileList (32 ProfileSummary rows) at 1542 B and a 32-phase
+// ProfilePut/ProfileData at 1486 B (oven.pb.h *_size constants), which need 2048. That bump is
+// applied PER-ENV via build_flags (-D TF_MAX_PAYLOAD_RX=2048 -D TF_SENDBUF_LEN=2048), not here,
+// because it costs ~2 KiB of static DRAM and the production CYD has none to spare until the
+// on-CYD profile/settings stores + WiFi leave it (Wave R3/R4). The controller (room to spare)
+// and the host test/fuzz envs take the bump now; the CYD envs take it once the reclaim lands.
+// The #ifndef lets an env override without editing this shared header.
+#ifndef TF_MAX_PAYLOAD_RX
 #define TF_MAX_PAYLOAD_RX 1024
+#endif
+#ifndef TF_SENDBUF_LEN
 #define TF_SENDBUF_LEN 1024
+#endif
 
 #define TF_MAX_ID_LST 10
 #define TF_MAX_TYPE_LST 10

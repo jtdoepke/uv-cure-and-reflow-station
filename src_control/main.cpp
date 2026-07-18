@@ -10,10 +10,16 @@
 // for the heater SSR and the mains contactor, and pulling the CYD's TX or rebooting it must cut
 // them within the 750 ms command-timeout. See control_board.h for why the link UART moves.
 #include <Arduino.h>
+#include <LittleFS.h>
 
 #include "control_board.h"   // this board's pins, timeouts, link UART + console policy (§2/§6/§25)
 #include "controller_link.h" // reliability facade (lib/control_logic)
+#include "device_settings.h" // control::SettingsStore (§4/§7/§24; Wave R2b)
 #include "esp32_clock.h"
+#include "littlefs_profile_storage.h"  // IProfileStorage adapter (§7; moved here in Wave R2)
+#include "littlefs_settings_storage.h" // ISettingsStorage adapter (§7/§24; Wave R2b)
+#include "management_responder.h"      // profile/settings management responder (§9; Wave R2)
+#include "profile_library.h"           // control::ProfileStore (§7/§23; Wave R2)
 #include "esp32_contactor.h"
 #include "esp32_heater_switch.h"
 #include "esp32_serial_transport.h"
@@ -49,6 +55,17 @@ static protocol::TelemetrySender g_telemetry(g_link, g_clk);
 // while a fault stays active. Driven from SafetySupervisor::faultCode() each loop; the
 // continuous telemetry.fault_code below is the self-healing backup channel.
 static protocol::FaultSender g_fault(g_link, g_clk);
+
+// --- Profile library + settings store (§7/§23; Wave R2 of the §2 "CYD is a UI remote" split) ---
+// The profile library moved off the CYD to here: one LittleFS directory per mode, one store each,
+// answered over the link by the ManagementResponder. The CYD is now a remote client (R3).
+static LittleFsProfileStorage g_cure_fs("/profiles/cure");
+static LittleFsProfileStorage g_reflow_fs("/profiles/reflow");
+static control::ProfileStore g_cure_store(g_cure_fs, oven_Mode_MODE_CURE);
+static control::ProfileStore g_reflow_store(g_reflow_fs, oven_Mode_MODE_REFLOW);
+static LittleFsSettingsStorage g_settings_fs;
+static control::SettingsStore g_settings(g_settings_fs);
+static ManagementResponder g_mgmt(g_link, g_cure_store, g_reflow_store);
 
 // --- Outputs (§4) ---
 // Declared above the supervisor that owns them: its constructor drives the fail-safe state, and
@@ -101,6 +118,15 @@ void setup() {
   // as Fault{WATCHDOG} (§9) rather than the pair coming back silently. Read after begin().
   g_safety.noteResetCause(g_wdt.lastResetCause());
 
+  // Mount the profile-library filesystem (§7; Wave R2). formatOnFail so a fresh/blank board comes
+  // up with an empty library rather than a mount error; the stock seed set is `uploadfs`-flashed
+  // into /profiles/<mode>/. A mount failure is non-fatal to the safety loop — the library is just
+  // empty. The stores are already constructed (their dirs are created lazily on first write).
+  if (!LittleFS.begin(/*formatOnFail=*/true)) {
+    CONTROL_LOGF("[profiles] LittleFS mount failed - library unavailable\n");
+  }
+  g_settings.load(); // persisted settings (or defaults), caps re-clamped to hard-max (§4)
+
 #if defined(CONTROL_BENCH)
   Serial.begin(115200); // bench only: UART0 is the console, the link is on UART2
   Serial.println();
@@ -120,7 +146,18 @@ void setup() {
   linkSerial().setTxBufferSize(kLinkTxBuf);
   linkSerial().begin(kLinkBaud, SERIAL_8N1, kLinkRxPin, kLinkTxPin);
 
-  g_router.setObserver(g_ctrl); // without this every frame is dropped, silently
+  g_router.setObserver(g_ctrl);          // without this every frame is dropped, silently
+  g_mgmt.setSettingsStore(g_settings);   // answer SettingsGet/Put too (§9, R2b)
+  g_ctrl.setManagementResponder(g_mgmt); // route the CYD's profile-management requests (§9, R2)
+
+#if defined(CONTROL_BENCH)
+  {
+    control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
+    const size_t nc = g_cure_store.list(rows, control::ProfileStore::kMaxListed);
+    const size_t nr = g_reflow_store.list(rows, control::ProfileStore::kMaxListed);
+    CONTROL_LOGF("[profiles] cure=%u reflow=%u\n", (unsigned)nc, (unsigned)nr);
+  }
+#endif
   // Hello; service() retransmits until the CYD answers. The nonce must be fresh every
   // boot: it is how the CYD spots that we restarted (watchdog/brownout/crash) and
   // re-announces itself, so the link comes back rather than sitting unmatched (§9).

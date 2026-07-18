@@ -78,6 +78,30 @@ public:
     }
   }
 
+  // Profile/settings management replies (design.md §9; Wave R3) — forwarded to the app observer
+  // (the CYD's ManagementClient), which correlates them to its outstanding request. CydLink stays
+  // ignorant of their meaning, exactly as with Telemetry/Done/Fault.
+  void onProfileList(const oven_ProfileList &m) override {
+    if (app_ != nullptr) {
+      app_->onProfileList(m);
+    }
+  }
+  void onProfileData(const oven_ProfileData &m) override {
+    if (app_ != nullptr) {
+      app_->onProfileData(m);
+    }
+  }
+  void onSettingsData(const oven_SettingsData &m) override {
+    if (app_ != nullptr) {
+      app_->onSettingsData(m);
+    }
+  }
+  void onMgmtResult(const oven_MgmtResult &m) override {
+    if (app_ != nullptr) {
+      app_->onMgmtResult(m);
+    }
+  }
+
 private:
   Handshake handshake_;
   HeartbeatSender heartbeat_;

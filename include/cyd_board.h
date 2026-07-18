@@ -82,6 +82,8 @@ inline constexpr uint32_t kLinkBaud = 115200; // §9: 115200 8N1
 // with the controller, not a board one.
 inline constexpr size_t kLinkRxBuf = 512;  // we receive Telemetry/Ack — modest
 inline constexpr size_t kLinkTxBuf = 2048; // we SEND Recipes: must exceed TF_SENDBUF_LEN (1024)
+// (Wave R3 raises these + the -D TF_*=2048 env bump once the on-CYD stores free the DRAM: as a UI
+// remote the CYD then RECEIVES ProfileList/ProfileData ~1542 B and SENDS a 32-phase ProfilePut.)
 
 // --- Ambient light (§18) ---
 // A capability expressed as data, not as an #if: the Settings screen that shows the

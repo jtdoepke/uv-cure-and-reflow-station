@@ -3,3 +3,18 @@
 # changes struct sizes on both boards but not the wire format.
 oven.Recipe.segments   max_count:32
 oven.Telemetry.wall_temp max_count:4
+
+# Profile & settings management (design.md §9, added 2026-07-17). String caps match
+# lib/app_logic: kPhaseNameCap=16, kProfileNameCap=32. Repeated caps: kMaxPhases=32,
+# ProfileStore::kMaxListed=32.
+oven.Phase.name              max_size:16
+oven.Profile.name            max_size:32
+oven.Profile.phases          max_count:32
+oven.ProfileSummary.name     max_size:32
+oven.ProfileGetReq.name      max_size:32
+oven.ProfileDelete.name      max_size:32
+oven.ProfileDup.src          max_size:32
+oven.ProfileDup.dst          max_size:32
+oven.ProfileRename.old_name  max_size:32
+oven.ProfileRename.new_name  max_size:32
+oven.ProfileList.profiles    max_count:32

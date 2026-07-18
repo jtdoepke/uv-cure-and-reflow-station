@@ -139,6 +139,37 @@ heartbeat + `HEAT_EN` from the CYD, a CYD crash/stall still aborts an in-progres
 run (heater fails OFF). You cannot both keep the CYD a required safety authority
 *and* have a run survive a UI crash. Accepted.
 
+**Revised 2026-07-17 — the CYD is a UI remote; the controller is the brain
+(DECIDED).** The earlier split still stored the profile *library* and device
+*settings* on the CYD (§7) and put WiFi/OTA/the data-server on the CYD (§21/§25/§27).
+Continuing development showed the CYD has **no DRAM budget left** for that on top of
+LVGL: the binding constraint is the static `dram0_0_seg` segment (§6a "Consequences
+worth knowing"), and the WiFi stack's static objects alone force the LVGL pool ≤
+~60 kB and starve the draw buffers (`DRAW_BUF_LINES` stuck at 24, §6a). So the
+responsibility line moves: the **controller now also owns the profile library, the
+device-settings store, and (as the design target — build is §21/D9) WiFi + OTA + the
+HTTP data-server.** The CYD keeps LVGL and every view-model — it **renders** the UI,
+reads touch, and holds only ephemeral working-copy state; for all *persistent data*
+it is a **remote client of the controller** over an expanded `lib/protocol` (§9). As
+a direct payoff, the freed CYD DRAM buys **taller render buffers → a faster UI**
+(§6a's measured menu).
+
+- **Stays on the CYD:** the whole LVGL UI + view-models, touch, backlight/sleep, and
+  **telemetry→SD data logging** — the SD card slot is on the CYD and the controller's
+  pins are reserved for the oven, so the log-write path is unchanged (§7).
+- **Moves to the controller:** the profile library (store + stock rule + persistence,
+  §7/§23), device-settings persistence (§7/§24 — which also gives §4 its
+  defense-in-depth per-mode cap on the safety MCU), and the connectivity/OTA design
+  (§21/§25/§27).
+- **Consequence for the board choice (§6a):** the 3.5" was made default *because it
+  survives WiFi bring-up* — but a **radio-less production CYD** never brings WiFi up,
+  so that rationale is moot and the 2.8"'s brownout no longer gates the CYD. The 3.5"
+  stays default on its size + verified status; the reasoning is what changed. (The
+  `_uidev` screenshot server still uses the CYD radio — dev-only, unaffected.)
+- **Not built here (design only):** WiFi, OTA, and the data-server on the controller
+  remain the future §21/D9 work; the enclosed-CYD **field-reflash path** is a deferred
+  open (§21). This revision lands the **storage + protocol** move (the memory win).
+
 ## 3. Layered architecture (safety / control / UI / hardware ports)
 
 Layers, from mains outward:
@@ -236,11 +267,14 @@ Defense-in-depth, mains outward. The firmware is **never** the last line.
     hold is detected and de-powered within seconds instead of riding to the
     reflow-level fuse. That is what makes "acceptable at these temps" true rather
     than asserted.
-  - **Enforcement (DECIDED):** the user setting is enforced **CYD-side** (editor +
-    pre-send validation); the controller enforces its **absolute hard-max** (clamp +
-    NAK, §9). The user cap is a convenience/policy tightening, **not** the untrusted-
-    proof limit — that stays layer 1. *Open (§10):* optionally also send the user cap to
-    the controller for defense-in-depth.
+  - **Enforcement (DECIDED; strengthened 2026-07-17):** the user setting is validated
+    **CYD-side** (editor + pre-send), and — now that the **settings store lives on the
+    controller** (§2/§7 revision) — the controller **also holds the user per-mode caps**
+    and enforces them, not only its absolute hard-max. This **resolves the former open**
+    ("optionally also send the user cap to the controller for defense-in-depth"): the cap
+    is native to the controller's store, so the defense-in-depth is structural, not an
+    extra message. The controller's **absolute** per-mode hard-max (clamp + NAK, §9)
+    remains the untrusted-proof limit — layer 1, unchanged.
 - **Enclosure over-temp (electronics protection):** on-PCB case sensor (§6),
   two-threshold **warn → auto-abort** to safe state. Protects the SSR/PSU/caps —
   distinct from L0's chamber high-limit, which prevents *fire*; this protects the
@@ -775,6 +809,12 @@ freeing the 2.8"'s bit-banged touch pins while taking its backlight pin.
 **The 3.5" is the default because of the §21 row**, not the extra pixels: without a radio there
 is no OTA, and OTA is the controller's only field-reflash path once the oven is enclosed (§25).
 
+> **REVISED 2026-07-17 (§2):** that §21 rationale is now **moot for production** — WiFi/OTA
+> moved to the controller, and a **radio-less production CYD never brings WiFi up**, so the
+> 2.8"'s brownout no longer gates the CYD. The 3.5" stays default on **size + verified
+> status** (and it still brings WiFi up in the `_uidev` screenshot build, which keeps the
+> radio). What changed is the *why*, not the choice.
+
 ### How "which board" is expressed (the rule that keeps this cheap)
 
 - **`include/cyd_board.h`** is the *only* place that reads a `CYD_BOARD_*` flag. It dispatches
@@ -825,6 +865,17 @@ is no OTA, and OTA is the controller's only field-reflash path once the oven is 
   allocator). OTA itself has runtime room. **Always verify a memory change with a clean firmware
   build (`pio run -t clean`), never an incremental one** — an incremental link can pass while a
   clean link overflows.
+  - **REVISED 2026-07-17 — production loses the radio (§2), so this ceiling relaxes.**
+    WiFi moved to the controller, so the **production** CYD firmware links **no WiFi
+    static objects** — the ~1 kB-over pressure and the ≤ ~60 kB pool cap were *WiFi's*, and
+    both lift. Combined with dropping the on-CYD profile/settings stores (their view-model
+    name buffers + LittleFS/NVS statics also left `dram0_0_seg`), production now has room to
+    **raise `DRAW_BUF_LINES`** (§6a draw-buffer menu — the biggest UI-speed lever) and
+    optionally restore the 80 kB pool for the keyboard popovers. The `_uidev` build still
+    carries WiFi (screenshots), so it keeps the old constraints — hence `DRAW_BUF_LINES`
+    stays `#ifndef`-guarded so `_uidev` can override *down*. **The clean-build rule is
+    unchanged and doubly important here:** verify every one of these bumps with
+    `pio run -t clean`.
 - **The 3.5"'s contrast is a real design input, not a defect to tune out.** Its blacks sit grey
   at every backlight level, which is a property of the glass, and the §14 palette is built on
   colour against near-black — so it has less headroom here than the palette assumes.
@@ -837,11 +888,19 @@ is no OTA, and OTA is the controller's only field-reflash path once the oven is 
 
 ## 7. Persistence & configuration
 
-**Profile storage (DECIDED): CYD onboard flash via LittleFS.** The CYD owns the
-profile library; the controller only ever holds the single active run's recipe
-(pushed at start of run). (The microSD *is* used — but for data logging, not
-profiles; see below. Profiles stay in flash so a run never depends on a card being
-inserted.)
+**Profile storage — REVISED 2026-07-17: the controller owns it, on its onboard flash
+via LittleFS (DECIDED).** The profile library, its store, and its stock/user rule
+move to the **controller** (§2 revised division of labor — the CYD ran out of DRAM
+to host it alongside LVGL, §6a). The controller holds the whole library in its
+internal flash (LittleFS); the CYD **edits** profiles as a remote client over the
+expanded protocol (§9 profile-management messages). The controller still compiles /
+executes the single active run's recipe from the accepted `Recipe` (§5) — that path
+is unchanged; what moved is *persistence + browsing*. Profiles live in **flash, not
+on the SD**, so a run never depends on a card. (The microSD *is* used — for data
+logging, on the **CYD**; see below.)
+
+> *Superseded phrasing (kept for history): "CYD onboard flash via LittleFS; the CYD
+> owns the profile library." The CYD is now the editing UI, not the owner.*
 
 **Separate per-mode libraries (DECIDED):** cure and reflow profiles live in
 **independent stores** — separate LittleFS directories (e.g. `/profiles/cure/`,
@@ -849,19 +908,27 @@ inserted.)
 can therefore only ever load a same-mode profile, so the §4 mode cap and §12 template
 always match. Browsing/CRUD is in §23.
 
-**Authoring (DECIDED): on-device editing + PC authoring.** Profiles can be
-created/edited on the CYD touchscreen and saved to LittleFS directly. PC authoring
-stays useful for seeding versioned defaults and bulk edits. This makes the CYD UI
-own a profile editor (§ editing UI below).
+**Authoring (DECIDED): on-device editing + PC authoring.** Profiles are
+created/edited on the CYD touchscreen; **Save writes through to the controller's
+store over the link** (§9 `ProfilePut`), no longer to a local LittleFS. PC authoring
+stays useful for seeding versioned defaults and bulk edits. The CYD UI still **owns
+the profile editor** (§ editing UI below) — editing is UI; only *persistence* moved.
+Because a profile is now a **typed wire message** (`Phase`/`Profile` in the shared
+`.proto`, §9), the same schema a future PC authoring tool would target is the one the
+controller stores.
 
-**Transfer path (for PC-authored profiles):** profiles live in flash, not on the SD
-card (so a run never depends on a card), so two mechanisms, not mutually exclusive:
+**Transfer path (for PC-authored profiles):** profiles live in the **controller's**
+flash, not on the SD card (so a run never depends on a card), so two mechanisms, not
+mutually exclusive:
 
-- **Baseline:** keep default profile JSON in a repo `data/` dir; `pio run -t
-  uploadfs` packs it into the LittleFS image. Versioned, simple, needs a USB
-  reflash.
-- **On-demand:** a serial or local-WiFi upload endpoint to push a one-off profile
-  into LittleFS without reflashing.
+- **Baseline:** keep default profiles in a repo `data/` dir; `pio run -t uploadfs`
+  packs them into the **controller's** LittleFS image (the stock seed set). Versioned,
+  simple, needs a USB reflash of the controller.
+- **On-demand:** push a one-off profile into the store without reflashing — over the
+  **CYD link** (§9 `ProfilePut`, the mechanism the on-device editor already uses) or,
+  once the controller has WiFi (§21/D9), a local-WiFi upload endpoint **on the
+  controller**. Either way the controller's store validates the untrusted blob (§23) —
+  it is the safety MCU, so it hardens the deserializer against a malformed push.
 
 **Editing UI (DECIDED — full create + edit):** the on-device editor builds/edits
 profiles as a uniform per-phase **{target temp, ramp `x`, hold `y`}** form (`x = 0`
@@ -872,14 +939,21 @@ Calibration correction factors (from the workpiece-TC calibration workflow, §6)
 **generated `lib/calibration/oven_cal.h` compiled into both firmwares** (offline PC
 fit → committed file → both binaries identical), *not* NVS. See §6.
 
-**Device settings (DECIDED):** user preferences — units, per-mode **max-temp caps**
-(UV/reflow, §4), sleep/brightness constants, WiFi — persist on the CYD (LittleFS or
-NVS), separate from the profile library. Firmware ships the **defaults** (UV max
-100 °C, reflow max 250 °C, §4); the Settings screen (§24) edits them, always within the
-firmware absolute hard-max bounds, and **stored values are clamped to the current
-hard-max at boot** (§4) so an update can't leave a stale higher cap. These are
-CYD-side policy — the controller's absolute per-mode hard-max still governs
-independently (§4).
+**Device settings — REVISED 2026-07-17: persisted on the controller (DECIDED).**
+User preferences — units, per-mode **max-temp caps** (UV/reflow, §4), sleep/brightness
+constants, WiFi — persist in the **controller's** store (its LittleFS, a single blob
+beside the profile library), separate from the profile library. The Settings screen
+(§24) reads them at entry and writes them back over the link (§9 `SettingsGet`/`Put`);
+the CYD boots on the shipped **defaults** (UV max 100 °C, reflow max 250 °C, §4) and
+adopts the stored values when the link comes up (a ~1 s window where brightness/sleep
+use defaults — harmless). Stored values are **clamped to the current hard-max at boot**
+(§4) so an update can't leave a stale higher cap.
+
+- **This resolves the §4 defense-in-depth open.** With the user per-mode caps now
+  living on the controller, the safety MCU can enforce them too (not only its absolute
+  hard-max) — the user cap is no longer merely CYD-side policy. The controller's
+  **absolute** per-mode hard-max still governs independently and remains the
+  untrusted-proof backstop (§4 layer 1).
 
 ### Data logging to SD (DECIDED)
 
@@ -901,9 +975,15 @@ board-temp estimator arc (§6).
   `workTemp` (the permanent workpiece TC, §6) is logged like every channel;
   calibration runs attach it to the scrap calibration PCB (§20).
 - **One file per run**, named by run-id + profile.
-- **Retrieval (DECIDED):** the **SD stays permanently inserted**; logged files are
-  pulled **over WiFi from the CYD's HTTP server** (§21), not by removing the card.
-  Physically pulling the card is only an offline fallback.
+- **Retrieval:** the **SD stays permanently inserted** on the **CYD** (the board with
+  the slot — the controller's pins are reserved for the oven, §2). Logged files are
+  pulled over WiFi, not by removing the card; physically pulling the card is the
+  offline fallback. **Open (§10), created by the §2 revision:** WiFi now lives on the
+  **controller** (§21), but the logs live on the **CYD's** SD — so the data-server
+  either runs on the CYD's own dev-radio (undoes the memory win), or the controller's
+  server reaches CYD-SD logs over the link (a file-bridge over `lib/protocol`), or the
+  logging itself later moves to a controller-side card. Deferred with the rest of §21/D9;
+  logging (telemetry→CYD-SD) is unaffected in the meantime.
 - ⚠️ **The real SD risk is heartbeat starvation, not a touch-SPI conflict.** (The
   oft-cited SD↔touch VSPI conflict doesn't apply to this board — touch is on its
   own bit-banged software SPI, per the hardware-bringup skill.) SD cards routinely
@@ -991,6 +1071,14 @@ Cadence numbers are the accepted defaults (§ table below).
   `Calibrate` — they change persistent controller state, so must land
   exactly. (`Abort{}` is fire-and-forget *and* implied by stopping the heartbeat —
   belt and suspenders.)
+- **Request/reply path (seq + data-reply, retried until the reply arrives) — ADDED
+  2026-07-17:** the profile-library + settings management the §2 revision moved to the
+  controller (browse/read/write/delete profiles, get/put settings). Same seq +
+  single-outstanding + dedup discipline as the setup path, but the response carries a
+  **payload** (a profile list, a profile, a settings blob), not just a verdict — a
+  genuinely new shape (request→data vs setup's request→verdict). It is its own
+  reliability pair in `lib/protocol` (below) so it never touches the
+  authorization-bearing setup/hot paths. Idle-context UI traffic, never in the run loop.
 
 ### Message set (protobuf messages)
 
@@ -1046,6 +1134,51 @@ controller → CYD:
 - `Done{ session }` → profile finished cleanly.
 - `Fault{ session, code }` → run aborted to safe state (over-temp, sensor fault,
   lost link, …).
+
+### Profile & settings management (ADDED 2026-07-17 — the §2 revision)
+
+Moving the profile library + device settings to the controller (§2/§7) means the
+**profile domain model itself is now a wire type**, and the CYD needs a message family
+to browse/read/write it as a remote client. All of this rides the **request/reply
+path** (above): idle-context, seq-correlated, single-outstanding, retried until the
+reply lands, deduped so a resent request never double-applies.
+
+- **New shared types (the domain model on the wire):**
+  - `FanMode { AUTO, ON, OFF }` — the tri-state a *stored* phase carries. (Only the
+    compiled `Recipe` carries resolved on/off, so `Segment.conv_fan` stays a bare
+    bool; the store keeps the `Auto` **intent** so it re-resolves if calibration
+    changes, §5.)
+  - `Phase { name, target_c, ramp_s, hold_s, exposure_per_surface, uv, motor,
+    fan_mode }` — mirrors the CYD's editable `Phase` (the ramp-`x`/hold-`y` domain
+    form, §5/§12), bounded `repeated Phase` ≤ `kMaxPhases` (32) and `name` ≤
+    `kPhaseNameCap` (16) in `oven.options`.
+  - `Profile { mode, name, stock, repeated Phase }` — one stored profile.
+  - `ProfileSummary { name, stock, peak_c, total_s }` — the row facts (§23) the
+    **controller** computes (it compiles the shared `oven_cal.h` too), so one list
+    request renders the whole library without a round-trip per row.
+  - `Settings { fahrenheit, uv_max_c, reflow_max_c, brightness/sleep fields, … }` —
+    the device-settings blob (§24).
+- **CYD → controller (requests):**
+  - request→data-reply: `ProfileListReq{ seq, mode }`, `ProfileGetReq{ seq, mode,
+    name }`, `SettingsGetReq{ seq }`.
+  - request→verdict (Ack/Nak): `ProfilePut{ seq, Profile }`, `ProfileDelete{ seq,
+    mode, name }`, `ProfileDup{ seq, mode, src, dst }`, `ProfileRename{ seq, mode,
+    old, new }`, `SettingsPut{ seq, Settings }`. The controller's store owns the
+    dup/rename **collision resolution** and returns the final name (so the CYD doesn't
+    round-trip once per naming attempt, §23).
+- **controller → CYD (replies):** `ProfileList{ seq, repeated ProfileSummary }` (≤
+  `kMaxListed`), `ProfileData{ seq, Profile }`, `SettingsData{ seq, Settings }`; plus
+  the shared `Ack{ seq }` / `Nak{ seq, reason }` for the verdict requests. New
+  `NakReason`s: `NAK_STOCK_READONLY`, `NAK_NAME_INVALID`, `NAK_NOT_FOUND`,
+  `NAK_STORE_FULL`.
+- **Untrusted-input note (the store is on the safety MCU now).** These messages carry
+  operator/PC-authored profiles into the controller, so its store hardens the
+  deserializer exactly as the CYD's did (§23) — bad magic/version/bounds/name rejected,
+  never mis-parsed — and it is added to the controller's fuzz surface (`fuzz/`,
+  alongside the frontdoor/decode/validator harnesses).
+- These types are **behind the schema-hash gate** (only `Hello` is frozen), so adding
+  them is a normal matched-pair reflash. New TinyFrame type ids take `0x19+` in
+  `lib/protocol/messages.h`.
 
 ### Session & safety semantics
 
@@ -1121,14 +1254,19 @@ on a matched-pair point-to-point link.)
 
 ### Firmware transport is out-of-band (note)
 
-OTA (§21) does **not** ride this protocol. To reflash the controller the CYD tears the
-TinyFrame link down and speaks the controller's **native ROM serial loader**
-(esptool/SLIP) over the same UART, then re-establishes the link and re-runs the
-`Hello` schema-hash handshake. The flash itself is verified **out-of-band** via the
-ROM loader's readback (image hash vs the bundle manifest, §25); the handshake gate —
-which the frozen `Hello` contract keeps decodable across any version pair — then
-catches a partially-applied bundle (stale ↔ new) and holds the system in safe state
-until both boards match (§21).
+OTA (§21) does **not** ride this protocol. **REVISED 2026-07-17:** with WiFi + OTA
+re-homed to the controller (§2/§21), the controller **self-updates over its own
+radio** (standard ESP32 A/B) — no in-system-programming over the UART, which is what
+the earlier "CYD tears the link down and speaks the ROM loader" text described. The
+CYD's own field-reflash path once WiFi leaves it is a **deferred open** (§21). What is
+unchanged and still load-bearing: any half-applied pair is caught by the **schema-hash
+gate** — the frozen `Hello` contract stays decodable across any version skew, so a
+stale ↔ new pair holds the system in safe state until both boards match (§21).
+
+> *Superseded (kept for history): the controller had no radio, so the CYD reflashed it
+> by driving GPIO0+EN into the ROM serial loader (esptool/SLIP) over the link and
+> readback-verifying against the bundle manifest (§25). That whole leg goes away once
+> the controller OTAs itself.*
 
 ### Code shape
 
@@ -1136,6 +1274,15 @@ until both boards match (§21).
 (de)serialize + range-validate, and the run state machine. Host-tested in
 `native_logic`. The real UART sits behind a transport port (an in-memory pipe in
 tests). Linked into **both** firmwares so the contract can't drift.
+
+The three reliability shapes each get a matched sender/responder pair, all header-y
+pure C++: hot (`HeartbeatSender`/`TelemetrySender` + `HeartbeatMonitor`), setup
+(`ReliableSender`/`SetupResponder`, request→verdict), and — ADDED 2026-07-17 —
+**request/reply** (`RequestClient`/`RequestResponder`, request→data-reply) for the
+profile/settings management above. The new pair mirrors the setup pair's seq +
+single-outstanding + dedup discipline but delivers a payload reply; keeping it a
+separate pair is deliberate, so management traffic can never perturb the
+authorization-bearing setup/hot paths the `SessionGate`/`SafetySupervisor` depend on.
 
 ### Cadence/params (DECIDED — accepted defaults)
 
@@ -1256,11 +1403,17 @@ starting that step; untagged detail inside an item inherits the tag.
   UART lands on **UART0 (GPIO1/3)** — the ROM serial loader's pins — and the
   board carries the GPIO0/EN pull-ups + EN series-R/RC hardening. Module vs bare
   chip for the ESP32-WROOM-32E is the remaining layout choice.
-- **Controller field-update = OTA-through-CYD (DECIDED, §21)** *(§8 step 6)*: the
-  enclosed controller has no reachable USB, so CYD-driven ROM-loader reflash over
-  the UART is the *primary* update path, not a fallback. Open: the CYD's embedded
-  **ESP32 serial-loader client** implementation, and verifying the **GPIO0/EN
-  control-line** wiring (§2) on the PCB.
+- **~~Controller field-update = OTA-through-CYD~~ → controller self-OTA over its own
+  radio (REVISED 2026-07-17, §2/§21)** *(§8 step 6)*: WiFi moved to the controller, so it
+  **self-updates** (standard A/B) — the old CYD-as-ISP / ROM-loader-over-UART / GPIO0-EN
+  path is retired. **New open: the CYD's own field-reflash path** once WiFi leaves it —
+  flash over its (front-panel) **USB** if reachable, or make the **controller its ISP**
+  over the link (re-pin the CYD link to UART0). Decide at enclosure time; not needed for
+  bench work (both boards flash over USB).
+- **Data-server ↔ CYD-SD bridge (NEW open 2026-07-17, §7/§21)** *(§8 step 6)*: logs live
+  on the **CYD's** SD but the WiFi/HTTP server now lives on the **controller** — reconcile
+  by bridging log files over the link, running the server on the CYD's dev-radio (undoes
+  the memory win), or later moving logging controller-side. Deferred with §21/D9.
 - **Connectivity / OTA (§21, §25, §27)** *(§8 step 6)*: WiFi provisioning path —
   **on-device join** (§27 setup flow) vs compile-time **`include/secrets.h`**
   (view goes status-only); OTA image **signing/authentication** on a mains
@@ -1329,6 +1482,20 @@ interlock, high-limit) · `ICaseTempSensor` · `IHumiditySensor` · `IClock`
 `ISerialTransport` (the protocol transport, §9). (`ICalibrationStore` (NVS) was
 dropped from the baseline — calibration is compiled-in, §6; it returns only if
 the parked NVS-override enhancement is ever activated.)
+
+**Storage ports — ADDED 2026-07-17 (the §2 revision).** The profile library + device
+settings now persist on the controller (§7), so its port set gains the two storage
+interfaces that used to be CYD-side: `IProfileStorage` (keyed blob CRUD — list / read /
+write / remove a profile *by name*) and `ISettingsStorage` (single settings blob). The
+real adapter is `LittleFsProfileStorage` / `LittleFsSettingsStorage` over the
+controller's own LittleFS partition; the `Fake*` adapters keep the store logic
+host-testable with no board. The portable **`ProfileStore` + `SettingsStore` logic
+moves into `lib/control_logic`** (from `lib/app_logic`), with the store hardened as an
+untrusted-input deserializer (it is the safety MCU, and profiles arrive over the wire,
+§9/§23). Two small **request-responders** (`ProfileResponder` / `SettingsResponder`)
+sit behind `ControllerLink` as new `IMessageObserver` routes — the same seam
+`SetupResponder` occupies for the setup path — answering the §9 profile/settings
+management requests off the stores.
 
 ### Detailed sketch — heater / time-proportioning
 
@@ -1406,6 +1573,15 @@ The editor edits **any profile buffer** — a **saved library profile** (Profile
 §23) or a **run's ephemeral working copy** (Setup → Edit, §19). Same UI; only the save
 target differs (a library file vs discarded when the run ends). Editing a **stock**
 (read-only) profile becomes a **Save-as** so the factory reference survives (§23).
+
+> **REVISED 2026-07-17 (§2):** the editor still mutates an **in-RAM working copy** (a
+> local `Phase[]`), so field-editing and the live preview are unchanged and instant. What
+> moved is the endpoints: opening a saved profile **fetches** it from the controller
+> (§9 `ProfileGetReq` → `ProfileData`) and **Save** issues a `ProfilePut` over the link
+> (validated by the controller's store), rather than reading/writing a local LittleFS.
+> Save therefore has a brief **saving / save-failed** state. The `Phase ↔ oven_Phase`
+> conversion happens at that wire boundary (a small `phase_codec`), so the editor,
+> templates, compiler, and preview keep speaking the domain `Phase`.
 
 ### Key insight: edit parameters, not the curve
 
@@ -2091,6 +2267,34 @@ on leave (no PSRAM to hoard screens).
 
 ## 21. Connectivity — WiFi services (data download + OTA)
 
+> **REVISED 2026-07-17 — WiFi/OTA move to the controller (design target; unbuilt).**
+> The §2 revision makes the CYD a UI remote with **no radio in production** (freeing the
+> DRAM the UI needs, §6a), so the WiFi services described below **re-home to the
+> controller's** ESP32 radio (previously "dead weight for control", now the connectivity
+> host). Read every "the CYD does X over WiFi" in this section as "the **controller**
+> does X over its radio" unless noted. What that changes, and what stays open:
+>
+> - **OTA is much simpler:** the controller **self-updates over its own radio** (standard
+>   A/B), so the entire "CYD drives GPIO0+EN → ROM serial loader over the UART" leg (§21
+>   below, §25) **goes away**. The matched-pair schema-hash gate (§9) still guards a
+>   half-applied pair.
+> - **The CYD's own field-reflash path is a DEFERRED OPEN.** With WiFi gone it can't
+>   self-OTA. Options (decide at enclosure time, §10): flash it over its **USB** if the
+>   port is reachable (front-panel HMI — likely), *or* make the **controller its ISP**
+>   over the link (mirror of the old direction; needs the CYD link re-pinned to its
+>   UART0/ROM-loader pins). Not needed now — bench work flashes both boards over USB.
+> - **Data-server vs SD-on-the-CYD is an OPEN (§7/§10):** logs live on the **CYD's** SD
+>   but WiFi is on the **controller** — the server must bridge that (controller server
+>   reaching CYD-SD over the link), or logging later moves controller-side. Deferred.
+> - **Board power (§6a):** the WiFi-brownout risk that made the 3.5" default now applies
+>   to the **controller's** 3.3 V rail (its custom PCB is already spec'd for the transient,
+>   §2), not the CYD. A radio-less CYD never brings WiFi up.
+> - **Build status:** none of this is built — it stays the future **§21/D9** work. The
+>   2026-07-17 change lands only the storage + protocol move (§2/§7/§9). The prose below
+>   is the original CYD-hosted design, retained as the substrate the controller-hosted
+>   version reuses (HTTP file serving, A/B self-update, idle+cool gating, fail-closed
+>   staging all carry over unchanged — only *which board* hosts them flips).
+
 The CYD's ESP32 WiFi (dead weight for control) provides two **local-network
 convenience services**, both **idle-only** and never required for a run (§1).
 
@@ -2380,8 +2584,13 @@ profiles** lives in Settings (per mode, §24).
 
 ### Behavior & tie-ins
 
-- **Reflects LittleFS live:** the list *is* the mode's store — profiles pushed over
-  serial/WiFi (§7/§21) land in the right mode dir and appear automatically.
+- **Reflects the controller's store (REVISED 2026-07-17):** the list is a **remote
+  view** of the mode's store on the controller (§2/§7) — the screen issues a
+  `ProfileListReq` on entry and after any mutating action and renders the
+  `ProfileSummary` rows it gets back (§9). Profiles pushed to the controller (over the
+  link, or future WiFi §21) appear on the next refresh. Because it's now a round-trip,
+  the list has **loading / error** states (a brief spinner on entry; a retry affordance
+  if the request `Failed`) that a local LittleFS read never needed.
 - **Empty state:** "No profiles — New to create one" (shouldn't happen with stock seeds).
 - **Sort:** recently-used first, then alphabetical (default, §10).
 - **Rename** is via the editor (§12 name entry), not a separate library action.
@@ -2396,12 +2605,18 @@ primary job: choose a profile.
 
 ### Code architecture (per the ui-development skill)
 
-- A per-mode **`ProfileStore`** in `lib/app_logic` over a **storage port** (LittleFS
-  adapter on device, in-memory fake on host) — list/load/save/delete/duplicate, no `lv_`
-  deps → host-tested in `native_logic`.
+- **REVISED 2026-07-17 (the §2 move):** the per-mode **`ProfileStore`** + its storage
+  port moved to the **controller** (`lib/control_logic`, §11). The CYD keeps a
+  **`ProfileClient`** (`lib/app_logic`) that speaks the §9 profile-management
+  request/reply and caches the current `ProfileList` + one fetched `Profile` in RAM;
+  it's the seam the view-model binds to (fake client on host, real link in firmware) —
+  host-tested in `native_logic` exactly as the store was.
 - A **`ProfileLibraryViewModel`** scoped to one mode owns `lv_subject_t` list/selection
-  state; views bind + render. The detail screen reuses the **shared curve-preview logic**
-  (§12) for its read-only chart. Create-on-demand, delete on leave (no PSRAM, §skill).
+  state **plus a load-state subject** (loading / ready / error) for the new round-trip;
+  views bind + render. The detail screen reuses the **shared curve-preview logic** (§12)
+  for its read-only chart — that math (`profile_facts`, `oven_cal`) **stays on the CYD**,
+  computed from the fetched `Profile`'s phases, so the preview is instant once the
+  profile is in hand. Create-on-demand, delete on leave (no PSRAM, §skill).
 
 ## 24. Settings
 
@@ -2563,18 +2778,29 @@ its own screen (progressive disclosure, as the guide intends).
 
 ### Code architecture (per the ui-development skill)
 
-- A typed **`SettingsStore`** in `lib/app_logic` over the storage port (LittleFS adapter /
-  in-memory fake), with **validation baked in** — e.g. the shared numeric editors
-  clamp a cap to the firmware hard-max — host-tested in `native_logic`. Both numeric
-  editors are **reusable widgets** driven by the same per-field config
-  (min/max/step/units — which also decides stepper-vs-keypad, the >20-step rule),
-  used by settings and the profile editor (§12) alike.
+- A typed **`SettingsStore`** with **validation baked in** — e.g. the shared numeric
+  editors clamp a cap to the firmware hard-max — host-tested in `native_logic`. **REVISED
+  2026-07-17 (§2/§7):** the store + its storage port moved to the **controller**
+  (`lib/control_logic`); the CYD keeps a **`SettingsClient`** that reads via
+  `SettingsGetReq` on entry (falling back to `settings_defaults.h` until the reply lands)
+  and writes via `SettingsPut` (§9), caching the blob in RAM. Both numeric editors are
+  **reusable widgets** driven by the same per-field config (min/max/step/units — which
+  also decides stepper-vs-keypad, the >20-step rule), used by settings and the profile
+  editor (§12) alike.
 - Per-panel **view models** expose `lv_subject_t` settings; views bind + render. The temp
   caps publish to the subjects the profile editor (§12) reads for its editor ceilings, so
   a changed cap tightens the editor with no extra wiring. Hub + panels create-on-demand,
   delete on leave (no PSRAM, §skill).
 
 ## 25. OTA firmware-update flow
+
+> **REVISED 2026-07-17 (see §21 banner):** WiFi/OTA move to the **controller**, which
+> self-updates over its own radio — so the **controller-first, flash-over-UART leg
+> below is superseded** (the controller no longer needs the CYD as its ISP). The
+> **fail-closed matched-pair invariant survives**: the §9 schema-hash gate still holds
+> the pair in safe state on any half-applied outcome. The **CYD's** update path is a
+> deferred open (§21). Unbuilt — future §21/D9. The wizard/UX below is retained as the
+> reusable substrate; only *which board flashes what* changes.
 
 A wizard that updates **both boards as one matched pair** over WiFi, launched from
 **Settings → Data & firmware → Update firmware** (§24). Its defining property is the
@@ -2807,6 +3033,13 @@ than typing for a nudge), **>20 steps → keypad, directly** (never route a
 Where you go to **get logged data onto a PC** and manage WiFi. Reached from Settings →
 **Data & firmware** (the data half; the firmware half is OTA, §25) and Settings →
 **Network** (§24). **Idle-only** — all WiFi services are (§21).
+
+> **REVISED 2026-07-17 (see §21 banner):** WiFi now lives on the **controller**, so the
+> "WiFi status", QR/URL, and WiFi-setup elements below report/drive the **controller's**
+> radio (the CYD sends WiFi-config over the link and renders status it receives back —
+> it's still a UI remote here too). The **logs are on the CYD's SD** while the server is
+> on the controller — the §7/§21 data-server↔SD-bridge open governs how this screen's
+> URL actually reaches the files. Unbuilt (future §21/D9); layout/UX below is retained.
 
 **Key framing:** the actual file browsing/downloading happens in a **PC (or phone)
 browser** against the CYD's HTTP server (§21) — so this screen's job is to get you *to*

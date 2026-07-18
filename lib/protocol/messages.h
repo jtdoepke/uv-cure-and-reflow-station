@@ -27,4 +27,21 @@ inline constexpr uint8_t kTfTypeTelemetry = 0x16;
 inline constexpr uint8_t kTfTypeDone = 0x17;
 inline constexpr uint8_t kTfTypeFault = 0x18;
 
+// Profile & settings management (design.md §9; added 2026-07-17 with the §2 "CYD is a UI
+// remote" split). Request/reply path — also gated by the schema handshake, so these ids may
+// churn as long as both boards are flashed together. Requests carry a seq; the matching reply
+// echoes it.
+inline constexpr uint8_t kTfTypeProfileListReq = 0x19;
+inline constexpr uint8_t kTfTypeProfileGetReq = 0x1A;
+inline constexpr uint8_t kTfTypeProfilePut = 0x1B;
+inline constexpr uint8_t kTfTypeProfileDelete = 0x1C;
+inline constexpr uint8_t kTfTypeProfileDup = 0x1D;
+inline constexpr uint8_t kTfTypeProfileRename = 0x1E;
+inline constexpr uint8_t kTfTypeSettingsGetReq = 0x1F;
+inline constexpr uint8_t kTfTypeSettingsPut = 0x20;
+inline constexpr uint8_t kTfTypeProfileList = 0x21;
+inline constexpr uint8_t kTfTypeProfileData = 0x22;
+inline constexpr uint8_t kTfTypeSettingsData = 0x23;
+inline constexpr uint8_t kTfTypeMgmtResult = 0x24;
+
 } // namespace protocol
