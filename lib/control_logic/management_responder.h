@@ -39,21 +39,26 @@ public:
     if (!rr_.isNew(m.seq)) {
       return;
     }
-    oven_ProfileList r = oven_ProfileList_init_zero;
+    // The reply message (~1.5 KB) and the list scratch (~1.4 KB) are members, not stack locals:
+    // this runs several frames deep behind the FrameLink poll on the safety MCU's loopTask, and
+    // together they are the dominant frame on the list path. Reuse is safe — the responder handles
+    // one request at a time (RequestResponder enforces single-outstanding) on the single control
+    // loop, and rr_.reply() copies the encoded bytes out before returning.
+    oven_ProfileList &r = reply_.list;
+    r = oven_ProfileList_init_zero;
     r.seq = m.seq;
     if (control::ProfileStore *s = storeFor(m.mode)) {
-      control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
-      size_t n = s->list(rows, control::ProfileStore::kMaxListed);
+      size_t n = s->list(rows_, control::ProfileStore::kMaxListed);
       const size_t cap = sizeof(r.profiles) / sizeof(r.profiles[0]);
       if (n > cap) {
         n = cap;
       }
       r.profiles_count = static_cast<pb_size_t>(n);
       for (size_t i = 0; i < n; ++i) {
-        std::strncpy(r.profiles[i].name, rows[i].name, sizeof(r.profiles[i].name) - 1);
-        r.profiles[i].stock = rows[i].stock;
-        r.profiles[i].peak_c = rows[i].facts.peak_c;
-        r.profiles[i].total_s = rows[i].facts.total_s;
+        std::strncpy(r.profiles[i].name, rows_[i].name, sizeof(r.profiles[i].name) - 1);
+        r.profiles[i].stock = rows_[i].stock;
+        r.profiles[i].peak_c = rows_[i].facts.peak_c;
+        r.profiles[i].total_s = rows_[i].facts.total_s;
       }
     }
     rr_.reply(m.seq, protocol::kTfTypeProfileList, oven_ProfileList_fields, &r);
@@ -64,12 +69,11 @@ public:
       return;
     }
     control::ProfileStore *s = storeFor(m.mode);
-    oven_Profile p = oven_Profile_init_zero;
-    if (s != nullptr && s->load(m.name, p)) {
-      oven_ProfileData r = oven_ProfileData_init_zero;
+    oven_ProfileData &r = reply_.data; // shares storage with reply_.list — never both live
+    r = oven_ProfileData_init_zero;
+    if (s != nullptr && s->load(m.name, r.profile)) { // decode straight into the reply; no 2nd copy
       r.seq = m.seq;
       r.has_profile = true;
-      r.profile = p;
       rr_.reply(m.seq, protocol::kTfTypeProfileData, oven_ProfileData_fields, &r);
       return;
     }
@@ -228,4 +232,15 @@ private:
   control::ProfileStore &cure_;
   control::ProfileStore &reflow_;
   control::SettingsStore *settings_ = nullptr;
+
+  // Reusable reply scratch kept off the loopTask stack (see onProfileListReq). A union: only one
+  // reply is built at a time, and ProfileList / ProfileData are never both live — the same trick
+  // ManagementClient uses on the CYD. SettingsData/MgmtResult are tiny and stay on the stack. POD
+  // nanopb structs, so the union needs no active-member bookkeeping. ~1.5 KB static on the
+  // controller, which has ample internal DRAM; it buys ~3 KB of loopTask stack headroom with rows_.
+  union ReplyScratch {
+    oven_ProfileList list;
+    oven_ProfileData data;
+  } reply_{};
+  control::ProfileStore::Summary rows_[control::ProfileStore::kMaxListed]{};
 };

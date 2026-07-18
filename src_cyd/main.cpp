@@ -319,6 +319,13 @@ static bool g_settings_fetched = false; // the one-time fetch-on-connect done
 enum class SettingsSync { Idle, Fetching, Pushing };
 static SettingsSync g_ss_state = SettingsSync::Idle;
 
+// A failed fetch/push must NOT re-fire every loop: that pins the one shared ManagementClient Busy
+// and starves the profile screens — the very failure that made "Profiles" unreachable when
+// SettingsGet went unanswered. Back off between attempts instead; the sync is background, so a few
+// seconds' delay before a retry is invisible, whereas a hot spin is not.
+static constexpr uint32_t kSettingsSyncRetryMs = 3000;
+static uint32_t g_ss_retry_after_ms = 0; // millis() deadline gating the next sync attempt
+
 // MemSettingsStorage fires this whenever the store writes (a settings edit) → queue a push.
 static void on_settings_saved(void *) {
   g_settings_dirty = true;
@@ -352,6 +359,8 @@ static void service_settings_sync() {
     if (g_mgmt_client.ready() && g_mgmt_client.lastOp() == Op::SettingsGet) {
       adopt_settings(g_mgmt_client.settings());
       g_settings_fetched = true;
+    } else {
+      g_ss_retry_after_ms = millis() + kSettingsSyncRetryMs; // failed: back off, don't spin
     }
     g_mgmt_client.clear();
     g_ss_state = SettingsSync::Idle;
@@ -361,12 +370,20 @@ static void service_settings_sync() {
     if (g_mgmt_client.busy()) {
       return;
     }
+    if (!g_mgmt_client.ready()) {
+      g_settings_dirty =
+          true; // push failed: keep the edit and retry after a backoff, don't lose it
+      g_ss_retry_after_ms = millis() + kSettingsSyncRetryMs;
+    }
     g_mgmt_client.clear();
     g_ss_state = SettingsSync::Idle;
     return;
   }
   if (!g_mgmt_client.idle() || !g_cyd_link.linkAlive()) {
     return; // client busy with a screen's request, or no controller yet
+  }
+  if (static_cast<int32_t>(millis() - g_ss_retry_after_ms) < 0) {
+    return; // within the post-failure backoff window (wrap-safe deadline compare)
   }
   if (!g_settings_fetched) {
     if (g_mgmt_client.requestSettingsGet()) {
