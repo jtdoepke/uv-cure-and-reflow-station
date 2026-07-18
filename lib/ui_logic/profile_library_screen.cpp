@@ -8,10 +8,11 @@
 #include "subjects.h"
 #include "theme.h"
 
-// ProfileStore lists up to kMaxListed; the whole list binds to one SelectableListModel so ▲/▼ can
+// The library lists up to kMaxRows; the whole list binds to one SelectableListModel so ▲/▼ can
 // walk it, so the model must hold at least as many. (The header keeps this dependency out of the
 // generic widget; the assert lives here where both types are known.)
-static_assert(ProfileStore::kMaxListed <= static_cast<size_t>(SelectableListModel::kMaxItems),
+static_assert(ProfileLibraryViewModel::kMaxRows <=
+                  static_cast<size_t>(SelectableListModel::kMaxItems),
               "SelectableListModel::kMaxItems must cover a full profile library");
 
 // Captureless thunks — a friend of ProfileLibraryScreen so they can reach its private navigation /
@@ -56,11 +57,12 @@ struct ProfileThunks {
 
 // --- Lifecycle ---
 
-void ProfileLibraryScreen::begin(lv_obj_t *parent, ProfileStore &cure, ProfileStore &reflow,
+void ProfileLibraryScreen::begin(lv_obj_t *parent, ManagementClient &client,
                                  const OvenModel &model) {
   parent_ = parent;
-  cure_vm_.init(cure, model);
-  reflow_vm_.init(reflow, model);
+  client_ = &client;
+  cure_vm_.init(client, oven_Mode_MODE_CURE, model);
+  reflow_vm_.init(client, oven_Mode_MODE_REFLOW, model);
   showChooser();
 }
 
@@ -112,6 +114,7 @@ void ProfileLibraryScreen::buildHeader(const char *title) {
 // --- Navigation ---
 
 void ProfileLibraryScreen::showChooser() {
+  pending_ = Pending::None; // dropping any in-flight interest; a new op overwrites the client
   page_ = Page::Chooser;
   buildChooser();
 }
@@ -120,16 +123,101 @@ void ProfileLibraryScreen::openMode(RecipeMode mode) {
   mode_ = mode;
   current_ = mode == RecipeMode::Cure ? &cure_vm_ : &reflow_vm_;
   current_->setFahrenheit(lv_subject_get_int(&subj_units) != 0);
-  current_->refresh();
   selected_ = 0;
-  page_ = Page::List;
-  buildList();
+  return_page_ = Page::Chooser;
+  // Fetch this mode's library from the controller (§9). The reply lands in poll() → buildList().
+  if (current_->requestList()) {
+    page_ = Page::Loading;
+    pending_ = Pending::List;
+    buildLoading("Loading profiles...");
+  } else {
+    page_ = Page::Error;
+    buildError();
+  }
 }
 
 void ProfileLibraryScreen::openDetail(int index) {
   selected_ = index;
-  page_ = Page::Detail;
-  buildDetail();
+  return_page_ = Page::List;
+  // Fetch the full profile for the curve (§9). The reply lands in poll() → buildDetail().
+  if (current_->requestDetail(static_cast<size_t>(index))) {
+    page_ = Page::Loading;
+    pending_ = Pending::Detail;
+    buildLoading("Loading...");
+  } else {
+    page_ = Page::Error;
+    buildError();
+  }
+}
+
+// Drive the async state machine (called every loop after client.service()).
+void ProfileLibraryScreen::poll() {
+  if (pending_ == Pending::None || client_ == nullptr || client_->busy()) {
+    return;
+  }
+  if (client_->failed()) {
+    pending_ = Pending::None;
+    client_->clear();
+    page_ = Page::Error;
+    buildError();
+    return;
+  }
+  // Ready — dispatch on what we asked for.
+  switch (pending_) {
+  case Pending::List:
+    current_->adoptList(client_->list());
+    client_->clear();
+    pending_ = Pending::None;
+    page_ = Page::List;
+    buildList();
+    break;
+  case Pending::Detail:
+    current_->adoptDetail(client_->profile());
+    client_->clear();
+    pending_ = Pending::None;
+    page_ = Page::Detail;
+    buildDetail();
+    break;
+  case Pending::Action:
+    // A mutation (dup/rename/delete) succeeded — re-list to reflect it.
+    client_->clear();
+    if (current_->requestList()) {
+      pending_ = Pending::List; // stay on Loading until the fresh list arrives
+    } else {
+      pending_ = Pending::None;
+      page_ = Page::List;
+      buildList();
+    }
+    break;
+  case Pending::None:
+    break;
+  }
+}
+
+void ProfileLibraryScreen::buildLoading(const char *msg) {
+  clearParent();
+  configParent();
+  buildHeader(mode_ == RecipeMode::Cure ? "Cure profiles" : "Reflow profiles");
+  lv_obj_t *lbl = lv_label_create(parent_);
+  lv_label_set_text(lbl, msg);
+  lv_obj_set_flex_grow(lbl, 1);
+  lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+  theme::apply_caption(lbl);
+}
+
+void ProfileLibraryScreen::buildError() {
+  clearParent();
+  configParent();
+  buildHeader("Profiles");
+  lv_obj_t *lbl = lv_label_create(parent_);
+  // The one thing a UI remote must say when the link is down (§22 wording is for run faults; this
+  // is a benign idle-context management failure, so a plain caption, not the red modal).
+  lv_label_set_text(lbl, "Couldn't reach the controller.\nCheck the link and try again.");
+  lv_obj_set_width(lbl, lv_pct(100));
+  lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_flex_grow(lbl, 1);
+  lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+  theme::apply_caption(lbl);
 }
 
 void ProfileLibraryScreen::back() {
@@ -148,6 +236,18 @@ void ProfileLibraryScreen::back() {
     break;
   case Page::List:
     showChooser();
+    break;
+  case Page::Loading:
+  case Page::Error:
+    // Abandon the in-flight/failed request and return to the last stable page. A late reply is
+    // ignored (pending_ cleared) and a subsequent request just overwrites the client.
+    pending_ = Pending::None;
+    if (return_page_ == Page::List) {
+      page_ = Page::List;
+      buildList();
+    } else {
+      showChooser();
+    }
     break;
   case Page::Chooser:
     if (on_exit_ != nullptr) {
@@ -294,18 +394,17 @@ void ProfileLibraryScreen::buildDetail() {
   profile_facts::CurvePoint over[profile_facts::kMaxCurvePoints];
   float bounds[profile_facts::kMaxCurvePhases];
   profile_facts::TimeSpan uv[kMaxPhases];
-  const size_t nr = current_->sampleRequested(selected_, req, profile_facts::kMaxCurvePoints);
-  const size_t no = current_->sampleOvershoot(selected_, over, profile_facts::kMaxCurvePoints);
-  const size_t nb =
-      current_->samplePhaseBoundaries(selected_, bounds, profile_facts::kMaxCurvePhases);
-  const size_t nuv = current_->sampleUvSpans(selected_, uv, kMaxPhases);
+  const size_t nr = current_->sampleRequested(req, profile_facts::kMaxCurvePoints);
+  const size_t no = current_->sampleOvershoot(over, profile_facts::kMaxCurvePoints);
+  const size_t nb = current_->samplePhaseBoundaries(bounds, profile_facts::kMaxCurvePhases);
+  const size_t nuv = current_->sampleUvSpans(uv, kMaxPhases);
   // Phase labels: one per AUTHORED phase (its stored name). The implicit passive cool-down the
   // samplers append when the run ends hot (implicit_cool.h, §6) is a system safety phase, not
   // operator-authored — it gets no label; its separator and the end-time label carry the right
   // edge.
   char namebuf[profile_facts::kMaxCurvePhases][kPhaseNameCap];
   const char *names[profile_facts::kMaxCurvePhases];
-  const size_t authored = current_->phaseNames(selected_, namebuf, profile_facts::kMaxCurvePhases);
+  const size_t authored = current_->phaseNames(namebuf, profile_facts::kMaxCurvePhases);
   for (size_t i = 0; i < authored && i < nb; ++i) {
     names[i] = namebuf[i];
   }
@@ -340,7 +439,7 @@ void ProfileLibraryScreen::buildDetail() {
   }
 
   // Key facts: "peak 245° · ~6:10 · 4 phases".
-  const profile_facts::ProfileFacts f = current_->facts(selected_);
+  const profile_facts::ProfileFacts f = current_->facts();
   char peak[16];
   char dur[16];
   char facts[48];
@@ -385,9 +484,16 @@ void ProfileLibraryScreen::onEdit() {
 }
 
 void ProfileLibraryScreen::onDuplicate() {
-  current_->duplicate(selected_); // makes "<name> copy"; the list reflects it
-  page_ = Page::List;
-  buildList();
+  return_page_ = Page::List;
+  // Clone on the controller ("<name> copy", deconflicted against the cached list); poll() re-lists.
+  if (current_->requestDuplicate(static_cast<size_t>(selected_))) {
+    page_ = Page::Loading;
+    pending_ = Pending::Action;
+    buildLoading("Working...");
+  } else {
+    page_ = Page::Error;
+    buildError();
+  }
 }
 
 void ProfileLibraryScreen::onRenameRequested() {
@@ -396,13 +502,21 @@ void ProfileLibraryScreen::onRenameRequested() {
 }
 
 void ProfileLibraryScreen::onRenameCommit(const char *text) {
-  // Rename in the store; on success return to the list (the name changed, so the highlight's row
-  // may have moved under the alphabetical sort). On failure (empty/invalid/taken name) stay on the
-  // keyboard so the operator can pick another — the profile keeps its old name.
-  if (current_->rename(selected_, text)) {
-    page_ = Page::List;
-    buildList();
+  // Rename on the controller; poll() re-lists on success (the name changed, so the highlight's row
+  // may have moved under the alphabetical sort). A refusal (empty/invalid/taken name) comes back as
+  // a NAK → the error page; Back returns to the list to try again.
+  // Reject an empty or already-taken name client-side so the operator stays on the keyboard to pick
+  // another (the profile keeps its old name); the controller validates everything else.
+  if (text == nullptr || text[0] == '\0' || current_->nameExists(text)) {
+    return;
   }
+  return_page_ = Page::List;
+  if (current_->requestRename(static_cast<size_t>(selected_), text)) {
+    page_ = Page::Loading;
+    pending_ = Pending::Action;
+    buildLoading("Working...");
+  }
+  // else: client busy — stay on the keyboard (the profile keeps its old name).
 }
 
 void ProfileLibraryScreen::buildRename() {
@@ -437,10 +551,15 @@ void ProfileLibraryScreen::onDeleteRequested() {
 }
 
 void ProfileLibraryScreen::onDeleteConfirmed() {
-  current_->remove(selected_);
-  if (selected_ >= static_cast<int>(current_->count())) {
-    selected_ = 0;
+  return_page_ = Page::List;
+  // Delete on the controller; poll() re-lists. buildList() clamps the selection if the row is gone.
+  if (current_->requestRemove(static_cast<size_t>(selected_))) {
+    selected_ = 0; // the row is going away; reset the remembered highlight
+    page_ = Page::Loading;
+    pending_ = Pending::Action;
+    buildLoading("Working...");
+  } else {
+    page_ = Page::Error;
+    buildError();
   }
-  page_ = Page::List;
-  buildList();
 }

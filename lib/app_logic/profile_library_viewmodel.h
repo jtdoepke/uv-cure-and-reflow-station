@@ -1,62 +1,77 @@
-// profile_library_viewmodel.h — the per-mode logic behind the §23 profile library (backlog C4).
+// profile_library_viewmodel.h — the per-mode logic behind the §23 profile library (backlog C4;
+// rewired for Wave R3b of the §2 "CYD is a UI remote" split, 2026-07-17).
 //
-// One instance per mode (cure, reflow) over that mode's ProfileStore. It turns the store's contents
-// into what the library screen renders: a list of rows (name + "peak 245° · ~6:10" facts computed
-// from the §12 curve math), the detail facts + curve points for a highlighted profile, and the
-// store-mutating actions the screen's buttons drive (Dup with " copy" naming/collision resolution,
-// Delete). The New/Edit/Load actions leave for screens C4 does not own (editor §12/C5, Setup
-// §19/C6); those are the screen's to publish as a NavRequest, not this model's.
+// The profile store moved to the controller, so this view-model is now a REMOTE client's cache +
+// request issuer over a shared ManagementClient (§9), not a proxy over a local ProfileStore. It is
+// async: an operation issues a request and returns; the screen polls the client and calls the
+// adopt*() method when the reply lands. Two caches back the synchronous read interface the screen
+// renders from:
+//   - the LIST cache (ProfileSummary rows: name, stock, and the peak/duration facts the CONTROLLER
+//     computed, so a row needs no per-profile fetch), and
+//   - the DETAIL cache (the selected profile's phases, decoded via phase_codec after a Get), off
+//     which the curve/facts are computed locally with the §12 math (unchanged).
 //
-// Pure C++ — no LVGL, no Arduino. Selection state lives in the screen's SelectableListModel (which
-// owns the lv_subject_t), so this model stays a plain fact/action provider, host-tested under
-// native_logic_cyd against a FakeProfileStorage. The screen (ui_logic) copies rowLabel/rowValue
-// into SelectableListItems; the string buffers are members here so those borrowed pointers stay
-// valid while the list is shown (the SettingsScreen *_value_[] pattern).
+// Pure C++ — no LVGL, no Arduino. Host-tested under native_logic_cyd / a screen-level integration
+// against a real ManagementClient + fake responder.
 #pragma once
 
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 
+#include "IProfileStorage.h" // kProfileNameCap (the profile-name cap, shared with oven.options)
+#include "management_client.h"
+#include "oven.pb.h"
 #include "oven_cal.h"
+#include "phase.h"
+#include "phase_codec.h"
 #include "profile_facts.h"
-#include "profile_store.h"
 
 class ProfileLibraryViewModel {
 public:
-  static constexpr size_t kMaxRows = ProfileStore::kMaxListed;
+  // Max list rows == the wire ProfileList bound (oven.options) == the controller store's
+  // kMaxListed.
+  static constexpr size_t kMaxRows = 32;
   static constexpr size_t kValueCap = 24; // "peak 245° · ~6:10" + NUL, with °/· as 2 bytes each
 
-  // Default-constructed then init()'d, so a screen can hold one per mode as a member and bind the
-  // stores in begin() (the value_stepper_viewmodel idiom). The convenience ctor is for tests.
   ProfileLibraryViewModel() = default;
-  ProfileLibraryViewModel(ProfileStore &store, const OvenModel &model) { init(store, model); }
 
-  // `model` supplies the calibration the facts/curve are computed against (oven_cal::kDefaultModel
-  // in production; a toy model in tests). Both must outlive this object.
-  void init(ProfileStore &store, const OvenModel &model) {
-    store_ = &store;
+  // `client` is the shared remote client (single-outstanding); `mode` scopes every request;
+  // `model` supplies the calibration the facts/curve are computed against. All must outlive this.
+  void init(ManagementClient &client, oven_Mode mode, const OvenModel &model) {
+    client_ = &client;
+    mode_ = mode;
     model_ = &model;
     fahrenheit_ = false;
     count_ = 0;
+    detail_count_ = 0;
+    have_detail_ = false;
   }
 
-  RecipeMode mode() const { return store_->mode(); }
+  oven_Mode mode() const { return mode_; }
+  RecipeMode recipeMode() const { return phase_codec::modeFromWire(mode_); }
 
-  // Temperature unit for the row/detail facts — set by the screen from subj_units (this pure model
-  // cannot read the subject). Applied on the next refresh().
   void setFahrenheit(bool f) { fahrenheit_ = f; }
   bool fahrenheit() const { return fahrenheit_; }
 
-  // Reload the list from the store (alphabetical — recently-used is deferred, no usage clock) and
-  // recompute each row's fact string. Call on entry and after any mutating action.
-  void refresh() {
-    ProfileStore::Summary rows[kMaxRows];
-    count_ = store_->list(rows, kMaxRows);
+  // --- List: request + adopt ---
+
+  // Ask the controller for this mode's library. Returns false if the client is busy. The screen
+  // shows a loading state, polls the client, and calls adoptList() when it is Ready.
+  bool requestList() { return client_ != nullptr && client_->requestList(mode_); }
+
+  // Adopt a ProfileList reply into the row cache (call from the screen's poll on Ready).
+  void adoptList(const oven_ProfileList &list) {
+    count_ = list.profiles_count;
+    if (count_ > kMaxRows) {
+      count_ = kMaxRows;
+    }
     for (size_t i = 0; i < count_; ++i) {
-      std::strncpy(name_buf_[i], rows[i].name, kProfileNameCap - 1);
+      std::strncpy(name_buf_[i], list.profiles[i].name, kProfileNameCap - 1);
       name_buf_[i][kProfileNameCap - 1] = '\0';
-      stock_[i] = rows[i].stock;
+      stock_[i] = list.profiles[i].stock;
+      peak_[i] = list.profiles[i].peak_c;
+      total_s_[i] = list.profiles[i].total_s;
       buildValue(i);
     }
   }
@@ -66,162 +81,136 @@ public:
   const char *rowValue(size_t i) const { return i < count_ ? value_buf_[i] : ""; }
   const char *name(size_t i) const { return rowLabel(i); }
   bool rowStock(size_t i) const { return i < count_ && stock_[i]; }
-
-  // A stock profile is read-only (§23): Delete is disabled and Edit becomes Save-as.
   bool canDelete(size_t i) const { return i < count_ && !stock_[i]; }
   bool editIsSaveAs(size_t i) const { return rowStock(i); }
 
-  // Load the highlighted profile's full record (for the detail screen). False if the index is out
-  // of range or the blob fails validation.
-  bool loadDetail(size_t i, ProfileStore::StoredProfile &out) const {
-    if (i >= count_) {
+  // Is `name` already in the current cached list? Lets the rename UI reject an obvious clash
+  // client-side (staying on the keyboard) rather than round-tripping for a NAK (§23). The
+  // controller still validates authoritatively.
+  bool nameExists(const char *name) const { return nameTaken(name); }
+
+  // --- Detail: request + adopt + derived facts/curve (off the fetched phases) ---
+
+  // Fetch the full profile at row `i` for the detail curve. Returns false if `i` is out of range or
+  // the client is busy. The screen shows loading, polls, and calls adoptDetail() on Ready.
+  bool requestDetail(size_t i) {
+    if (i >= count_ || client_ == nullptr) {
       return false;
     }
-    return store_->load(name_buf_[i], out);
+    return client_->requestGet(mode_, name_buf_[i]);
   }
 
-  profile_facts::ProfileFacts facts(size_t i) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
+  // Adopt a ProfileData reply — decode its phases into the detail cache (call on Ready).
+  void adoptDetail(const oven_Profile &p) {
+    detail_count_ = phase_codec::phasesFromWire(p, detail_phases_, kMaxPhases);
+    have_detail_ = true;
+  }
+  bool haveDetail() const { return have_detail_; }
+  void clearDetail() { have_detail_ = false; }
+
+  size_t phaseCount() const { return detail_count_; }
+
+  profile_facts::ProfileFacts facts() const {
+    if (!have_detail_) {
       return {};
     }
-    return profile_facts::computeFacts(p.phases, p.phaseCount, store_->mode(), *model_);
+    return profile_facts::computeFacts(detail_phases_, detail_count_, recipeMode(), *model_);
   }
 
-  // The count of *authored* phases (clamped to kMaxPhases) — what the curve's phase-name labels
-  // index (via phaseNames()). The curve's boundaries carry one extra entry (the implicit cool-down,
-  // §6) when the run ends hot; the caller appends "Cool" for that, so it must not fold it into the
-  // count.
-  size_t phaseCount(size_t i) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
-      return 0;
-    }
-    return p.phaseCount > kMaxPhases ? kMaxPhases : p.phaseCount;
-  }
-
-  // Copy each authored phase's stored name (phase.h) for profile `i` into `out` (writing at most
-  // `cap`, each NUL-terminated), for the detail curve's phase-name labels. One store load; returns
-  // the number written.
-  size_t phaseNames(size_t i, char (*out)[kPhaseNameCap], size_t cap) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
-      return 0;
-    }
-    size_t n = p.phaseCount > kMaxPhases ? kMaxPhases : p.phaseCount;
-    if (n > cap) {
-      n = cap;
-    }
+  size_t phaseNames(char (*out)[kPhaseNameCap], size_t cap) const {
+    size_t n = detail_count_ < cap ? detail_count_ : cap;
     for (size_t k = 0; k < n; ++k) {
-      std::strncpy(out[k], p.phases[k].name, kPhaseNameCap - 1);
+      std::strncpy(out[k], detail_phases_[k].name, kPhaseNameCap - 1);
       out[k][kPhaseNameCap - 1] = '\0';
     }
     return n;
   }
 
-  // Fill the detail curve's requested / achievable point series for profile `i`. Returns point
-  // count.
-  size_t sampleRequested(size_t i, profile_facts::CurvePoint *out, size_t cap) const {
-    return sample(i, /*achievable=*/false, out, cap);
+  size_t sampleRequested(profile_facts::CurvePoint *out, size_t cap) const {
+    return have_detail_ ? profile_facts::sampleCurve(detail_phases_, detail_count_, recipeMode(),
+                                                     *model_, /*achievable=*/false,
+                                                     profile_facts::kDefaultAmbientC, out, cap)
+                        : 0;
   }
-  // Phase-boundary times (achievable timeline) for the detail curve's phase separators (§12).
-  size_t samplePhaseBoundaries(size_t i, float *out, size_t cap) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
-      return 0;
-    }
-    return profile_facts::samplePhaseBoundaries(p.phases, p.phaseCount, store_->mode(), *model_,
-                                                profile_facts::kDefaultAmbientC, out, cap);
+  size_t sampleOvershoot(profile_facts::CurvePoint *out, size_t cap) const {
+    return have_detail_
+               ? profile_facts::sampleOvershoot(detail_phases_, detail_count_, recipeMode(),
+                                                *model_, profile_facts::kDefaultAmbientC, out, cap)
+               : 0;
   }
-  // UV-on time windows for the detail curve's shading (cure profiles, §12).
-  size_t sampleUvSpans(size_t i, profile_facts::TimeSpan *out, size_t cap) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
-      return 0;
-    }
-    return profile_facts::sampleUvSpans(p.phases, p.phaseCount, store_->mode(), *model_,
-                                        profile_facts::kDefaultAmbientC, out, cap);
+  size_t samplePhaseBoundaries(float *out, size_t cap) const {
+    return have_detail_
+               ? profile_facts::samplePhaseBoundaries(detail_phases_, detail_count_, recipeMode(),
+                                                      *model_, profile_facts::kDefaultAmbientC, out,
+                                                      cap)
+               : 0;
   }
-  // Closed-loop settling (predicted actual temperature) for the detail curve — the same trace the
-  // editor draws, so both charts match (§12).
-  size_t sampleOvershoot(size_t i, profile_facts::CurvePoint *out, size_t cap) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
-      return 0;
-    }
-    return profile_facts::sampleOvershoot(p.phases, p.phaseCount, store_->mode(), *model_,
-                                          profile_facts::kDefaultAmbientC, out, cap);
+  size_t sampleUvSpans(profile_facts::TimeSpan *out, size_t cap) const {
+    return have_detail_
+               ? profile_facts::sampleUvSpans(detail_phases_, detail_count_, recipeMode(), *model_,
+                                              profile_facts::kDefaultAmbientC, out, cap)
+               : 0;
   }
   bool uncalibrated() const { return !model_->calibrated; }
 
-  // Duplicate profile `i` as "<name> copy" (or " copy 2", " copy 3", … on a collision), always a
-  // user-owned (editable/deletable) copy. Refreshes the list on success. Returns false if `i` is
-  // out of range or a unique name could not be formed.
-  bool duplicate(size_t i) {
-    if (i >= count_) {
+  // --- Actions: issue a request; the screen polls and re-lists on Ready ---
+
+  // Duplicate row `i` as "<name> copy" (or " copy 2", …), deconflicting against the CURRENT cached
+  // list (the controller also refuses a clash, §23). Returns false if `i` is out of range, no free
+  // name was found, or the client is busy.
+  bool requestDuplicate(size_t i) {
+    if (i >= count_ || client_ == nullptr) {
       return false;
     }
     char dst[kProfileNameCap];
     for (int attempt = 0; attempt < 100; ++attempt) {
       makeCopyName(name_buf_[i], attempt, dst, sizeof(dst));
-      if (!ProfileStore::validName(dst)) {
+      if (nameTaken(dst)) {
         continue;
       }
-      if (store_->duplicate(name_buf_[i], dst)) { // refuses an existing dst → try the next number
-        refresh();
+      return client_->requestDup(mode_, name_buf_[i], dst);
+    }
+    return false;
+  }
+
+  bool requestRename(size_t i, const char *newName) {
+    if (i >= count_ || client_ == nullptr) {
+      return false;
+    }
+    return client_->requestRename(mode_, name_buf_[i], newName);
+  }
+
+  bool requestRemove(size_t i) {
+    if (i >= count_ || client_ == nullptr) {
+      return false;
+    }
+    return client_->requestDelete(mode_, name_buf_[i]);
+  }
+
+private:
+  bool nameTaken(const char *n) const {
+    for (size_t i = 0; i < count_; ++i) {
+      if (std::strcmp(name_buf_[i], n) == 0) {
         return true;
       }
     }
     return false;
   }
 
-  // Rename profile `i` to `newName` (user profiles only — the store refuses stock, an invalid name,
-  // and a clash with an existing profile). Refreshes on success. Returns false if `i` is out of
-  // range or the store refused.
-  bool rename(size_t i, const char *newName) {
-    if (i >= count_ || !store_->rename(name_buf_[i], newName)) {
-      return false;
-    }
-    refresh();
-    return true;
-  }
-
-  // Delete profile `i` (user profiles only — the store refuses stock). Refreshes on success.
-  bool remove(size_t i) {
-    if (i >= count_ || !store_->remove(name_buf_[i])) {
-      return false;
-    }
-    refresh();
-    return true;
-  }
-
-private:
-  size_t sample(size_t i, bool achievable, profile_facts::CurvePoint *out, size_t cap) const {
-    ProfileStore::StoredProfile p;
-    if (!loadDetail(i, p)) {
-      return 0;
-    }
-    return profile_facts::sampleCurve(p.phases, p.phaseCount, store_->mode(), *model_, achievable,
-                                      profile_facts::kDefaultAmbientC, out, cap);
-  }
-
-  // "peak 245° · ~6:10" — the §23 row facts, or "empty" for a profile with no usable phases.
+  // "peak 245° · ~6:10" from the controller-computed summary facts.
   void buildValue(size_t i) {
-    const profile_facts::ProfileFacts f = facts(i);
-    if (f.phaseCount == 0) {
+    if (peak_[i] <= 0.0F && total_s_[i] == 0) {
       std::strncpy(value_buf_[i], "empty", kValueCap - 1);
       value_buf_[i][kValueCap - 1] = '\0';
       return;
     }
     char peak[16];
     char dur[16];
-    profile_facts::formatPeak(f.peakC, fahrenheit_, peak, sizeof(peak));
-    profile_facts::formatDuration(f.totalSeconds, dur, sizeof(dur));
+    profile_facts::formatPeak(peak_[i], fahrenheit_, peak, sizeof(peak));
+    profile_facts::formatDuration(total_s_[i], dur, sizeof(dur));
     std::snprintf(value_buf_[i], kValueCap, "%s \xC2\xB7 %s", peak, dur); // \xC2\xB7 = · (U+00B7)
   }
 
-  // Form the `attempt`-th copy name for `base`: attempt 0 → "<base> copy", attempt k → "<base> copy
-  // (k+1)". The base is truncated so the whole thing fits kProfileNameCap (incl. the NUL).
   static void makeCopyName(const char *base, int attempt, char *out, size_t cap) {
     char suffix[16];
     if (attempt == 0) {
@@ -230,7 +219,7 @@ private:
       std::snprintf(suffix, sizeof(suffix), " copy %d", attempt + 1);
     }
     const size_t suffixLen = std::strlen(suffix);
-    size_t baseMax = cap > suffixLen + 1 ? cap - suffixLen - 1 : 0; // room for base + suffix + NUL
+    size_t baseMax = cap > suffixLen + 1 ? cap - suffixLen - 1 : 0;
     size_t baseLen = std::strlen(base);
     if (baseLen > baseMax) {
       baseLen = baseMax;
@@ -245,11 +234,21 @@ private:
     out[n] = '\0';
   }
 
-  ProfileStore *store_ = nullptr;
+  ManagementClient *client_ = nullptr;
+  oven_Mode mode_ = oven_Mode_MODE_REFLOW;
   const OvenModel *model_ = nullptr;
   bool fahrenheit_ = false;
+
+  // List cache (from ProfileList).
   size_t count_ = 0;
   char name_buf_[kMaxRows][kProfileNameCap] = {};
   char value_buf_[kMaxRows][kValueCap] = {};
   bool stock_[kMaxRows] = {};
+  float peak_[kMaxRows] = {};
+  uint32_t total_s_[kMaxRows] = {};
+
+  // Detail cache (from ProfileData → decoded phases).
+  Phase detail_phases_[kMaxPhases] = {};
+  size_t detail_count_ = 0;
+  bool have_detail_ = false;
 };

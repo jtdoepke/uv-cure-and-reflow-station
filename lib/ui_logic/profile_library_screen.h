@@ -16,19 +16,28 @@
 
 #include <lvgl.h>
 
+#include "management_client.h"
 #include "oven_cal.h"
 #include "profile_library_viewmodel.h"
 #include "selectable_list.h"
 
 class ProfileLibraryScreen {
 public:
-  enum class Page { Chooser, List, Detail, ConfirmDelete, Rename };
+  // Loading/Error are the async states the remote store added (Wave R3b): the list/detail/actions
+  // are now round-trips to the controller (§9), so the screen shows a spinner while a reply is in
+  // flight and an error if it times out or is refused.
+  enum class Page { Chooser, List, Detail, ConfirmDelete, Rename, Loading, Error };
 
-  // Build the chooser under `parent`, over the two per-mode stores. All three must outlive this
-  // screen. Call after lv_init() + ui_subjects_init(). `model` defaults to the compiled-in
-  // calibration; a test may pass a toy model.
-  void begin(lv_obj_t *parent, ProfileStore &cure, ProfileStore &reflow,
+  // Build the chooser under `parent`, over the shared remote ManagementClient (§9; the profile
+  // library lives on the controller now). Both must outlive this screen. Call after lv_init() +
+  // ui_subjects_init(). `model` defaults to the compiled-in calibration; a test may pass a toy one.
+  void begin(lv_obj_t *parent, ManagementClient &client,
              const OvenModel &model = oven_cal::kDefaultModel);
+
+  // Drive the async state machine: call every loop iteration (after client.service()). Consumes a
+  // Ready/Failed reply for this screen's outstanding request and rebuilds the page. A no-op unless
+  // this screen is waiting on a reply.
+  void poll();
 
   // Exit seam: fired when Back is pressed on the chooser (Home is the caller's to rebuild).
   void setExitHandler(void (*cb)(void *user_data), void *user_data);
@@ -56,11 +65,16 @@ public:
   ProfileLibraryViewModel &vm() { return *current_; }
 
 private:
+  // What this screen's outstanding request is for — poll() dispatches on it when the reply lands.
+  enum class Pending { None, List, Detail, Action };
+
   void buildChooser();
   void buildList();
   void buildDetail();
   void buildConfirm();
   void buildRename(); // the shared name-entry keyboard, prefilled with the current name
+  void buildLoading(const char *msg);  // centred spinner label while a reply is in flight
+  void buildError();                   // "couldn't reach the controller" + Back
   void buildHeader(const char *title); // < Back + title into `parent_`
   void configParent();
   void clearParent();
@@ -70,6 +84,10 @@ private:
   Page page_ = Page::Chooser;
   RecipeMode mode_ = RecipeMode::Reflow;
   int selected_ = 0; // remembered highlight, restored when returning list → (detail →) list
+
+  ManagementClient *client_ = nullptr;
+  Pending pending_ = Pending::None;
+  Page return_page_ = Page::Chooser; // where an error's Back goes (the last stable page)
 
   ProfileLibraryViewModel cure_vm_;
   ProfileLibraryViewModel reflow_vm_;
