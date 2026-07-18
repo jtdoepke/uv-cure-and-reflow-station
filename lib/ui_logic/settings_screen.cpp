@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "device_info.h"
+#include "link_banner.h" // shared "Controller not responding" banner (§9/§14)
 #include "numeric_keypad.h"
 #include "subjects.h"
 #include "theme.h"
@@ -76,6 +77,9 @@ struct SettingsThunks {
     static_cast<SettingsScreen *>(ud)->commitEditor(value);
   }
   static void editor_cancel(void *ud) { static_cast<SettingsScreen *>(ud)->back(); }
+  static void link_changed(lv_observer_t *o, lv_subject_t *) {
+    static_cast<SettingsScreen *>(lv_observer_get_user_data(o))->onLinkChanged();
+  }
 };
 
 // --- Lifecycle ---
@@ -84,6 +88,11 @@ void SettingsScreen::begin(lv_obj_t *parent, SettingsStore &store) {
   parent_ = parent;
   store_ = &store;
   publishToSubjects();
+  // Re-grey the hub's category rows when the link flips (§9). Tied to parent_ so it is removed with
+  // the screen (create-on-demand); seed last_link_ok_ from the current state so the first (possibly
+  // same-value) notification is a no-op rather than a spurious rebuild.
+  last_link_ok_ = lv_subject_get_int(&subj_link_state) == LINK_OK;
+  lv_subject_add_observer_obj(&subj_link_state, SettingsThunks::link_changed, parent_, this);
   showPage(SettingsPage::Hub);
 }
 
@@ -123,6 +132,22 @@ void SettingsScreen::showPage(SettingsPage page) {
     break;
   case SettingsPage::Editor:
     break; // editors are built via openEditor(), never showPage()
+  }
+}
+
+void SettingsScreen::onLinkChanged() {
+  const bool ok = lv_subject_get_int(&subj_link_state) == LINK_OK;
+  if (ok == last_link_ok_) {
+    return; // gate unchanged — nothing to re-grey
+  }
+  last_link_ok_ = ok;
+  // Only the hub carries the gated rows; a sub-panel/editor keeps its banner and re-gates on Back
+  // (showPage rebuilds the hub then). This runs inside the subj_link_state notification and
+  // rebuilds the hub — which deletes+recreates the banner (also a subj_link_state observer). That
+  // is safe: LVGL's lv_subject_notify restarts on an observer add/remove, and the guard above makes
+  // this callback a no-op on that restart, so it settles in one rebuild rather than looping.
+  if (page_ == SettingsPage::Hub) {
+    showPage(SettingsPage::Hub);
   }
 }
 
@@ -203,6 +228,11 @@ void SettingsScreen::buildHeader(const char *title) {
 
   lv_obj_t *title_label = lv_label_create(header);
   lv_label_set_text(title_label, title);
+
+  // Settings persist on the controller now (§7): the CYD is a remote client, so surface a dropped
+  // link here too. Edits keep working against the local cache and sync on reconnect (main.cpp), so
+  // this is a banner, not a lockout — it just says why a change may not have landed yet.
+  create_link_banner(parent_);
 }
 
 // --- Panels (each is a selectable list: scroll + Up/Down + a per-row verb) ---
@@ -212,14 +242,18 @@ void SettingsScreen::buildHub() {
   buildHeader("Settings");
 
   const char *advanced_value = store_->advancedUnlocked() ? "On" : "Off";
+  // The settings live on the controller now (§7), so the editable categories gate on the link like
+  // every other management action: greyed + unopenable when down. About is local device info, so it
+  // stays open; the "soon" rows stay disabled regardless. onLinkChanged() rebuilds this on a flip.
+  const bool ok = lv_subject_get_int(&subj_link_state) == LINK_OK;
   const SelectableListItem items[HUB_COUNT] = {
-      {"Display & units", nullptr, true, "Open"},
-      {"Temperature limits", nullptr, true, "Open"},
+      {"Display & units", nullptr, ok, "Open"},
+      {"Temperature limits", nullptr, ok, "Open"},
       {"Network (WiFi)", "soon", false},
       {"Data & firmware", "soon", false},
       {"Profiles", "soon", false},
       {"About", nullptr, true, "Open"},
-      {"Advanced", advanced_value, true, "Toggle"},
+      {"Advanced", advanced_value, ok, "Toggle"},
   };
   list_model_.init(items, HUB_COUNT, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::hub_open, this);

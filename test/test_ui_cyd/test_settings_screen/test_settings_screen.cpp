@@ -32,6 +32,10 @@ void setUp(void) {
   lv_test_display_create(panel::W, panel::H);
   lv_test_indev_create_all();
   ui_subjects_init();
+  // You reach Settings from Home only with a healthy link (Home gates the tile), so the default
+  // precondition is LINK_OK — otherwise the hub's now link-gated category rows are disabled and the
+  // navigation tests can't open them. The gating itself is exercised by test_hub_gates_on_link.
+  lv_subject_set_int(&subj_link_state, LINK_OK);
   fs.present = false;
   fs.blob.clear();
   fs.saveCalls = 0;
@@ -52,6 +56,36 @@ static void open_row(int index) {
 void test_begin_shows_hub(void) {
   screen.begin(lv_screen_active(), store);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Hub), static_cast<int>(screen.page()));
+}
+
+// Settings live on the controller now (§7), so a dropped link greys the editable hub categories
+// (they can't be selected or opened), while About — local device info — stays reachable. The hub
+// rebuilds reactively when the link flips.
+void test_hub_gates_on_link(void) {
+  lv_subject_set_int(&subj_link_state, LINK_OK);
+  screen.begin(lv_screen_active(), store);
+  open_row(ROW_DISPLAY); // healthy: opens
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::DisplayUnits),
+                        static_cast<int>(screen.page()));
+  screen.back();
+
+  // Link drops → the observer rebuilds the hub with the editable categories disabled.
+  lv_subject_set_int(&subj_link_state, LINK_NONE);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Hub), static_cast<int>(screen.page()));
+  screen.listModel().select(ROW_DISPLAY); // disabled → select() rejects it
+  TEST_ASSERT_NOT_EQUAL(ROW_DISPLAY, screen.listModel().selected());
+  screen.listModel().select(ROW_TEMP);
+  TEST_ASSERT_NOT_EQUAL(ROW_TEMP, screen.listModel().selected());
+  open_row(ROW_ABOUT); // local info → still opens
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::About), static_cast<int>(screen.page()));
+
+  // Reconnect → the categories open again.
+  screen.back();
+  lv_subject_set_int(&subj_link_state, LINK_OK);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Hub), static_cast<int>(screen.page()));
+  open_row(ROW_DISPLAY);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::DisplayUnits),
+                        static_cast<int>(screen.page()));
 }
 
 void test_open_categories_and_back(void) {
@@ -237,6 +271,7 @@ void test_no_sleep_panel_and_idle_timeout_lives_on_display(void) {
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_shows_hub);
+  RUN_TEST(test_hub_gates_on_link);
   RUN_TEST(test_open_categories_and_back);
   RUN_TEST(test_back_from_hub_calls_exit);
   RUN_TEST(test_advanced_master_toggle);

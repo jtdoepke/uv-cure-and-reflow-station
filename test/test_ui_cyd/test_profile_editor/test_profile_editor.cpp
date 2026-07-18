@@ -88,6 +88,21 @@ static void begin(const ProfileDraft &p, bool saveAs) {
   editor.render(lv_screen_active());
 }
 
+// Find the button carrying a label with exact text `t` (recursively): returns the label's parent.
+static lv_obj_t *findByLabel(lv_obj_t *root, const char *t) {
+  const uint32_t n = lv_obj_get_child_count(root);
+  for (uint32_t i = 0; i < n; ++i) {
+    lv_obj_t *c = lv_obj_get_child(root, i);
+    if (lv_obj_check_type(c, &lv_label_class) && std::strcmp(lv_label_get_text(c), t) == 0) {
+      return root;
+    }
+    if (lv_obj_t *hit = findByLabel(c, t)) {
+      return hit;
+    }
+  }
+  return nullptr;
+}
+
 static void keypad_enter(int32_t value) {
   NumericKeypadViewModel &vm = editor.keypadVm();
   vm.onClear();
@@ -256,6 +271,25 @@ void test_hard_invalid_blocks_save(void) {
   TEST_ASSERT_FALSE(g_exited);
 }
 
+// Save commits over the link (§9), so a valid draft's Save button greys + disables when the link
+// drops (on top of the existing hard-invalid gate) and re-enables on reconnect.
+void test_save_gates_on_link(void) {
+  ProfileDraft p = profile_templates::defaultTemplate(RecipeMode::Reflow);
+  std::strncpy(p.name, "LF-250", kProfileNameCap - 1);
+  begin(p, /*saveAs=*/false);
+  TEST_ASSERT_TRUE(editor.hardValid()); // valid, so only the link gates Save
+
+  lv_subject_set_int(&subj_link_state, LINK_OK);
+  lv_obj_t *save = findByLabel(lv_screen_active(), "Save");
+  TEST_ASSERT_NOT_NULL(save);
+  TEST_ASSERT_TRUE(lv_obj_has_flag(save, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_FALSE(lv_obj_has_state(save, LV_STATE_DISABLED));
+
+  lv_subject_set_int(&subj_link_state, LINK_NONE);
+  TEST_ASSERT_FALSE(lv_obj_has_flag(save, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_TRUE(lv_obj_has_state(save, LV_STATE_DISABLED));
+}
+
 // Editing an existing profile fetches it from the controller first.
 void test_begin_existing_fetches(void) {
   oven_Profile seed = oven_Profile_init_zero;
@@ -323,6 +357,7 @@ int main(int, char **) {
   RUN_TEST(test_new_save_routes_through_name_entry);
   RUN_TEST(test_invalid_name_stays_on_name_entry);
   RUN_TEST(test_hard_invalid_blocks_save);
+  RUN_TEST(test_save_gates_on_link);
   RUN_TEST(test_begin_existing_fetches);
   RUN_TEST(test_advanced_add_and_delete_phase);
   RUN_TEST(test_delete_never_below_one_phase);

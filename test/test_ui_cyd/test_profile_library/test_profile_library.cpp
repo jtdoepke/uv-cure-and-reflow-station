@@ -114,6 +114,23 @@ static void openMode(RecipeMode m) {
   settle();
 }
 
+// Find the button/tile carrying a label with exact text `t` (recursively): returns the label's
+// parent, i.e. the pressable widget. The link-gating tests assert its CLICKABLE/DISABLED flags,
+// which the screens don't otherwise expose (the buttons are build-local).
+static lv_obj_t *findByLabel(lv_obj_t *root, const char *t) {
+  const uint32_t n = lv_obj_get_child_count(root);
+  for (uint32_t i = 0; i < n; ++i) {
+    lv_obj_t *c = lv_obj_get_child(root, i);
+    if (lv_obj_check_type(c, &lv_label_class) && std::strcmp(lv_label_get_text(c), t) == 0) {
+      return root;
+    }
+    if (lv_obj_t *hit = findByLabel(c, t)) {
+      return hit;
+    }
+  }
+  return nullptr;
+}
+
 // --- navigation ---
 
 void test_chooser_to_list_to_detail_and_back(void) {
@@ -278,6 +295,45 @@ void test_link_down_shows_error(void) {
   TEST_ASSERT_EQUAL_INT((int)Page::Chooser, (int)screen.page());
 }
 
+// The chooser tiles fetch a mode's library from the controller (§9), so they gate on the link like
+// Home's run tiles: greyed + non-clickable when down, re-enabling reactively on reconnect.
+void test_chooser_tiles_gate_on_link(void) {
+  screen.begin(lv_screen_active(), client); // lands on the chooser
+  lv_subject_set_int(&subj_link_state, LINK_OK);
+  lv_obj_t *cure = findByLabel(lv_screen_active(), "UV CURE PROFILES");
+  TEST_ASSERT_NOT_NULL(cure);
+  TEST_ASSERT_TRUE(lv_obj_has_flag(cure, LV_OBJ_FLAG_CLICKABLE));
+
+  lv_subject_set_int(&subj_link_state, LINK_NONE);
+  TEST_ASSERT_FALSE(lv_obj_has_flag(cure, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_TRUE(lv_obj_has_state(cure, LV_STATE_DISABLED));
+
+  lv_subject_set_int(&subj_link_state, LINK_OK); // reconnect re-enables
+  TEST_ASSERT_TRUE(lv_obj_has_flag(cure, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_FALSE(lv_obj_has_state(cure, LV_STATE_DISABLED));
+}
+
+// The detail actions (Delete/Rename/Clone/Edit) each issue a management request or open the async
+// editor, so they gate on the link too. Clone is always enabled by content rules (works for stock
+// and user), so it is the clean probe for the link gate.
+void test_detail_actions_gate_on_link(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.begin(lv_screen_active(), client);
+  openMode(RecipeMode::Reflow);
+  screen.openDetail(indexOf("LF-245"));
+  settle();
+
+  lv_subject_set_int(&subj_link_state, LINK_OK);
+  lv_obj_t *clone = findByLabel(lv_screen_active(), "Clone");
+  TEST_ASSERT_NOT_NULL(clone);
+  TEST_ASSERT_TRUE(lv_obj_has_flag(clone, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_FALSE(lv_obj_has_state(clone, LV_STATE_DISABLED));
+
+  lv_subject_set_int(&subj_link_state, LINK_NONE);
+  TEST_ASSERT_FALSE(lv_obj_has_flag(clone, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_TRUE(lv_obj_has_state(clone, LV_STATE_DISABLED));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_chooser_to_list_to_detail_and_back);
@@ -290,5 +346,7 @@ int main(int, char **) {
   RUN_TEST(test_open_enabled_with_profiles);
   RUN_TEST(test_new_edit_publish_nav_intents);
   RUN_TEST(test_link_down_shows_error);
+  RUN_TEST(test_chooser_tiles_gate_on_link);
+  RUN_TEST(test_detail_actions_gate_on_link);
   return UNITY_END();
 }

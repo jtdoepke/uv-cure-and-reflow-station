@@ -3,7 +3,8 @@
 #include <initializer_list>
 
 #include "home_viewmodel.h"
-#include "panel.h" // geometry (portrait vs landscape) — never a board identity
+#include "link_banner.h" // shared "Controller not responding" banner (§9/§14)
+#include "panel.h"       // geometry (portrait vs landscape) — never a board identity
 #include "subjects.h"
 #include "theme.h"
 
@@ -135,17 +136,9 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   lv_subject_add_observer_obj(&subj_units, on_chamber_changed, ui.chamber_label, nullptr);
 
   // --- Banner: shown only when the link is unhealthy ---
-  // The shared caution treatment (amber wash + amber edge + amber text), so this reads as the same
-  // kind of object as every other abnormal-state banner (§13/§22) rather than as loose amber text.
-  ui.banner = lv_obj_create(parent);
-  theme::apply_alert(ui.banner, theme::WARN);
-  lv_obj_set_width(ui.banner, lv_pct(100));
-  lv_obj_set_height(ui.banner, theme::BANNER_H);
-  lv_obj_bind_flag_if_eq(ui.banner, &subj_link_state, LV_OBJ_FLAG_HIDDEN, LINK_OK);
-
-  lv_obj_t *banner_text = lv_label_create(ui.banner);
-  lv_label_set_text(banner_text, LV_SYMBOL_WARNING " Controller not responding");
-  lv_obj_center(banner_text);
+  // The one shared "Controller not responding" banner (link_banner.h), the same object every other
+  // screen carries, so a dropped link reads identically everywhere (§9/§14).
+  ui.banner = create_link_banner(parent);
 
   // --- Mode tiles: UV CURE / REFLOW. Big, neutral, and gated on a healthy link ---
   // The tiles stack in portrait and sit side by side in landscape. Gated on panel::kPortrait —

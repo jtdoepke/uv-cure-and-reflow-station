@@ -3,6 +3,7 @@
 #include <initializer_list>
 
 #include "confirm_dialog.h"
+#include "link_banner.h"   // shared "Controller not responding" banner (§9/§14)
 #include "name_keyboard.h" // the shared name-entry keyboard (profile Rename)
 #include "profile_curve.h"
 #include "subjects.h"
@@ -108,6 +109,10 @@ void ProfileLibraryScreen::buildHeader(const char *title) {
   lv_label_set_text(title_label, title);
   lv_obj_set_flex_grow(title_label, 1);
   lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+
+  // The library lists/opens profiles that live on the controller now (§7/§9), so surface a dropped
+  // link here as everywhere. buildDetail() builds its own header and adds the banner itself.
+  create_link_banner(parent_);
 }
 
 // --- Navigation ---
@@ -282,9 +287,10 @@ void ProfileLibraryScreen::buildChooser() {
   configParent();
   buildHeader("Profiles");
 
-  // Exactly two profile types, so this is two big Home-style tiles (a direct tap), not a ▲/▼ list —
-  // and being stateless is what lets the router cache this screen. The tiles are NOT link-gated:
-  // browsing/editing profiles is CYD-local and always available (§23/§24), unlike Home's run tiles.
+  // Exactly two profile types, so this is two big Home-style tiles (a direct tap), not a ▲/▼ list.
+  // Each tile fetches that mode's library from the controller (§7/§9 — the profiles are no longer
+  // CYD-local), so both are link-gated: greyed + non-clickable when the link is down, like Home's
+  // run tiles, with the banner above saying why. (Gated below, after the tiles are built.)
   lv_obj_t *modes = lv_obj_create(parent_);
   theme::apply_row(modes);
   lv_obj_set_width(modes, lv_pct(100));
@@ -300,6 +306,8 @@ void ProfileLibraryScreen::buildChooser() {
     } else {
       lv_obj_set_height(tile, lv_pct(100));
     }
+    lv_obj_bind_flag_if_eq(tile, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
+    lv_obj_bind_state_if_not_eq(tile, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
   }
 }
 
@@ -350,6 +358,11 @@ lv_obj_t *action_button(lv_obj_t *row, const char *text, lv_event_cb_t cb, void 
   lv_obj_center(label);
   if (enabled) {
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, this_screen);
+    // Every detail action (Delete/Rename/Clone/Edit) issues a management request or opens the async
+    // editor (§9), so gate it on a healthy link — greyed + non-clickable when down, matching Home's
+    // run-tile gate; the banner above says why. Re-enables reactively on reconnect.
+    lv_obj_bind_flag_if_eq(btn, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
+    lv_obj_bind_state_if_not_eq(btn, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
   } else {
     lv_obj_set_state(btn, LV_STATE_DISABLED, true);
     lv_obj_remove_flag(btn, LV_OBJ_FLAG_CLICKABLE);
@@ -387,6 +400,8 @@ void ProfileLibraryScreen::buildDetail() {
   lv_obj_t *badge = lv_label_create(header);
   lv_label_set_text(badge, mode_ == RecipeMode::Cure ? "Cure" : "Reflow");
   lv_obj_set_style_text_color(badge, theme::col(theme::ACCENT), 0);
+
+  create_link_banner(parent_); // custom header, so the banner is added explicitly (see buildHeader)
 
   // Read-only §12 curve preview (requested vs achievable) with phase separators, phase names, axis
   // ticks, and UV shading. Local arrays — the widget copies.

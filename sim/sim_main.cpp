@@ -32,17 +32,25 @@
 #include <vector>
 
 #include "device_info.h"
+#include "device_settings.h"    // control::SettingsStore (the controller side of the fake stack)
+#include "frame_link.h"         // TinyFrame link (lib/protocol)
+#include "helpers/fake_clock.h" // IClock for the ManagementClient (test helper; -I test)
+#include "helpers/pipe_transport.h" // in-process LoopbackPipe joining the two link ends
 #include "home_screen.h"
+#include "management_client.h"    // CYD-side remote client the screens drive (§9; Wave R3b)
+#include "management_responder.h" // controller-side responder answering over the pipe
+#include "message_router.h"       // frame → typed dispatch (lib/protocol)
 #include "numeric_keypad.h"
 #include "oven_cal.h"
 #include "panel.h"
 #include "phase.h"
+#include "phase_codec.h" // Phase[] → oven_Profile for seeding the controller store
 #include "profile_curve.h"
-#include "profile_facts.h"
 #include "profile_editor_screen.h"
+#include "profile_facts.h"
+#include "profile_library.h" // control::ProfileStore (lib/control_logic — the store lives here now)
 #include "profile_library_screen.h"
 #include "profile_templates.h"
-#include "profile_store.h"
 #include "selectable_list.h"
 #include "settings_screen.h"
 #include "subjects.h"
@@ -254,20 +262,12 @@ struct SimProfileStorage : IProfileStorage {
   bool remove(const char *name) override { return blobs.erase(name) > 0; }
 };
 
-// Seed one profile through the real ProfileStore::save() so the byte layout is exactly
-// production's.
-static void seed_profile(ProfileStore &store, const char *name, bool stock, const Phase *phases,
-                         size_t count) {
-  ProfileStore::StoredProfile p;
-  std::strncpy(p.name, name, kProfileNameCap - 1);
-  p.name[kProfileNameCap - 1] = '\0';
-  p.mode = store.mode();
-  p.stock = stock;
-  p.phaseCount = count;
-  for (size_t i = 0; i < count && i < kMaxPhases; ++i) {
-    p.phases[i] = phases[i];
-  }
-  store.save(p);
+// Seed one profile through the real control::ProfileStore::save() (PRO2 nanopb layout, exactly
+// production's) so the sim's library is served over the link like the hardware's. Phase[] → oven
+// via the same phase_codec the CYD editor uses.
+static void seed_profile(control::ProfileStore &store, RecipeMode mode, const char *name,
+                         bool stock, const Phase *phases, size_t count) {
+  store.save(phase_codec::profileToWire(name, mode, stock, phases, count));
 }
 
 // The env sets LODEPNG_NO_COMPILE_ALLOCATORS: LVGL's copy would otherwise route these
@@ -284,6 +284,38 @@ extern "C" void lodepng_free(void *ptr) {
 
 static lv_display_t *sim_disp = nullptr;
 
+// The profile-library/editor screens are async remote clients: a fetch (openMode/openDetail/
+// beginExisting) sends a frame and the reply lands a poll later. These are set when such a screen
+// is active so settle() can pump the in-process link and the screen's poll() until the request
+// resolves and the screen rebuilds — the sim's stand-in for the firmware loop's per-iteration
+// service. Null for every other screen (nothing to pump).
+static protocol::FrameLink *g_link_cyd = nullptr;
+static protocol::FrameLink *g_link_ctrl = nullptr;
+static ManagementClient *g_client = nullptr;
+static ProfileLibraryScreen *g_profiles_screen = nullptr;
+static ProfileEditorScreen *g_editor_screen = nullptr;
+
+// Pump both link directions + the active screen's poll() until it settles (bounded). Synchronous
+// pipe, so a handful of iterations resolves any single outstanding request.
+static void pump_link() {
+  if (g_link_cyd == nullptr) {
+    return;
+  }
+  for (int k = 0; k < 12; ++k) {
+    g_link_ctrl->poll();
+    g_link_cyd->poll();
+    if (g_client != nullptr) {
+      g_client->service();
+    }
+    if (g_profiles_screen != nullptr) {
+      g_profiles_screen->poll();
+    }
+    if (g_editor_screen != nullptr) {
+      g_editor_screen->poll();
+    }
+  }
+}
+
 // Run LVGL until nothing is animating, so a screenshot shows a settled UI.
 //
 // This is not a nicety. LVGL's default theme ANIMATES style changes over
@@ -298,6 +330,7 @@ static lv_display_t *sim_disp = nullptr;
 // A screenshot tool that renders a transient state is a tool that lies, and `make sim-shot`
 // exists to be believed. Settle rather than make every caller remember `wait`.
 static void settle(uint32_t max_ms = 1000) {
+  pump_link(); // resolve any pending profile-screen fetch first (it may rebuild the screen)
   uint32_t waited = 0;
   while (lv_anim_count_running() > 0 && waited < max_ms) {
     lv_test_wait(20);
@@ -423,12 +456,30 @@ int main(int argc, char **argv) {
   NumericKeypadViewModel keypad_vm;
   SelectableListModel list_model;
   SimSettingsStorage sim_storage;
-  SettingsStore settings_store(sim_storage);
+  SettingsStore settings_store(sim_storage); // CYD-side store the Settings screen edits (local)
   SettingsScreen settings;
+
+  // The fake remote stack (Wave R3b): the profile library + editor are clients of the controller's
+  // ManagementResponder now, so the sim stands up BOTH ends over an in-process LoopbackPipe — the
+  // same object graph test_management_roundtrip builds — and pump_link()/settle() drives it.
+  LoopbackPipe pipe;
+  FakeClock clk;
   SimProfileStorage cure_storage;
   SimProfileStorage reflow_storage;
-  ProfileStore cure_profiles(cure_storage, RecipeMode::Cure);
-  ProfileStore reflow_profiles(reflow_storage, RecipeMode::Reflow);
+  SimSettingsStorage ctrl_settings_storage;
+  control::ProfileStore cure_profiles(cure_storage, oven_Mode_MODE_CURE);
+  control::ProfileStore reflow_profiles(reflow_storage, oven_Mode_MODE_REFLOW);
+  control::SettingsStore ctrl_settings(ctrl_settings_storage);
+  protocol::MessageRouter ctrl_router;
+  protocol::FrameLink ctrl_link(pipe.b(), TF_SLAVE, ctrl_router);
+  ManagementResponder responder(ctrl_link, cure_profiles, reflow_profiles);
+  protocol::MessageRouter cyd_router;
+  protocol::FrameLink cyd_link(pipe.a(), TF_MASTER, cyd_router);
+  ManagementClient client(cyd_link, clk);
+  responder.setSettingsStore(ctrl_settings);
+  ctrl_router.setObserver(responder);
+  cyd_router.setObserver(client);
+
   ProfileLibraryScreen profiles;
   ProfileEditorScreen editor;
   if (screen == "settings") {
@@ -484,8 +535,8 @@ int main(int argc, char **argv) {
     sac305[1].rampSeconds = 40.0f;
     sac305[1].holdSeconds = 30.0f;
     sac305[2].targetC = 50.0f;
-    seed_profile(reflow_profiles, "LF-245", /*stock=*/false, lf245, 4);
-    seed_profile(reflow_profiles, "SAC305", /*stock=*/true, sac305, 3);
+    seed_profile(reflow_profiles, RecipeMode::Reflow, "LF-245", /*stock=*/false, lf245, 4);
+    seed_profile(reflow_profiles, RecipeMode::Reflow, "SAC305", /*stock=*/true, sac305, 3);
     // A cure profile so the chooser's other library is not empty.
     Phase cure[2] = {};
     cure[0].targetC = 60.0f;
@@ -494,17 +545,30 @@ int main(int argc, char **argv) {
     cure[0].motor = true;
     cure[0].exposurePerSurface = 45.0f;
     cure[1].targetC = 40.0f;
-    seed_profile(cure_profiles, "Resin-A", /*stock=*/false, cure, 2);
-    profiles.begin(lv_screen_active(), cure_profiles, reflow_profiles);
+    seed_profile(cure_profiles, RecipeMode::Cure, "Resin-A", /*stock=*/false, cure, 2);
+    // LINK_OK so the (now link-gated) chooser tiles are navigable; pass `link none` as an action to
+    // review the disconnected banner + greyed buttons. pump_link()/settle() drives the round-trips.
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    profiles.begin(lv_screen_active(), client);
+    g_link_cyd = &cyd_link;
+    g_link_ctrl = &ctrl_link;
+    g_client = &client;
+    g_profiles_screen = &profiles;
   } else if (screen == "editor" || screen == "editor-cure") {
     // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
     // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile
     // so the UV shading + UV/Turntable rows show; `--screen editor` a reflow one.
     const bool cure = screen == "editor-cure";
     const RecipeMode m = cure ? RecipeMode::Cure : RecipeMode::Reflow;
-    editor.beginEdit(profile_templates::defaultTemplate(m), cure ? cure_profiles : reflow_profiles,
-                     /*saveAs=*/true);
+    // A fresh template (a new profile), so this path is synchronous — no fetch. Save commits over
+    // the link, so LINK_OK keeps its button live; `link none` demos the greyed Save + banner.
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    editor.beginNew(profile_templates::defaultTemplate(m), client, /*saveAs=*/true);
     editor.render(lv_screen_active());
+    g_link_cyd = &cyd_link;
+    g_link_ctrl = &ctrl_link;
+    g_client = &client;
+    g_editor_screen = &editor;
   } else if (screen == "home") {
     create_home_screen(lv_screen_active());
   } else {

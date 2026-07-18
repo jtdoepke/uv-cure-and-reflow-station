@@ -99,6 +99,11 @@ private:
   void onDisplayOpen(int index);
   void onTempOpen(int index);
 
+  // Re-grey the hub's editable rows when the controller link flips (§9): the settings live on the
+  // controller now, so a dropped link greys the category rows (About, local info, stays open). Only
+  // rebuilds on an actual OK↔down transition while the hub is showing — never per-loop.
+  void onLinkChanged();
+
   // Shared bits.
   void buildHeader(const char *title); // header row (< Back + title) into `parent_`
   void openEditor(EditField field, SettingsPage return_page); // title/config derived from field
@@ -111,6 +116,7 @@ private:
   lv_obj_t *parent_ = nullptr;
   SettingsStore *store_ = nullptr;
   SettingsPage page_ = SettingsPage::Hub;
+  bool last_link_ok_ = true; // last link gate applied to the hub — only rebuild when it flips
 
   SettingsPage editor_return_ = SettingsPage::Hub;
   EditField editing_ = EditField::None;

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "fan_resolver.h"
+#include "link_banner.h" // shared "Controller not responding" banner (§9/§14)
 #include "name_keyboard.h"
 #include "numeric_field.h"
 #include "numeric_keypad.h"
@@ -324,6 +325,10 @@ void ProfileEditorScreen::buildHeader(const char *title) {
   lv_label_set_text(title_label, title);
   lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
   lv_obj_set_flex_grow(title_label, 1);
+
+  // The editor fetches an existing profile and commits Save over the link (§9); surface a dropped
+  // link here as on every other management screen. Save is additionally gated below.
+  create_link_banner(parent_);
 }
 
 // --- Overview page ---
@@ -471,8 +476,14 @@ void ProfileEditorScreen::buildOverview() {
   rebuildOverviewRows();
   LeadingAction save{"Save", EditorThunks::save_evt, this};
   SelectableList list = create_selectable_list(parent_, list_model_, save);
-  if (list.btn_leading != nullptr && !validation_.hardValid) {
-    lv_obj_add_state(list.btn_leading, LV_STATE_DISABLED);
+  if (list.btn_leading != nullptr) {
+    // Save commits over the link (§9), so gate it on a healthy link like the library's actions —
+    // AND keep the existing hard-invalid disable. onSave() guards the seam either way.
+    lv_obj_bind_flag_if_eq(list.btn_leading, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
+    lv_obj_bind_state_if_not_eq(list.btn_leading, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
+    if (!validation_.hardValid) {
+      lv_obj_add_state(list.btn_leading, LV_STATE_DISABLED);
+    }
   }
   // Keep the highlighted phase in view across rebuilds (add/delete/reorder/return-from-editor): the
   // selection observer scrolls on select, but the fresh list is not laid out yet, so re-scroll
