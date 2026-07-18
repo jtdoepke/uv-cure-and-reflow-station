@@ -111,6 +111,16 @@ public:
       mgmt_->onProfileRename(m);
     }
   }
+  void onSettingsGetReq(const oven_SettingsGetReq &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onSettingsGetReq(m);
+    }
+  }
+  void onSettingsPut(const oven_SettingsPut &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onSettingsPut(m);
+    }
+  }
   void onAbort() override {
     gate_.clearSession();
     if (executor_ != nullptr) {

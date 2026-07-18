@@ -8,6 +8,7 @@
 
 #include <cstring>
 
+#include "controller_link.h" // controller reliability facade — the real routing seam (§11)
 #include "device_settings.h"
 #include "frame_link.h"
 #include "helpers/fake_clock.h"
@@ -22,6 +23,11 @@
 #include "phase_codec.h"
 #include "profile_library.h"
 
+// The controller side routes through ControllerLink (setManagementResponder), NOT straight into the
+// responder — exactly as src_control/main.cpp wires it. Doing so here is load-bearing: a management
+// request only reaches the responder if ControllerLink forwards its virtual, and a missing forward
+// (settings once shipped that way) makes the request silently unanswered. Bypassing ControllerLink,
+// as an earlier version did, hid that gap; this rig is the firmware object graph (§11).
 struct Rig {
   LoopbackPipe pipe;
   FakeClock clk;
@@ -34,6 +40,7 @@ struct Rig {
   protocol::MessageRouter ctrl_router;
   protocol::FrameLink ctrl_link;
   ManagementResponder responder;
+  ControllerLink ctrl;
   protocol::MessageRouter cyd_router;
   protocol::FrameLink cyd_link;
   ManagementClient client;
@@ -41,10 +48,11 @@ struct Rig {
   Rig()
       : cure_store(cure_fs, oven_Mode_MODE_CURE), reflow_store(reflow_fs, oven_Mode_MODE_REFLOW),
         settings_store(settings_fs), ctrl_link(pipe.b(), TF_SLAVE, ctrl_router),
-        responder(ctrl_link, cure_store, reflow_store), cyd_link(pipe.a(), TF_MASTER, cyd_router),
-        client(cyd_link, clk) {
+        responder(ctrl_link, cure_store, reflow_store), ctrl(ctrl_link, clk),
+        cyd_link(pipe.a(), TF_MASTER, cyd_router), client(cyd_link, clk) {
     responder.setSettingsStore(settings_store);
-    ctrl_router.setObserver(responder);
+    ctrl.setManagementResponder(responder);
+    ctrl_router.setObserver(ctrl); // route through the facade, like the firmware
     cyd_router.setObserver(client);
   }
 
