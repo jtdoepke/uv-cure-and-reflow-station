@@ -174,7 +174,11 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
     lv_obj_bind_state_if_not_eq(tile, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
   }
 
-  // --- Secondary row: Profiles / Calibrate / Settings (always available) ---
+  // --- Secondary row: Profiles / Calibrate / Settings — also gated on a healthy link ---
+  // Since the §2 "CYD is a UI remote" split these are no longer CYD-local: the profile library and
+  // device settings live on the CONTROLLER (§7), and Calibrate is a controller run — so every one
+  // of them needs the link, exactly like the run tiles. With no controller the CYD can do nothing
+  // useful, so the whole hub greys out and the "Controller not responding" banner (above) says why.
   lv_obj_t *secondary = lv_obj_create(parent);
   theme::apply_row(secondary);
   lv_obj_set_width(secondary, lv_pct(100));
@@ -190,6 +194,10 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   for (lv_obj_t *b : {ui.btn_profiles, ui.btn_calibrate, ui.btn_settings}) {
     lv_obj_set_flex_grow(b, 1);
     lv_obj_set_height(b, lv_pct(100));
+    // Clickable only with a healthy link; DISABLED also greys it (§14 / §9 gate) — same as the
+    // tiles.
+    lv_obj_bind_flag_if_eq(b, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
+    lv_obj_bind_state_if_not_eq(b, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
   }
 
   return ui;

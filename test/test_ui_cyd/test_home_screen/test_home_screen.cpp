@@ -5,6 +5,8 @@
 // Two layers of assertion: the view model's pure state→view mappers directly, and the rendered
 // screen's behaviour (tile taps publish nav intents; link health gates the mode tiles; state
 // changes update the band).
+#include <initializer_list>
+
 #include <unity.h>
 #include <lvgl.h>
 #include "src/debugging/test/lv_test.h" // lv_test_display_create / mouse / wait (gated by LV_USE_TEST)
@@ -88,6 +90,7 @@ void test_mode_tiles_publish_nav_intent(void) {
 }
 
 void test_secondary_row_publishes_nav_intent(void) {
+  lv_subject_set_int(&subj_link_state, LINK_OK); // secondary tiles are link-gated now too
   HomeScreen ui = create_home_screen(lv_screen_active());
 
   click_center(ui.btn_profiles);
@@ -98,25 +101,33 @@ void test_secondary_row_publishes_nav_intent(void) {
   TEST_ASSERT_EQUAL_INT(NAV_SETTINGS, lv_subject_get_int(&subj_nav_request));
 }
 
-void test_link_loss_disables_mode_tiles(void) {
+void test_link_loss_disables_all_tiles(void) {
   HomeScreen ui = create_home_screen(lv_screen_active());
 
-  // Healthy link: tiles clickable.
+  // Healthy link: every hub tile clickable.
   lv_subject_set_int(&subj_link_state, LINK_OK);
-  TEST_ASSERT_TRUE(lv_obj_has_flag(ui.btn_cure, LV_OBJ_FLAG_CLICKABLE));
-  TEST_ASSERT_FALSE(lv_obj_has_state(ui.btn_cure, LV_STATE_DISABLED));
+  for (lv_obj_t *b :
+       {ui.btn_cure, ui.btn_reflow, ui.btn_profiles, ui.btn_calibrate, ui.btn_settings}) {
+    TEST_ASSERT_TRUE(lv_obj_has_flag(b, LV_OBJ_FLAG_CLICKABLE));
+    TEST_ASSERT_FALSE(lv_obj_has_state(b, LV_STATE_DISABLED));
+  }
 
-  // Link lost: tiles gated (not clickable + shown disabled), and a tap is ignored.
+  // Link lost: the whole hub greys out (nothing works without the controller — §2 UI remote), and a
+  // tap on any tile is ignored.
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
   lv_subject_set_int(&subj_link_state, LINK_NONE);
-  TEST_ASSERT_FALSE(lv_obj_has_flag(ui.btn_cure, LV_OBJ_FLAG_CLICKABLE));
-  TEST_ASSERT_TRUE(lv_obj_has_state(ui.btn_cure, LV_STATE_DISABLED));
-  click_center(ui.btn_cure);
+  for (lv_obj_t *b :
+       {ui.btn_cure, ui.btn_reflow, ui.btn_profiles, ui.btn_calibrate, ui.btn_settings}) {
+    TEST_ASSERT_FALSE(lv_obj_has_flag(b, LV_OBJ_FLAG_CLICKABLE));
+    TEST_ASSERT_TRUE(lv_obj_has_state(b, LV_STATE_DISABLED));
+  }
+  click_center(ui.btn_profiles);
+  click_center(ui.btn_settings);
   TEST_ASSERT_EQUAL_INT(NAV_NONE, lv_subject_get_int(&subj_nav_request));
 
   // Schema mismatch gates the tiles too.
   lv_subject_set_int(&subj_link_state, LINK_SCHEMA);
-  TEST_ASSERT_FALSE(lv_obj_has_flag(ui.btn_cure, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_FALSE(lv_obj_has_flag(ui.btn_settings, LV_OBJ_FLAG_CLICKABLE));
 }
 
 void test_link_state_updates_banner_and_indicator(void) {
@@ -166,7 +177,7 @@ int main(int, char **) {
   RUN_TEST(test_vm_dead_link_beats_a_latched_handshake);
   RUN_TEST(test_mode_tiles_publish_nav_intent);
   RUN_TEST(test_secondary_row_publishes_nav_intent);
-  RUN_TEST(test_link_loss_disables_mode_tiles);
+  RUN_TEST(test_link_loss_disables_all_tiles);
   RUN_TEST(test_link_state_updates_banner_and_indicator);
   RUN_TEST(test_state_and_temp_drive_the_band);
   RUN_TEST(test_chamber_follows_units_setting);
