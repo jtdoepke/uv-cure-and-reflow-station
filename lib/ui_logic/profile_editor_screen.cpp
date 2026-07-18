@@ -350,8 +350,10 @@ void ProfileEditorScreen::buildOverview() {
   profile_facts::TimeSpan uv[kMaxPhases];
   const size_t nuv = profile_facts::sampleUvSpans(working_.phases, working_.phaseCount, mode_,
                                                   *model_, kAmbientC, uv, kMaxPhases);
-  // Phase labels parallel to the boundaries: each phase's stored name, then "Cool" for the implicit
-  // passive cool-down the samplers append when the run ends hot (implicit_cool.h, §6).
+  // Phase labels: one per AUTHORED phase (its stored name). The implicit passive cool-down the
+  // samplers append when the run ends hot (implicit_cool.h, §6) is a system safety phase, not
+  // something the operator authored — it gets no label; its separator and the end-time label carry
+  // the right edge.
   char namebuf[profile_facts::kMaxCurvePhases][kPhaseNameCap];
   const char *names[profile_facts::kMaxCurvePhases];
   const size_t authored = working_.phaseCount > kMaxPhases ? kMaxPhases : working_.phaseCount;
@@ -360,9 +362,9 @@ void ProfileEditorScreen::buildOverview() {
     namebuf[i][sizeof(namebuf[i]) - 1] = '\0';
     names[i] = namebuf[i];
   }
-  if (nb > authored) {
-    names[authored] = kImplicitCoolLabel;
-  }
+  // The implicit cool phase starts where the last authored phase ends; hand it to the widget so it
+  // can compress the (long, hot-reflow) passive cool-down instead of crushing the authored phases.
+  const float cool_start = (nb > authored && authored >= 1) ? bounds[authored - 1] : -1.0f;
   ProfileCurveData cd;
   cd.requested = req;
   cd.n_requested = nr;
@@ -373,7 +375,8 @@ void ProfileEditorScreen::buildOverview() {
   cd.uv_spans = uv;
   cd.n_uv_spans = nuv;
   cd.phase_names = names;
-  cd.n_phase_names = nb;
+  cd.n_phase_names = authored; // authored phases only — the implicit cool is unlabelled
+  cd.cool_start = cool_start;
   cd.uncalibrated = false; // the amber banner below already says UNCALIBRATED — don't say it twice
   cd.rate_limited = rate_limited;
   create_profile_curve(parent_, cd);

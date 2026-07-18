@@ -213,16 +213,34 @@ inline size_t sampleCurve(const Phase *phases, size_t count, RecipeMode mode,
       req = 0.0f;
     }
     const RampFeasibility rf = rateLimitRamp(env, prevT, endT, req);
-    // Requested time = the authored ramp seconds; an ASAP ramp (rampSeconds == 0) is a request for
-    // *instant* change, so it takes 0 time → the requested line rises vertically. Achievable time =
-    // the rate-limited result (what the oven, and hence the projected trace, actually does).
-    const float rampSec = achievable ? rf.achievableSeconds : (p.rampSeconds > 0.0f ? req : 0.0f);
-    t = clampSec(t + clampSec(rampSec));
+    // The phase occupies its PROJECTED duration on the shared time axis: the honored ramp time
+    // (rf.achievableSeconds — the authored seconds when the plant can meet them, the plant-limited
+    // time when the request is faster than physics) plus the hold. The oven does not advance to the
+    // next phase until the projected trace actually reaches the setpoint and holds there (the real
+    // control loop), so an ASAP ramp is NOT instantaneous — it takes the plant's real time. Both
+    // traces share these slots, so they and the phase separators line up.
+    const float rampAch = clampSec(rf.achievableSeconds);
+    const float hold = clampSec(phaseHoldSeconds(mode, p, model));
+    const float slotStart = t;
+    if (achievable) {
+      // Projected: rise/fall along the plant rate to the setpoint.
+      t = clampSec(slotStart + rampAch);
+    } else {
+      // Requested (authored intent): reach the setpoint at the AUTHORED ramp time — instant for an
+      // ASAP ramp (rampSeconds == 0), so the line rises vertically — then (below) sit at it until
+      // the phase's projected end. The gap to the slower projected trace within the slot is the §12
+      // feasibility divergence.
+      const float reqRamp = p.rampSeconds > 0.0f ? clampSec(req) : 0.0f;
+      t = clampSec(slotStart + reqRamp);
+    }
     out[n++] = CurvePoint{t, endT};
 
-    const float hold = clampSec(phaseHoldSeconds(mode, p, model));
-    if (hold > 0.0f) {
-      t = clampSec(t + hold);
+    // Both traces hold the setpoint out to the phase's projected end (ramp + hold). For the
+    // requested trace this also spans the wait while the projected trace is still catching up, so
+    // both curves finish each phase — and the whole run — at the same time.
+    const float slotEnd = clampSec(slotStart + rampAch + hold);
+    if (slotEnd > t) {
+      t = slotEnd;
       out[n++] = CurvePoint{t, endT};
     }
     prevT = endT;
@@ -279,16 +297,17 @@ inline size_t sampleUvSpans(const Phase *phases, size_t count, RecipeMode mode,
   for (size_t i = 0; i < pc && n < cap; ++i) {
     const Phase &p = phases[i];
     const float endT = clampT(finiteOr(p.targetC, prevT));
+    const RateEnvelope &env = rampEnvelope(p, prevT, endT, model);
     float req = finiteOr(p.rampSeconds, 0.0f);
     if (req < 0.0f) {
       req = 0.0f;
     }
-    // Authored timeline (same rule as samplePhaseBoundaries / the requested curve: 0 for an ASAP
-    // ramp) so the UV band lines up with the phase separators, not the slower projected trace.
-    const float rampSec = p.rampSeconds > 0.0f ? req : 0.0f;
+    // Projected timeline (same slot width as samplePhaseBoundaries / the projected curve) so the UV
+    // band lines up with the phase separators the operator sees.
+    const float rampAch = clampSec(rateLimitRamp(env, prevT, endT, req).achievableSeconds);
     const float hold = clampSec(phaseHoldSeconds(mode, p, model));
     const float start = t;
-    const float end = clampSec(t + rampSec + hold);
+    const float end = clampSec(t + rampAch + hold);
     if (p.uv) {
       out[n].start = start;
       out[n].end = end;
@@ -300,15 +319,15 @@ inline size_t sampleUvSpans(const Phase *phases, size_t count, RecipeMode mode,
   return n;
 }
 
-// The cumulative time (seconds) at the end of each phase on the REQUESTED (authored) timeline — the
-// x positions of the phase separators the preview draws as vertical rules. Mirrors
-// sampleCurve(achievable=false) so the separators sit exactly on the *requested* curve's phase
-// corners (the phases the operator authored); the projected trace, on the slower achievable
-// timeline, then visibly lags/extends past them. (The real end-to-end duration stays the achievable
-// one — computeFacts — shown in the facts line, not on the axis.) A timed ramp contributes its
-// authored seconds; an ASAP ramp has no authored time so it contributes the achievable estimate,
-// exactly as the requested curve does. Finite, monotonic non-decreasing, bounded — safe on a raw
-// Phase[]. Returns the count (<= kMaxPhases, <= cap).
+// The cumulative time (seconds) at the end of each phase on the PROJECTED timeline — the x
+// positions of the phase separators the preview draws as vertical rules. A phase ends when the
+// projected trace has reached its setpoint (the honored ramp time — authored when feasible,
+// plant-limited when the request outruns physics) and held for the hold time; the next phase does
+// not begin before that, so an ASAP ramp still occupies its real plant time rather than collapsing
+// to a zero-width corner. Mirrors sampleCurve's slot layout and computeFacts' total, so the
+// separators sit on the projected curve's corners and the last boundary equals the facts-line
+// duration. Finite, monotonic non-decreasing, bounded — safe on a raw Phase[]. Returns the count
+// (<= kMaxPhases, <= cap).
 inline size_t samplePhaseBoundaries(const Phase *phases, size_t count, RecipeMode mode,
                                     const OvenModel &model, float ambientC, float *out,
                                     size_t cap) {
@@ -323,16 +342,16 @@ inline size_t samplePhaseBoundaries(const Phase *phases, size_t count, RecipeMod
   for (size_t i = 0; i < pc && n < cap; ++i) {
     const Phase &p = eff[i];
     const float endT = clampT(finiteOr(p.targetC, prevT));
+    const RateEnvelope &env = rampEnvelope(p, prevT, endT, model);
     float req = finiteOr(p.rampSeconds, 0.0f);
     if (req < 0.0f) {
       req = 0.0f;
     }
-    // Authored ramp seconds for a timed ramp; 0 for an ASAP ramp (an instant request) — the same
-    // rule as the requested curve, so boundaries land on its corners. The rate envelope is not
-    // consulted here: this is the authored timeline, not the achievable one. (The implicit cool
-    // phase carries a real ramp duration, so it draws a downward slope, not a vertical.)
-    const float rampSec = p.rampSeconds > 0.0f ? req : 0.0f;
-    t = clampSec(t + clampSec(rampSec) + clampSec(phaseHoldSeconds(mode, p, model)));
+    // Projected ramp time (∫dT/rate, or the authored seconds when they are slower than the plant's
+    // limit), the same slot width sampleCurve/computeFacts use — so the separator lands where the
+    // projected trace turns the corner, and an ASAP cool leg gets its real cooling width.
+    const float rampAch = clampSec(rateLimitRamp(env, prevT, endT, req).achievableSeconds);
+    t = clampSec(t + rampAch + clampSec(phaseHoldSeconds(mode, p, model)));
     out[n++] = t;
     prevT = endT;
   }

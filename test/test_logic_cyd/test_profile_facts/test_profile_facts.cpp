@@ -116,7 +116,8 @@ void test_curve_starts_at_ambient_and_is_monotonic_in_time(void) {
 void test_curve_requested_vs_achievable_diverge_when_rate_limited(void) {
   const OvenModel m = toyModel();
   // Ask for 25 → 225 °C (achievable 100 s at 2 °C/s) in an impossible 10 s. The requested curve
-  // reaches target in 10 s; the achievable one takes the full 100 s — so the total spans differ.
+  // reaches target in 10 s; the achievable one takes the full 100 s — the within-phase divergence,
+  // even though both traces occupy the same projected phase slot and finish together.
   Phase p = {};
   p.targetC = 225.0f;
   p.rampSeconds = 10.0f;
@@ -211,25 +212,25 @@ void test_overshoot_bounded_and_monotonic(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 25.0f, ov[0].T); // starts at ambient
 }
 
-void test_phase_boundaries_on_authored_timeline(void) {
+void test_phase_boundaries_on_projected_timeline(void) {
   const OvenModel m = toyModel(); // heat 2 °C/s, cool 1 °C/s
   Phase phases[2] = {};
-  phases[0].targetC = 125.0f; // 25→125 ASAP = instant on the authored timeline, + 60 s hold → 60 s
+  phases[0].targetC = 125.0f; // 25→125 ASAP = 50 s projected ramp (100 °C / 2), + 60 s hold → 110 s
   phases[0].holdSeconds = 60.0f;
-  phases[1].targetC = 25.0f; // 125→25 cool ASAP = instant, + 30 s hold → 90 s
+  phases[1].targetC = 25.0f; // 125→25 cool ASAP = 100 s projected (100 °C / 1), + 30 s hold → 130 s
   phases[1].holdSeconds = 30.0f;
   float bounds[kMaxPhases];
   const size_t n = profile_facts::samplePhaseBoundaries(phases, 2, RecipeMode::Reflow, m, 25.0f,
                                                         bounds, kMaxPhases);
-  TEST_ASSERT_EQUAL_UINT(2, n);
-  TEST_ASSERT_FLOAT_WITHIN(0.5f, 60.0f, bounds[0]); // ASAP ramp is 0 s → just the 60 s hold
-  TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, bounds[1]); // + the 30 s hold
-  TEST_ASSERT_TRUE(bounds[1] >= bounds[0]);         // monotonic
-  // Boundaries sit exactly on the *requested* curve's phase corners.
-  CurvePoint req[kMaxCurvePoints];
-  const size_t nq =
-      sampleCurve(phases, 2, RecipeMode::Reflow, m, false, 25.0f, req, kMaxCurvePoints);
-  TEST_ASSERT_FLOAT_WITHIN(0.5f, req[nq - 1].t, bounds[n - 1]);
+  TEST_ASSERT_EQUAL_UINT(2, n); // ends at 25 °C (< touch-safe) so no implicit cool is appended
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 110.0f, bounds[0]); // 50 s projected ramp + 60 s hold
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 240.0f, bounds[1]); // + 100 s projected cool + 30 s hold
+  TEST_ASSERT_TRUE(bounds[1] >= bounds[0]);          // monotonic
+  // Boundaries sit exactly on the *projected* curve's phase corners (its last point == last bound).
+  CurvePoint ach[kMaxCurvePoints];
+  const size_t na = sampleCurve(phases, 2, RecipeMode::Reflow, m, /*achievable=*/true, 25.0f, ach,
+                                kMaxCurvePoints);
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, ach[na - 1].t, bounds[n - 1]);
 }
 
 void test_requested_curve_asap_ramp_is_vertical(void) {
@@ -249,11 +250,11 @@ void test_requested_curve_asap_ramp_is_vertical(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-3f, 125.0f, req[1].T);
 }
 
-void test_phase_boundaries_use_authored_ramp_time(void) {
+void test_phase_boundaries_use_projected_ramp_time(void) {
   const OvenModel m = toyModel(); // heat 2 °C/s
-  // A timed ramp the oven cannot meet: 25→225 (achievable 100 s) authored in 10 s. The boundary
-  // must land on the AUTHORED 10 s (+ hold), not the 100 s achievable — that is what makes the
-  // separator line up with the requested curve rather than the slower projected one.
+  // A timed ramp the oven cannot meet: 25→225 (projected 100 s at 2 °C/s) authored in 10 s. The
+  // boundary lands on the PROJECTED 100 s (+ hold) — the plant-limited time the projected trace
+  // actually needs to reach the setpoint — not the optimistic authored 10 s.
   Phase p = {};
   p.targetC = 225.0f;
   p.rampSeconds = 10.0f;
@@ -263,8 +264,30 @@ void test_phase_boundaries_use_authored_ramp_time(void) {
                                                         profile_facts::kMaxCurvePhases);
   // Two boundaries: the authored phase, then the implicit passive cool-down (§6).
   TEST_ASSERT_EQUAL_UINT(2, n);
-  TEST_ASSERT_FLOAT_WITHIN(0.5f, 30.0f, bounds[0]); // 10 s authored ramp + 20 s hold, not 120 s
-  TEST_ASSERT_TRUE(bounds[1] > bounds[0]);          // cool-down extends past the authored end
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 120.0f, bounds[0]); // 100 s projected ramp + 20 s hold, not 30 s
+  TEST_ASSERT_TRUE(bounds[1] > bounds[0]);           // cool-down extends past the reflow end
+}
+
+void test_phase_boundaries_asap_cool_has_projected_width(void) {
+  const OvenModel m = toyModel(); // heat 2 °C/s, cool 1 °C/s
+  // The LF-245 shape: a reflow peak, then an authored ASAP cool leg to 50 °C. On the projected
+  // timeline that cool leg is NOT zero-width — it takes the real time to coast 245→50 (195 s at
+  // 1 °C/s) — so its separator/label sits well clear of the reflow corner (the bug that squished
+  // the two cool phases together on the old authored timeline).
+  Phase phases[2] = {};
+  phases[0].targetC = 245.0f;
+  phases[0].rampSeconds = 40.0f; // projected 110 s (220 °C / 2), rate-limited from 40 s
+  phases[0].holdSeconds = 30.0f;
+  phases[1].targetC = 50.0f;    // 245→50 cool, ASAP
+  phases[1].rampSeconds = 0.0f; // ASAP — the case that used to collapse to zero width
+  float bounds[profile_facts::kMaxCurvePhases];
+  const size_t n = profile_facts::samplePhaseBoundaries(phases, 2, RecipeMode::Reflow, m, 25.0f,
+                                                        bounds, profile_facts::kMaxCurvePhases);
+  // Reflow, the ASAP cool, then the implicit 50→43 safety cool (§6).
+  TEST_ASSERT_EQUAL_UINT(3, n);
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 140.0f, bounds[0]);             // 110 s projected ramp + 30 s hold
+  TEST_ASSERT_FLOAT_WITHIN(2.0f, 195.0f, bounds[1] - bounds[0]); // the ASAP cool's real 195 s width
+  TEST_ASSERT_TRUE(bounds[2] > bounds[1]); // implicit safety cool extends past it
 }
 
 void test_uv_spans_cover_uv_on_phases(void) {
@@ -373,8 +396,9 @@ int main(int, char **) {
   RUN_TEST(test_achievable_curve_resolves_fan_auto);
   RUN_TEST(test_any_ramp_rate_limited);
   RUN_TEST(test_overshoot_bounded_and_monotonic);
-  RUN_TEST(test_phase_boundaries_on_authored_timeline);
-  RUN_TEST(test_phase_boundaries_use_authored_ramp_time);
+  RUN_TEST(test_phase_boundaries_on_projected_timeline);
+  RUN_TEST(test_phase_boundaries_use_projected_ramp_time);
+  RUN_TEST(test_phase_boundaries_asap_cool_has_projected_width);
   RUN_TEST(test_requested_curve_asap_ramp_is_vertical);
   RUN_TEST(test_uv_spans_cover_uv_on_phases);
   RUN_TEST(test_overshoot_bounded_under_nonfinite_input);

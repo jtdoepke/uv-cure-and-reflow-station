@@ -22,6 +22,13 @@ void format_tick_temp(float t, char *buf, size_t n) {
   std::snprintf(buf, n, "%d\xC2\xB0", static_cast<int>(t >= 0.0f ? t + 0.5f : t - 0.5f));
 }
 
+// The implicit passive cool-down (implicit_cool.h, §6) coasts a hot reflow peak down to touch-safe
+// so slowly that on a linear time axis it swallows most of the plot, crushing the authored phases —
+// and their labels — into the left edge. When the cool tail would exceed this share of the plot
+// width we compress it to exactly this share (a piecewise time axis), so the authored profile keeps
+// the rest. The single tuning knob; a naturally-short cool tail (below the cap) is left untouched.
+constexpr float kMaxCoolWidthFrac = 0.22f;
+
 // Combined data range across the series, so every trace shares one set of axes (a divergence must
 // read as the lines pulling apart, not as independently-scaled plots).
 struct Range {
@@ -65,11 +72,43 @@ Range dataRange(const CurvePoint *a, size_t na, const CurvePoint *b, size_t nb, 
   return r;
 }
 
+// Piecewise-linear time → pixel-column map. Below the knee (the authored profile) time scales
+// linearly across [0, xKnee]; above it (the implicit cool tail) across [xKnee, xMax]. With the knee
+// pinned to the right edge (no/short cool tail) this collapses to a single linear map — the plain
+// behaviour. Replaces the lone `sx` scalar; the y axis stays linear (`sy`, per line).
+struct TimeAxis {
+  float tMin, tKnee, tMax; // data-time breakpoints
+  float xKnee, xMax;       // their pixel columns (tMin ↦ 0)
+  bool compressed;         // true when the cool tail was actually shrunk (drives the break cues)
+
+  int32_t px(float t) const {
+    if (t <= tKnee) {
+      const float span = tKnee - tMin;
+      return span < 1e-3f ? 0 : static_cast<int32_t>((t - tMin) / span * xKnee);
+    }
+    const float span = tMax - tKnee;
+    return span < 1e-3f ? static_cast<int32_t>(xKnee)
+                        : static_cast<int32_t>(xKnee + (t - tKnee) / span * (xMax - xKnee));
+  }
+};
+
+// Build the axis for a plot `wPix + 1` px wide. `coolStart` is the implicit cool phase's start time
+// (<0, or outside the range, ⇒ no tail ⇒ linear). The tail is compressed only when its natural
+// linear share would exceed kMaxCoolWidthFrac; otherwise it keeps its true proportion.
+TimeAxis buildTimeAxis(const Range &r, float wPix, float coolStart) {
+  const float knee = (coolStart >= r.tMin && coolStart < r.tMax) ? coolStart : r.tMax;
+  const float span = r.tMax - r.tMin;
+  const float naturalCoolShare = span > 1e-3f ? (r.tMax - knee) / span : 0.0f;
+  const bool compressed = knee < r.tMax && naturalCoolShare > kMaxCoolWidthFrac + 1e-4f;
+  const float coolFrac = compressed ? kMaxCoolWidthFrac : naturalCoolShare;
+  return TimeAxis{r.tMin, knee, r.tMax, wPix * (1.0f - coolFrac), wPix, compressed};
+}
+
 // A polyline as a child of the plot box, its points scaled from data coords into the plot's pixel
 // box. The scaled points are copied into an LVGL-owned buffer freed on delete, so the caller's
 // array need not persist. Returns the line object (nullptr if there is nothing to draw).
-lv_obj_t *make_line(lv_obj_t *plot, const CurvePoint *pts, size_t n, const Range &r, int32_t w,
-                    int32_t h, uint32_t color, bool dashed) {
+lv_obj_t *make_line(lv_obj_t *plot, const CurvePoint *pts, size_t n, const Range &r,
+                    const TimeAxis &ax, int32_t w, int32_t h, uint32_t color, bool dashed) {
   if (pts == nullptr || n < 2) {
     return nullptr;
   }
@@ -77,12 +116,10 @@ lv_obj_t *make_line(lv_obj_t *plot, const CurvePoint *pts, size_t n, const Range
   if (scaled == nullptr) {
     return nullptr;
   }
-  const float sx = static_cast<float>(w - 1) / (r.tMax - r.tMin);
   const float sy = static_cast<float>(h - 1) / (r.TMax - r.TMin);
   for (size_t i = 0; i < n; ++i) {
-    const float x = (pts[i].t - r.tMin) * sx;
     const float y = static_cast<float>(h - 1) - (pts[i].T - r.TMin) * sy; // invert: hot = top
-    scaled[i].x = static_cast<lv_value_precise_t>(x);
+    scaled[i].x = static_cast<lv_value_precise_t>(ax.px(pts[i].t));       // piecewise time axis
     scaled[i].y = static_cast<lv_value_precise_t>(y);
   }
 
@@ -126,8 +163,10 @@ lv_obj_t *make_vline(lv_obj_t *plot, int32_t x, int32_t h) {
   return line;
 }
 
-// A low-opacity violet band spanning [x0, x1] across the full plot height — a UV-on phase (cure).
-void make_uv_band(lv_obj_t *plot, int32_t x0, int32_t x1, int32_t h) {
+// A translucent background band spanning [x0, x1] across the full plot height. Used for the violet
+// UV-on window (cure) and, dimmer, to wash the compressed cool region so it reads as "not to
+// scale".
+void make_band(lv_obj_t *plot, int32_t x0, int32_t x1, int32_t h, uint32_t color, lv_opa_t opa) {
   if (x1 <= x0) {
     x1 = x0 + 1;
   }
@@ -135,9 +174,39 @@ void make_uv_band(lv_obj_t *plot, int32_t x0, int32_t x1, int32_t h) {
   lv_obj_remove_style_all(band);
   lv_obj_set_pos(band, x0, 0);
   lv_obj_set_size(band, x1 - x0, h);
-  lv_obj_set_style_bg_color(band, theme::col(theme::UV), 0);
-  lv_obj_set_style_bg_opa(band, LV_OPA_20, 0);
+  lv_obj_set_style_bg_color(band, theme::col(color), 0);
+  lv_obj_set_style_bg_opa(band, opa, 0);
   lv_obj_remove_flag(band, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+// A "//" axis-break glyph centred on pixel column `x`, near the bottom of the plot — the standard
+// "the time scale is discontinuous here" mark, drawn where the linear authored axis meets the
+// compressed cool tail. Two short parallel diagonal segments in the grid colour.
+void make_break_mark(lv_obj_t *plot, int32_t x, int32_t h) {
+  const int32_t slash_h = theme::GRID_STEP;      // segment height
+  const int32_t slash_dx = theme::GRID_STEP / 3; // horizontal run (the slash's lean)
+  const int32_t gap = theme::GRID_STEP / 3;      // between the two slashes
+  const int32_t y1 = h - 1;
+  const int32_t y0 = y1 - slash_h;
+  for (int s = 0; s < 2; ++s) {
+    auto *pts = static_cast<lv_point_precise_t *>(lv_malloc(2 * sizeof(lv_point_precise_t)));
+    if (pts == nullptr) {
+      return;
+    }
+    const int32_t bx = x + (s == 0 ? -gap / 2 : gap / 2); // bottom x of this slash
+    pts[0].x = static_cast<lv_value_precise_t>(bx);
+    pts[0].y = static_cast<lv_value_precise_t>(y1);
+    pts[1].x = static_cast<lv_value_precise_t>(bx + slash_dx);
+    pts[1].y = static_cast<lv_value_precise_t>(y0);
+    lv_obj_t *line = lv_line_create(plot);
+    lv_obj_remove_style_all(line);
+    lv_obj_set_pos(line, 0, 0);
+    lv_line_set_points(line, pts, 2);
+    lv_obj_set_style_line_color(line, theme::col(theme::GRID), 0);
+    lv_obj_set_style_line_width(line, theme::HAIRLINE, 0);
+    lv_obj_set_user_data(line, pts);
+    lv_obj_add_event_cb(line, free_points_cb, LV_EVENT_DELETE, nullptr);
+  }
 }
 
 // A dim axis-tick label as a child of `parent`, positioned by lv_obj_align. Uses the small font —
@@ -151,11 +220,6 @@ lv_obj_t *make_tick_label(lv_obj_t *parent, const char *text) {
 }
 void add_tick_label(lv_obj_t *parent, const char *text, lv_align_t align, int32_t dx, int32_t dy) {
   lv_obj_align(make_tick_label(parent, text), align, dx, dy);
-}
-
-// Data time → pixel column within the plot's content box.
-int32_t px_for(float t, const Range &r, float sx) {
-  return static_cast<int32_t>((t - r.tMin) * sx);
 }
 
 // A label drawn INSIDE the plot, rotated 90° clockwise (reads top→down) and dimmed, its column's
@@ -269,11 +333,21 @@ ProfileCurve create_profile_curve(lv_obj_t *parent, const ProfileCurveData &d) {
   // Range over the two drawn series (requested + settling). The rate-limited "achievable" setpoint
   // is not drawn, and settling shares its time extent, so it need not be folded in.
   const Range r = dataRange(d.requested, d.n_requested, d.overshoot, d.n_overshoot, nullptr, 0);
-  const float sx = static_cast<float>(w - 1) / (r.tMax - r.tMin);
+  // Piecewise time axis: linear over the authored profile, compressing the long implicit cool tail
+  // to a bounded pixel share so the authored phases (and their labels) stay legible.
+  const TimeAxis ax = buildTimeAxis(r, static_cast<float>(w - 1), d.cool_start);
 
-  // UV-on bands first (furthest back — they are context behind everything).
+  // Compressed-cool cue #1 (furthest back): a dim neutral wash over the cool region so it reads as
+  // "not to time-scale". Only when the tail was actually shrunk; a natural-length cool gets no
+  // wash.
+  if (ax.compressed) {
+    make_band(ui.plot, ax.px(ax.tKnee), w - 1, h, theme::TEXT_DIM, LV_OPA_10);
+  }
+
+  // UV-on bands next (still background — context behind everything).
   for (size_t i = 0; i < d.n_uv_spans; ++i) {
-    make_uv_band(ui.plot, px_for(d.uv_spans[i].start, r, sx), px_for(d.uv_spans[i].end, r, sx), h);
+    make_band(ui.plot, ax.px(d.uv_spans[i].start), ax.px(d.uv_spans[i].end), h, theme::UV,
+              LV_OPA_20);
     ++ui.uv_bands;
   }
 
@@ -284,8 +358,14 @@ ProfileCurve create_profile_curve(lv_obj_t *parent, const ProfileCurveData &d) {
     if (pt <= r.tMin + 1e-3f || pt >= r.tMax - 1e-3f) {
       continue;
     }
-    make_vline(ui.plot, px_for(pt, r, sx), h);
+    make_vline(ui.plot, ax.px(pt), h);
     ++ui.separators;
+  }
+
+  // Compressed-cool cue #2: the "//" scale-break glyph over the knee, saying the time axis is
+  // discontinuous where the authored profile meets the compressed cool tail.
+  if (ax.compressed) {
+    make_break_mark(ui.plot, ax.px(ax.tKnee), h);
   }
 
   // Two lines: the requested trajectory as a dashed ghost (amber when a ramp is optimistic — the
@@ -294,10 +374,10 @@ ProfileCurve create_profile_curve(lv_obj_t *parent, const ProfileCurveData &d) {
   // requested-vs- settling already shows the full gap between what was asked and what the oven will
   // do. Requested first (under), settling on top so the real trajectory wins any overlap.
   // `achievable` is still folded into the axis range so the plot fits it.
-  ui.requested_line = make_line(ui.plot, d.requested, d.n_requested, r, w, h,
+  ui.requested_line = make_line(ui.plot, d.requested, d.n_requested, r, ax, w, h,
                                 d.rate_limited ? theme::WARN : theme::TEXT_DIM, /*dashed=*/true);
   ui.overshoot_line =
-      make_line(ui.plot, d.overshoot, d.n_overshoot, r, w, h, theme::ACCENT, /*dashed=*/false);
+      make_line(ui.plot, d.overshoot, d.n_overshoot, r, ax, w, h, theme::ACCENT, /*dashed=*/false);
 
   // Y axis: temperature extremes on the left (peak top, min bottom).
   char tbuf[12];
@@ -310,15 +390,31 @@ ProfileCurve create_profile_curve(lv_obj_t *parent, const ProfileCurveData &d) {
   // dimmed, placed just right of the phase's start line — the y-axis for the first phase, each
   // internal boundary rule for the rest. The start time is the phase's own start (0, then each
   // boundary), so the whole time axis is read off these rather than a separate strip.
+  //
+  // De-collide as we go: a rotated label is ~one line-height wide, so a phase whose start lands
+  // within that of the previous label — or of the right-edge end-time label — would overprint it
+  // into an unreadable smear (a short phase wedged between two others, or one ending near the
+  // total). Skip such a label; its separator rule still marks the boundary, and the end-time label
+  // already anchors the right edge.
+  const int32_t end_label_x = w - line_h - theme::HAIRLINE; // the end-time label's column
+  const int32_t label_gap = line_h + 2; // min columns between two rotated labels
   const size_t names = d.n_phase_names < d.n_boundaries ? d.n_phase_names : d.n_boundaries;
+  bool have_last = false;
+  int32_t last_label_x = 0;
   for (size_t i = 0; i < names; ++i) {
     if (d.phase_names[i] == nullptr) {
       continue;
     }
     const float startT = i == 0 ? r.tMin : d.boundaries[i - 1];
+    const int32_t lx = ax.px(startT) + theme::HAIRLINE + 1;
+    if ((have_last && lx - last_label_x < label_gap) || end_label_x - lx < label_gap) {
+      continue; // would overprint the previous label or the end-time label
+    }
     char buf[40];
     std::snprintf(buf, sizeof(buf), "%s %ds", d.phase_names[i], static_cast<int>(startT + 0.5f));
-    make_vlabel(ui.plot, px_for(startT, r, sx) + theme::HAIRLINE + 1, h, buf);
+    make_vlabel(ui.plot, lx, h, buf);
+    last_label_x = lx;
+    have_last = true;
   }
 
   // The run's end time, as a vertical label tucked just inside the right edge — where the projected
@@ -326,7 +422,7 @@ ProfileCurve create_profile_curve(lv_obj_t *parent, const ProfileCurveData &d) {
   {
     char endbuf[16];
     std::snprintf(endbuf, sizeof(endbuf), "%ds", static_cast<int>(r.tMax + 0.5f));
-    make_vlabel(ui.plot, w - line_h - theme::HAIRLINE, h, endbuf);
+    make_vlabel(ui.plot, end_label_x, h, endbuf);
   }
 
   if (d.uncalibrated) {

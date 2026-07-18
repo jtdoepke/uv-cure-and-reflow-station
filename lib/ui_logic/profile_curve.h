@@ -33,6 +33,11 @@ struct ProfileCurveData {
   size_t n_uv_spans = 0;
   const char *const *phase_names = nullptr; // one per phase, drawn along the inside bottom
   size_t n_phase_names = 0;
+  // Start time (s) of the implicit passive cool-down phase (implicit_cool.h, §6). A hot reflow's
+  // slow coast to touch-safe dwarfs the authored phases on a linear time axis, crushing them (and
+  // their labels) into the left edge; giving this lets the widget compress that tail to a bounded
+  // pixel share so the authored profile stays legible. <0 ⇒ no cool tail ⇒ plain linear axis.
+  float cool_start = -1.0f;
   bool uncalibrated = false; // adds the §12 "preview is idealized" note (omit if a banner says so)
   bool rate_limited = false; // draws the requested line amber (the §12 divergence flag)
 };

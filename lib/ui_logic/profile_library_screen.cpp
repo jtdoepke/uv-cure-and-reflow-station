@@ -288,17 +288,19 @@ void ProfileLibraryScreen::buildDetail() {
   const size_t nb =
       current_->samplePhaseBoundaries(selected_, bounds, profile_facts::kMaxCurvePhases);
   const size_t nuv = current_->sampleUvSpans(selected_, uv, kMaxPhases);
-  // Phase labels parallel to the boundaries: each phase's stored name (indexed by the authored
-  // count, not nb), then "Cool" for the implicit passive cool-down phase (implicit_cool.h, §6).
+  // Phase labels: one per AUTHORED phase (its stored name). The implicit passive cool-down the
+  // samplers append when the run ends hot (implicit_cool.h, §6) is a system safety phase, not
+  // operator-authored — it gets no label; its separator and the end-time label carry the right
+  // edge.
   char namebuf[profile_facts::kMaxCurvePhases][kPhaseNameCap];
   const char *names[profile_facts::kMaxCurvePhases];
   const size_t authored = current_->phaseNames(selected_, namebuf, profile_facts::kMaxCurvePhases);
   for (size_t i = 0; i < authored && i < nb; ++i) {
     names[i] = namebuf[i];
   }
-  if (nb > authored) {
-    names[authored] = kImplicitCoolLabel;
-  }
+  // Cool phase starts where the last authored phase ends — lets the widget compress the long
+  // passive cool-down of a hot reflow rather than squishing the authored phases into the left edge.
+  const float cool_start = (nb > authored && authored >= 1) ? bounds[authored - 1] : -1.0f;
   ProfileCurveData cd;
   cd.requested = req;
   cd.n_requested = nr;
@@ -309,7 +311,8 @@ void ProfileLibraryScreen::buildDetail() {
   cd.uv_spans = uv;
   cd.n_uv_spans = nuv;
   cd.phase_names = names;
-  cd.n_phase_names = nb;
+  cd.n_phase_names = authored; // authored phases only — the implicit cool is unlabelled
+  cd.cool_start = cool_start;
   cd.uncalibrated = false; // shown as a warning bar below the graph instead of a label on it
   create_profile_curve(parent_, cd);
 
