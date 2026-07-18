@@ -865,17 +865,22 @@ is no OTA, and OTA is the controller's only field-reflash path once the oven is 
   allocator). OTA itself has runtime room. **Always verify a memory change with a clean firmware
   build (`pio run -t clean`), never an incremental one** — an incremental link can pass while a
   clean link overflows.
-  - **REVISED 2026-07-17 — production loses the radio (§2), so this ceiling relaxes.**
-    WiFi moved to the controller, so the **production** CYD firmware links **no WiFi
-    static objects** — the ~1 kB-over pressure and the ≤ ~60 kB pool cap were *WiFi's*, and
-    both lift. Combined with dropping the on-CYD profile/settings stores (their view-model
-    name buffers + LittleFS/NVS statics also left `dram0_0_seg`), production now has room to
-    **raise `DRAW_BUF_LINES`** (§6a draw-buffer menu — the biggest UI-speed lever) and
-    optionally restore the 80 kB pool for the keyboard popovers. The `_uidev` build still
-    carries WiFi (screenshots), so it keeps the old constraints — hence `DRAW_BUF_LINES`
-    stays `#ifndef`-guarded so `_uidev` can override *down*. **The clean-build rule is
-    unchanged and doubly important here:** verify every one of these bumps with
-    `pio run -t clean`.
+  - **OUTCOME 2026-07-18 — the §2 "CYD is a UI remote" move landed (Waves R3b/R4), and the
+    memory story is subtler than "WiFi frees DRAM".** Two corrections to the earlier
+    optimism: (1) **production never linked WiFi** — only the `_uidev` screenshot build does —
+    so there were no production WiFi statics to reclaim; and (2) the remote client that
+    replaced the on-CYD stores **added** static DRAM (the ManagementClient's message caches +
+    the async view-model caches), *more* than the stores freed. Net, `dram0_0_seg` got
+    **tighter**, not looser: to fit, the LVGL pool went **64 → 60 kB**, the library's two
+    per-mode view-models collapsed to one, and the client's ProfileList/Profile caches were
+    unioned. The keyboard-popover 80 kB pool is **not** restorable — the opposite happened.
+    **But the draw-buffer win was real, because those buffers are *heap*, not `dram0_0_seg`:**
+    a radio-less production CYD (plus LittleFS/NVS gone from the heap) has ample heap, so
+    **`DRAW_BUF_LINES` rose 24 → 48** (~28 % faster Home redraw, verified booting on the
+    3.5"). The `_uidev` build (WiFi) overrides *down* — pool 58 kB and buffers 24 lines — via
+    the now-`#ifndef`-guarded `LV_MEM_SIZE`/`DRAW_BUF_LINES`. **Clean-build rule held
+    throughout:** every static change was verified with `pio run -t clean` (an incremental
+    link hid the overflow otherwise).
 - **The 3.5"'s contrast is a real design input, not a defect to tune out.** Its blacks sit grey
   at every backlight level, which is a property of the glass, and the §14 palette is built on
   colour against near-black — so it has less headroom here than the palette assumes.

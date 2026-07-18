@@ -595,27 +595,27 @@ becomes a remote client. This wave lands the **storage + protocol** move (the me
 → bigger render buffers); WiFi/OTA/data-server stay design-only (D9). Details →
 design.md §2/§7/§9/§11/§21/§25/§27. Ordered; each ~one PR.
 
-- [ ] **R1** [A] — **protocol expansion.** Add typed `Phase`/`Profile`/`ProfileSummary`/
+- [x] **R1** [A] — **protocol expansion.** Add typed `Phase`/`Profile`/`ProfileSummary`/
   `Settings` + management messages (`ProfileList/Get/Put/Delete/Dup/Rename`,
   `SettingsGet/Put`) to `proto/oven.proto` + `oven.options`; new `kTfType*` ids
   (`0x19+`) + router cases + `IMessageObserver` virtuals; the new **request/reply**
   reliability pair (`RequestClient`/`RequestResponder`, request→data-reply) in
   `lib/protocol`. Host round-trip tests (`native_control`). *Schema hash changes —
   expected (matched-pair reflash).* deps: none. (§9)
-- [ ] **R2** [A/B] — **controller owns the stores.** Relocate `IProfileStorage`/
+- [x] **R2** [A/B] — **controller owns the stores.** Relocate `IProfileStorage`/
   `ISettingsStorage`; move `ProfileStore`/`SettingsStore` → `lib/control_logic` (store
   `oven_Profile`); `LittleFsProfileStorage`/settings adapter in `src_control`; controller
   partition + `board_build.filesystem=littlefs` + `uploadfs` stock seeds via updated
   `tools/gen_profiles.cpp`; `ProfileResponder`/`SettingsResponder` into `ControllerLink`.
   Move `fuzz_profile_store` to the control context; add `fuzz_profile_wire` (controller
   parsing untrusted management frames — it is the safety MCU). deps: R1. (§7/§11/§23)
-- [ ] **R3** [B/C] — **CYD remote client.** `phase_codec` (`Phase↔oven_Phase`);
+- [x] **R3** [B/C] — **CYD remote client.** `phase_codec` (`Phase↔oven_Phase`);
   `ProfileClient`/`SettingsClient` (`lib/app_logic`) over the request/reply path; rewire
   `ProfileLibraryViewModel`, `ProfileEditorScreen`, `SettingsScreen` to async with
   **loading / error / saving** states. Drop the CYD's LittleFS/NVS/`ProfileStore`/
   `SettingsStore` + mount + `data/` + `filesystem=littlefs`. `native_logic_cyd` +
   `native_ui_cyd`(+`_35`) tests against a fake client. deps: R1, R2. (§12/§23/§24)
-- [ ] **R4** [C] — **reclaim the memory (the payoff).** With the stores + WiFi gone from
+- [x] **R4** [C] — **reclaim the memory (the payoff).** With the stores + WiFi gone from
   production, raise `DRAW_BUF_LINES` (`include/cyd_board.h`, toward 48–60 per §6a's
   measured menu) and optionally restore the 80 kB LVGL pool — each **clean-build verified**
   (`pio run -t clean`). Re-measure with `make perf` + the on-glass perf probe. deps: R3.

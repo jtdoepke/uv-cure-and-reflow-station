@@ -142,14 +142,17 @@ inline constexpr bool kPanelReadable = true;
 //        60        8         77 KB        86 ms   -34%
 //        96        4        123 KB       fails to allocate (malloc cliff, boot-loops)
 //
-// Kept at 24 FOR NOW, deliberately: taller buffers trade DRAM the planned OTA path (§21/§25) will
-// need — the buffers are heap-allocated precisely because WiFi and these compete for the same
-// internal DRAM, and the true WiFi headroom is not known until the feature set is complete. Revisit
-// then: bumping this is the biggest, cheapest, pixel-safe responsiveness win available (a bigger
-// default, or a per-env -D override — big for no-WiFi, small for the WiFi builds). Still
-// #ifndef-guarded so an env can override without a patch. The table above is the measured menu.
+// Raised to 48 with Wave R4 (the §2 "CYD is a UI remote" payoff): WiFi/OTA are no longer planned
+// for the *production* CYD (they moved to the controller, §2/§21), so the DRAM these buffers were
+// kept small to reserve is now free — and the profile/settings stores + LittleFS left the heap too.
+// The buffers are heap-allocated, and a radio-less production CYD has ample heap, so 48 lines (61
+// KB both buffers, ~28% faster Home redraw per the table) mallocs with room to spare. The one build
+// that still links WiFi — esp32dev_cyd*_uidev — overrides back to 24 (-D DRAW_BUF_LINES=24) to stay
+// clear of its malloc cliff. Still #ifndef-guarded so an env can pick its own. Table = measured
+// menu.
 #ifndef DRAW_BUF_LINES
-#define DRAW_BUF_LINES 24 // 320 x 24 x 2 B = 15360 B/buffer — the 2.8" board's long-standing size
+#define DRAW_BUF_LINES                                                                             \
+  48 // 320 x 48 x 2 B = 30720 B/buffer (x2 double-buffered); ~28% faster redraw
 #endif
 inline constexpr size_t kDrawBufBytes = static_cast<size_t>(panel::W) * DRAW_BUF_LINES * 2;
 
