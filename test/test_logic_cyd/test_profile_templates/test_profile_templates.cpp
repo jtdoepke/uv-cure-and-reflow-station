@@ -55,14 +55,17 @@ void test_cure_template_has_uv_content(void) {
 
 void test_role_labels_track_structure(void) {
   char buf[24];
-  // Canonical reflow → fixed roles (Preheat/Soak/Reflow; the cool-down is implicit, no "Cool"
-  // role).
+  // Canonical reflow → fixed roles (Preheat/Soak/Reflow/Cool; the authored controlled cool is the
+  // last role, with the implicit passive cool appended after it).
   TEST_ASSERT_EQUAL_STRING(
       "Preheat", profile_templates::phaseLabel(RecipeMode::Reflow, 0,
                                                profile_templates::kReflowPhases, buf, sizeof(buf)));
-  TEST_ASSERT_EQUAL_STRING("Reflow", profile_templates::phaseLabel(
-                                         RecipeMode::Reflow, profile_templates::kReflowPhases - 1,
-                                         profile_templates::kReflowPhases, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("Reflow", profile_templates::phaseLabel(RecipeMode::Reflow, 2,
+                                                                   profile_templates::kReflowPhases,
+                                                                   buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("Cool", profile_templates::phaseLabel(
+                                       RecipeMode::Reflow, profile_templates::kReflowPhases - 1,
+                                       profile_templates::kReflowPhases, buf, sizeof(buf)));
   // Canonical cure → fixed roles (Warm/Cure).
   TEST_ASSERT_EQUAL_STRING("Cure", profile_templates::phaseLabel(RecipeMode::Cure, 1,
                                                                  profile_templates::kCurePhases,
@@ -87,6 +90,7 @@ void test_default_template_seeds_phase_names(void) {
   TEST_ASSERT_EQUAL_STRING("Preheat", r.phases[0].name);
   TEST_ASSERT_EQUAL_STRING("Soak", r.phases[1].name);
   TEST_ASSERT_EQUAL_STRING("Reflow", r.phases[2].name);
+  TEST_ASSERT_EQUAL_STRING("Cool", r.phases[3].name);
 
   const ProfileStore::StoredProfile c = profile_templates::defaultTemplate(RecipeMode::Cure);
   TEST_ASSERT_EQUAL_STRING("Warm", c.phases[0].name);

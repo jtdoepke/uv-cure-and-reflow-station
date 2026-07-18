@@ -22,7 +22,7 @@
 
 class ProfileLibraryScreen {
 public:
-  enum class Page { Chooser, List, Detail, ConfirmDelete };
+  enum class Page { Chooser, List, Detail, ConfirmDelete, Rename };
 
   // Build the chooser under `parent`, over the two per-mode stores. All three must outlive this
   // screen. Call after lv_init() + ui_subjects_init(). `model` defaults to the compiled-in
@@ -43,8 +43,10 @@ public:
   void onNew();       // → editor on a fresh template (NAV_PROFILE_NEW)
   void onEdit();      // → editor on the selected profile (Save-as for stock) (NAV_PROFILE_EDIT)
   void onDuplicate(); // Dup within this library, then re-list
-  void onDeleteRequested(); // → the confirm dialog
-  void onDeleteConfirmed(); // Delete, then back to the list
+  void onRenameRequested();              // detail → the name-entry keyboard (user profiles only)
+  void onRenameCommit(const char *text); // ✓ on the keyboard → rename in the store, back to list
+  void onDeleteRequested();              // → the confirm dialog
+  void onDeleteConfirmed();              // Delete, then back to the list
 
   // Inspection (tests).
   Page page() const { return page_; }
@@ -58,6 +60,7 @@ private:
   void buildList();
   void buildDetail();
   void buildConfirm();
+  void buildRename(); // the shared name-entry keyboard, prefilled with the current name
   void buildHeader(const char *title); // < Back + title into `parent_`
   void configParent();
   void clearParent();
@@ -72,6 +75,7 @@ private:
   ProfileLibraryViewModel reflow_vm_;
   ProfileLibraryViewModel *current_ = nullptr; // the shown mode's VM (&cure_vm_ / &reflow_vm_)
   SelectableListModel list_model_;             // the mode-scoped list (the chooser is two tiles)
+  lv_obj_t *rename_ta_ = nullptr;              // the Rename page's textarea (read on the ✓ key)
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;

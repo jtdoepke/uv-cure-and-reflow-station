@@ -157,6 +157,36 @@ public:
     return save(p);
   }
 
+  // Rename user profile `src` to `dst`, preserving its content. Refuses stock (read-only, §23), a
+  // missing `src`, an invalid `dst`, or a `dst` that already exists (no silent clobber). A rename
+  // to the same name is a no-op success. Writes the new file *then* removes the old, so an
+  // interrupted rename leaves the profile under its old name rather than losing it.
+  bool rename(const char *src, const char *dst) {
+    if (!validName(dst)) {
+      return false;
+    }
+    StoredProfile p;
+    if (!load(src, p)) {
+      return false;
+    }
+    if (p.stock) {
+      return false; // 🔒 stock (§23) — read-only, cannot be renamed
+    }
+    if (std::strcmp(src, dst) == 0) {
+      return true; // no-op
+    }
+    PersistedBlob existing;
+    if (loadBlob(dst, existing)) {
+      return false; // target name taken
+    }
+    std::strncpy(p.name, dst, kProfileNameCap - 1);
+    p.name[kProfileNameCap - 1] = '\0';
+    if (!save(p)) {
+      return false;
+    }
+    return storage_.remove(src); // drop the old key; the new file is already written
+  }
+
   // A profile name is also a filename key (§7): non-empty, fits kProfileNameCap, no path separators
   // or control bytes, and not a directory alias. Applied before any name reaches an adapter, so an
   // untrusted (PC/WiFi-uploaded) name can neither traverse the filesystem nor overrun a buffer.

@@ -179,6 +179,37 @@ void test_duplicate(void) {
   TEST_ASSERT_FALSE(store.duplicate("ghost", "ghost copy"));
 }
 
+// --- Rename moves a user profile; refuses stock, collisions, and a missing source ---
+
+void test_rename(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, RecipeMode::Reflow);
+  StoredProfile user = mkProfile("LF-245", RecipeMode::Reflow, /*stock=*/false, 3);
+  for (size_t i = 0; i < user.phaseCount; ++i) {
+    user.phases[i].uv = false;
+  }
+  TEST_ASSERT_TRUE(store.save(user));
+  StoredProfile stock = mkProfile("SAC305", RecipeMode::Reflow, /*stock=*/true, 2);
+  stock.phases[0].uv = false;
+  stock.phases[1].uv = false;
+  TEST_ASSERT_TRUE(store.save(stock));
+
+  // Rename the user profile: new name loads with content preserved, old name gone.
+  TEST_ASSERT_TRUE(store.rename("LF-245", "LF-250"));
+  StoredProfile out;
+  TEST_ASSERT_TRUE(store.load("LF-250", out));
+  TEST_ASSERT_EQUAL_UINT(3, out.phaseCount);
+  TEST_ASSERT_FALSE(out.stock);
+  TEST_ASSERT_FALSE(store.load("LF-245", out)); // old key removed
+
+  TEST_ASSERT_TRUE(store.rename("LF-250", "LF-250"));   // no-op rename to the same name succeeds
+  TEST_ASSERT_FALSE(store.rename("SAC305", "SAC-new")); // 🔒 stock is read-only
+  TEST_ASSERT_TRUE(store.load("SAC305", out));          // and untouched
+  TEST_ASSERT_FALSE(store.rename("LF-250", "SAC305"));  // target name taken → refused
+  TEST_ASSERT_FALSE(store.rename("ghost", "ghost2"));   // missing source
+  TEST_ASSERT_FALSE(store.rename("LF-250", ""));        // invalid target name
+}
+
 // --- Delete removes a user profile ---
 
 void test_remove_user_profile(void) {
@@ -330,6 +361,7 @@ int main(int, char **) {
   RUN_TEST(test_list_alphabetical_with_stock);
   RUN_TEST(test_stock_is_read_only);
   RUN_TEST(test_duplicate);
+  RUN_TEST(test_rename);
   RUN_TEST(test_remove_user_profile);
   RUN_TEST(test_mode_mismatch_ignored);
   RUN_TEST(test_corrupt_blobs_rejected);

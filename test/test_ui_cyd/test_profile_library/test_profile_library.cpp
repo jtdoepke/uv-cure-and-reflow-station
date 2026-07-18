@@ -135,6 +135,37 @@ void test_duplicate_creates_copy(void) {
   TEST_ASSERT_FALSE(screen.vm().rowStock(indexOf("LF-245 copy")));
 }
 
+void test_rename_changes_name_and_refuses_clash(void) {
+  seed(reflow, "LF-245", false, 245.0f, 3);
+  seed(reflow, "SAC305", true, 249.0f, 2); // stock — an existing name to clash against
+  screen.begin(lv_screen_active(), cure, reflow);
+  screen.openMode(RecipeMode::Reflow);
+  screen.openDetail(indexOf("LF-245"));
+
+  // Rename request opens the shared name-entry keyboard page.
+  screen.onRenameRequested();
+  TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::Rename, (int)screen.page());
+  // Back cancels — no change.
+  screen.back();
+  TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::Detail, (int)screen.page());
+  TEST_ASSERT_TRUE(indexOf("LF-245") >= 0);
+
+  // Commit a new name → back to the list, renamed, still user-owned, old name gone.
+  screen.onRenameRequested();
+  screen.onRenameCommit("LF-250");
+  TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::List, (int)screen.page());
+  TEST_ASSERT_TRUE(indexOf("LF-245") < 0);
+  TEST_ASSERT_TRUE(indexOf("LF-250") >= 0);
+  TEST_ASSERT_FALSE(screen.vm().rowStock(indexOf("LF-250")));
+
+  // A clash with an existing name is refused: stay on the Rename page, name unchanged.
+  screen.openDetail(indexOf("LF-250"));
+  screen.onRenameRequested();
+  screen.onRenameCommit("SAC305"); // taken
+  TEST_ASSERT_EQUAL_INT((int)ProfileLibraryScreen::Page::Rename, (int)screen.page());
+  TEST_ASSERT_TRUE(indexOf("LF-250") >= 0);
+}
+
 void test_delete_confirm_removes_and_cancel_keeps(void) {
   seed(reflow, "LF-245", false, 245.0f, 3);
   seed(reflow, "Keep", false, 200.0f, 2);
@@ -194,6 +225,7 @@ int main(int, char **) {
   RUN_TEST(test_rows_alphabetical_with_facts);
   RUN_TEST(test_stock_gating);
   RUN_TEST(test_duplicate_creates_copy);
+  RUN_TEST(test_rename_changes_name_and_refuses_clash);
   RUN_TEST(test_delete_confirm_removes_and_cancel_keeps);
   RUN_TEST(test_empty_state);
   RUN_TEST(test_open_enabled_with_profiles);

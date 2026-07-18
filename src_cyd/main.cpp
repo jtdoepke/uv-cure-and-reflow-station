@@ -453,6 +453,11 @@ void setup() {
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touch_read);
+  // Poll touch faster than the 33 ms default (LV_DEF_REFR_PERIOD). At 33 ms two quick taps that
+  // land in one window coalesce, which reads as keyboard lag when typing at speed; ~16 ms doubles
+  // the sample rate so fast key taps register as distinct presses. The read itself is cheap (an
+  // XPT2046 SPI sample), so the extra polls cost little.
+  lv_timer_set_period(lv_indev_get_read_timer(indev), 16);
 
 #if !defined(UI_DEV_TOOLS)
   run_display_test();

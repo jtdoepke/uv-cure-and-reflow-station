@@ -175,6 +175,17 @@ public:
     return false;
   }
 
+  // Rename profile `i` to `newName` (user profiles only — the store refuses stock, an invalid name,
+  // and a clash with an existing profile). Refreshes on success. Returns false if `i` is out of
+  // range or the store refused.
+  bool rename(size_t i, const char *newName) {
+    if (i >= count_ || !store_->rename(name_buf_[i], newName)) {
+      return false;
+    }
+    refresh();
+    return true;
+  }
+
   // Delete profile `i` (user profiles only — the store refuses stock). Refreshes on success.
   bool remove(size_t i) {
     if (i >= count_ || !store_->remove(name_buf_[i])) {

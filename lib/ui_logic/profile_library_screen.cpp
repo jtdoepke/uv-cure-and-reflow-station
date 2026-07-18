@@ -3,7 +3,7 @@
 #include <initializer_list>
 
 #include "confirm_dialog.h"
-#include "implicit_cool.h" // kImplicitCoolLabel for the appended passive cool-down (§6)
+#include "name_keyboard.h" // the shared name-entry keyboard (profile Rename)
 #include "profile_curve.h"
 #include "subjects.h"
 #include "theme.h"
@@ -37,6 +37,13 @@ struct ProfileThunks {
   }
   static void dup_evt(lv_event_t *e) {
     static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onDuplicate();
+  }
+  static void rename_evt(lv_event_t *e) {
+    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onRenameRequested();
+  }
+  static void rename_ok(lv_event_t *e) {
+    auto *s = static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e));
+    s->onRenameCommit(lv_textarea_get_text(s->rename_ta_));
   }
   static void delete_evt(lv_event_t *e) {
     static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onDeleteRequested();
@@ -130,6 +137,10 @@ void ProfileLibraryScreen::back() {
   case Page::ConfirmDelete:
     page_ = Page::Detail;
     buildDetail(); // rebuild detail (clears the overlay dialog with it)
+    break;
+  case Page::Rename:
+    page_ = Page::Detail;
+    buildDetail(); // cancel the rename — back to the profile detail
     break;
   case Page::Detail:
     page_ = Page::List;
@@ -341,20 +352,26 @@ void ProfileLibraryScreen::buildDetail() {
   lv_label_set_text(facts_label, facts);
   theme::apply_caption(facts_label);
 
-  // Action row: Delete · Clone · Edit(/Save as) (Delete gated for stock, §23). Edit is rightmost —
-  // the most common action, landing under the finger that just tapped Open on the list, with the
-  // destructive Delete pushed to the far (left) end. Managing profiles only — running one is a
-  // separate path (Home → UV Cure / Reflow → Setup, §19), so there is no Load here: the Profiles
-  // branch ends at the editor, matching the §13 screen map.
+  // Action row (managing profiles only — running one is a separate path, Home → UV Cure / Reflow →
+  // Setup, §19, so there is no Load here). A STOCK profile is read-only: it shows just Delete
+  // (greyed) · Clone — Clone is the way to fork it into an editable user copy, so a separate
+  // "Save as" would be redundant. A USER profile shows Delete · Rename · Clone · Edit; Edit is
+  // rightmost (the most common action, under the finger that just tapped Open), the destructive
+  // Delete at the far left. Rename/Edit are hidden for stock (nothing to rename or edit in place).
+  const bool user = !current_->rowStock(selected_);
   lv_obj_t *row = lv_obj_create(parent_);
   theme::apply_row(row);
   lv_obj_set_width(row, lv_pct(100));
   lv_obj_set_height(row, theme::SECONDARY_H);
   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
   action_button(row, "Delete", ProfileThunks::delete_evt, this, current_->canDelete(selected_));
+  if (user) {
+    action_button(row, "Rename", ProfileThunks::rename_evt, this, true);
+  }
   action_button(row, "Clone", ProfileThunks::dup_evt, this, true);
-  action_button(row, current_->editIsSaveAs(selected_) ? "Save as" : "Edit",
-                ProfileThunks::edit_evt, this, true);
+  if (user) {
+    action_button(row, "Edit", ProfileThunks::edit_evt, this, true);
+  }
 }
 
 // --- Detail actions ---
@@ -371,6 +388,43 @@ void ProfileLibraryScreen::onDuplicate() {
   current_->duplicate(selected_); // makes "<name> copy"; the list reflects it
   page_ = Page::List;
   buildList();
+}
+
+void ProfileLibraryScreen::onRenameRequested() {
+  page_ = Page::Rename;
+  buildRename();
+}
+
+void ProfileLibraryScreen::onRenameCommit(const char *text) {
+  // Rename in the store; on success return to the list (the name changed, so the highlight's row
+  // may have moved under the alphabetical sort). On failure (empty/invalid/taken name) stay on the
+  // keyboard so the operator can pick another — the profile keeps its old name.
+  if (current_->rename(selected_, text)) {
+    page_ = Page::List;
+    buildList();
+  }
+}
+
+void ProfileLibraryScreen::buildRename() {
+  clearParent();
+  configParent();
+  buildHeader("Rename");
+
+  rename_ta_ = lv_textarea_create(parent_);
+  lv_textarea_set_one_line(rename_ta_, true);
+  lv_textarea_set_max_length(rename_ta_, static_cast<uint32_t>(kProfileNameCap - 1));
+  lv_textarea_set_placeholder_text(rename_ta_, "Profile name");
+  lv_textarea_set_text(rename_ta_, current_->name(selected_)); // prefilled with the current name
+  lv_obj_set_width(rename_ta_, lv_pct(100));
+
+  // A flex-grow spacer pins the keyboard to the bottom, the field under the header (editor idiom).
+  lv_obj_t *spacer = lv_obj_create(parent_);
+  lv_obj_remove_style_all(spacer);
+  lv_obj_set_width(spacer, lv_pct(100));
+  lv_obj_set_flex_grow(spacer, 1);
+  lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+
+  name_kb::create(parent_, rename_ta_, ProfileThunks::rename_ok, this);
 }
 
 void ProfileLibraryScreen::onDeleteRequested() {

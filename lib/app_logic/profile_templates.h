@@ -28,13 +28,14 @@ namespace profile_templates {
 
 // The canonical phase counts of the fixed templates. A profile with exactly this many phases is
 // shown with role labels; anything else (an Advanced add/remove) falls back to "Phase N".
-inline constexpr size_t kReflowPhases = 3;
+inline constexpr size_t kReflowPhases = 4;
 inline constexpr size_t kCurePhases = 2;
 
 // Role labels for the fixed templates, indexed by phase position. Borrowed literals (never freed).
-// No "Cool" role — the cool-down is implicit and appended by the preview/compiler
-// (implicit_cool.h).
-inline constexpr const char *kReflowRoles[kReflowPhases] = {"Preheat", "Soak", "Reflow"};
+// Reflow carries an authored "Cool" phase — the controlled descent whose *rate* sets the solder's
+// mechanical properties; the implicit passive cool (implicit_cool.h) still appends after it to take
+// the workpiece the rest of the way to touch-safe.
+inline constexpr const char *kReflowRoles[kReflowPhases] = {"Preheat", "Soak", "Reflow", "Cool"};
 inline constexpr const char *kCureRoles[kCurePhases] = {"Warm", "Cure"};
 
 // The label the editor shows for phase `index` of a `count`-phase profile in `mode`. When the count
@@ -93,11 +94,16 @@ inline ProfileStore::StoredProfile defaultTemplate(RecipeMode mode) {
     t.phases[1].targetC = 180.0f;
     t.phases[1].rampSeconds = 90.0f;
     t.phases[1].holdSeconds = 90.0f;
-    // Reflow: fast to peak, short hold above liquidus. The implicit cool-down (implicit_cool.h)
-    // takes it back to a touch-safe temperature from here — no authored cool phase.
+    // Reflow: fast to peak, short hold above liquidus.
     t.phases[2].targetC = 245.0f;
     t.phases[2].rampSeconds = 40.0f;
     t.phases[2].holdSeconds = 30.0f;
+    // Cool: a *controlled* descent to a handling temperature — its rate (~4 °C/s here: 245→50 over
+    // ~49 s) governs the joint's mechanical properties, so it is authored, not left to physics. The
+    // implicit passive cool (implicit_cool.h) then takes 50 °C the rest of the way to touch-safe.
+    t.phases[3].targetC = 50.0f;
+    t.phases[3].rampSeconds = 49.0f;
+    t.phases[3].holdSeconds = 0.0f;
   } else {
     t.phaseCount = kCurePhases;
     // Warm: bring the chamber up to the cure temperature.

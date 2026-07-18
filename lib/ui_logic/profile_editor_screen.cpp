@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "fan_resolver.h"
+#include "name_keyboard.h"
 #include "numeric_field.h"
 #include "numeric_keypad.h"
 #include "panel.h"
@@ -28,64 +29,6 @@ int32_t toInt(float v) {
 // The ambient origin the first phase ramps from (the fan/curve math needs a start temp; the
 // controller measures its own). Matches profile_facts / recipe_compiler.
 constexpr float kAmbientC = profile_facts::kDefaultAmbientC;
-
-// --- Name-entry keyboard map (§12/§26) ---------------------------------------------------------
-// LVGL's default keyboard uses control glyphs the body font deliberately doesn't carry — the
-// newline ↵ (0xF8A2) isn't even in Font Awesome free — and its 12-column layout makes each key
-// far too narrow on a 320 px panel. This is a compact map for short profile/phase names: letters,
-// ⌫ backspace (0xF55A, added to the body font to match the numeric keypad) and ✓ accept
-// (LV_SYMBOL_OK → LV_EVENT_READY) — every glyph present in the font. Mode switches use the literal
-// "abc"/"ABC"/"1#" strings the keyboard's own handler matches. There is no cancel key: the header
-// Back button is the single cancel path (back()). Dropping the cursor/newline/hide/cancel keys
-// widens every remaining key.
-// The maps + ctrl arrays are static: LVGL keeps the pointers, so they must outlive the keyboard.
-constexpr unsigned KB_CTL = LV_KEYBOARD_CTRL_BUTTON_FLAGS; // a mode-switch / OK key
-constexpr unsigned KB_BSP =
-    LV_BUTTONMATRIX_CTRL_CHECKED; // backspace (styled, wide; repeats on hold)
-constexpr unsigned KB_POP = LV_BUTTONMATRIX_CTRL_POPOVER;   // enlarge the key in a popover on press
-constexpr unsigned KB_NRP = LV_BUTTONMATRIX_CTRL_NO_REPEAT; // one char per touch (no auto-repeat)
-
-// A ctrl-map entry: relative width + optional flags, cast to the strongly-typed LVGL enum (LVGL's
-// own C maps rely on the implicit int→enum conversion this C++ TU doesn't get).
-constexpr lv_buttonmatrix_ctrl_t kbw(unsigned width, unsigned flags = 0) {
-  return static_cast<lv_buttonmatrix_ctrl_t>(width | flags);
-}
-
-// A character key: width 1, a phone-style popover preview above it while pressed (the narrow keys
-// are easy to fat-finger, so the popover shows which letter is under the touch), and no auto-repeat
-// so holding to read the preview types exactly one character rather than a run of them.
-constexpr lv_buttonmatrix_ctrl_t P = kbw(1, KB_POP | KB_NRP);
-
-// Hand-aligned so each map row mirrors the on-screen row (and its ctrl entry lines up beneath it).
-// clang-format off
-const char *const kNameKbLower[] = {
-    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
-    "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
-    "ABC", "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
-    "1#", " ", LV_SYMBOL_OK, ""};
-const char *const kNameKbUpper[] = {
-    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
-    "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
-    "abc", "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
-    "1#", " ", LV_SYMBOL_OK, ""};
-// Shared 32-entry ctrl map for the two letter layouts (identical key geometry).
-const lv_buttonmatrix_ctrl_t kNameKbCtrl[] = {
-    P, P, P, P, P, P, P, P, P, P,                                                           // q..p
-    P, P, P, P, P, P, P, P, P,                                                               // a..l
-    kbw(2, KB_CTL), P, P, P, P, P, P, P, kbw(2, KB_BSP),                                     // ABC z..m ⌫
-    kbw(2, KB_CTL), kbw(6), kbw(2, KB_CTL)};                                                 // 1# space ✓
-
-const char *const kNameKbSpecial[] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
-    "-", "_", "/", ":", ";", "(", ")", "&", "@", "\n",
-    "abc", ".", ",", "?", "!", "'", "+", "#", LV_SYMBOL_BACKSPACE, "\n",
-    " ", LV_SYMBOL_OK, ""};
-const lv_buttonmatrix_ctrl_t kNameKbSpecialCtrl[] = {
-    P, P, P, P, P, P, P, P, P, P,                                                           // 1..0
-    P, P, P, P, P, P, P, P, P,                                                               // - _ / : ; ( ) & @
-    kbw(2, KB_CTL), P, P, P, P, P, P, P, kbw(2, KB_BSP),                                     // abc . , ? ! ' + # ⌫
-    kbw(8), kbw(2, KB_CTL)};                                                                 // space ✓
-// clang-format on
 
 } // namespace
 
@@ -870,23 +813,7 @@ void ProfileEditorScreen::buildNameEntry() {
   lv_obj_set_flex_grow(spacer, 1);
   lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
 
-  lv_obj_t *kb = lv_keyboard_create(parent_);
-  lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_LOWER, kNameKbLower, kNameKbCtrl);
-  lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_UPPER, kNameKbUpper, kNameKbCtrl);
-  lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_SPECIAL, kNameKbSpecial, kNameKbSpecialCtrl);
-  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
-  lv_keyboard_set_popovers(kb, true); // honor the POPOVER ctrl flags — enlarge each pressed key
-  lv_keyboard_set_textarea(kb, name_ta_);
-  // Bound the height so 4 rows read ~square, not tall-and-narrow (mm-authored, capped so it still
-  // fits the short landscape panel). flex_grow would stretch it over the whole lower screen.
-  int32_t kb_h = panel::pxFromMmX10(360); // ~36 mm of keys
-  const int32_t kb_cap = (panel::H * 55) / 100;
-  if (kb_h > kb_cap) {
-    kb_h = kb_cap;
-  }
-  lv_obj_set_width(kb, lv_pct(100));
-  lv_obj_set_height(kb, kb_h);
-  lv_obj_add_event_cb(kb, EditorThunks::name_ok, LV_EVENT_READY, this);
+  name_kb::create(parent_, name_ta_, EditorThunks::name_ok, this);
 }
 
 // --- Accessors ---
