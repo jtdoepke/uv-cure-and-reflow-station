@@ -34,6 +34,15 @@
 #include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
 #include "telemetry_sender.h"
 
+// Bigger loopTask stack: the profile library added a deep call chain with large stack locals —
+// control::ProfileStore::list() holds ProfileEntry[32] (~1 KB) + Summary[32] (~1.4 KB) and calls
+// loadBlob() which nests a kBlobCap (~1.5 KB) decode buffer, and the responder's reply path adds an
+// oven_ProfileList/Data (~1.5 KB) buffer. The 8 kB default overflowed on the first list() (a
+// hardware-only crash: Guru Meditation LoadStoreAlignment + "Stack canary (loopTask)", the boot
+// bench-log listing the seeds; host tests have no such limit). 16 kB gives headroom and costs 8 kB
+// of the controller's ample internal heap. Mirrors src_cyd/main.cpp's identical lesson.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 // --- Link stack (§9) ---
 // The MessageRouter is default-constructed and bound in setup(): FrameLink binds its handler at
 // construction, but ControllerLink needs the FrameLink in order to send, so the cycle is broken
