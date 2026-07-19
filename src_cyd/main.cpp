@@ -853,7 +853,12 @@ void loop() {
   // the instant run_state leaves IDLE (an IDLE->HOT transition when the chamber crosses
   // touch-safe), and this tick() also force-wakes whenever sleep_allowed is false — so a sleeping
   // screen relights as soon as the telemetry shows the chamber above touch-safe.
-  bool sleep_allowed = HomeViewModel::atRest(lv_subject_get_int(&subj_run_state));
+  // Also never sleep while the Run/Monitor screen is up — including its terminal "Run complete" /
+  // "Fault - run ended" page (§15/§16): the operator must see the outcome until they dismiss it,
+  // and a completed run whose chamber has cooled to touch-safe would otherwise read as at-rest and
+  // time out to a dark screen. Leaving SCREEN_RUN (Done -> Home) restores the normal idle timeout.
+  bool sleep_allowed = HomeViewModel::atRest(lv_subject_get_int(&subj_run_state)) &&
+                       g_router.current() != SCREEN_RUN;
   g_sleep.setIdleTimeoutMs(static_cast<uint32_t>(g_settings.idleTimeoutMin()) * 60000U);
   g_sleep.tick(now, sleep_allowed);
   g_auto_brightness.setAwake(g_sleep.awake());

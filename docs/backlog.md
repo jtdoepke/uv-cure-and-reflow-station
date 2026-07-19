@@ -533,6 +533,22 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - [ ] **C7** [C] — Run/Monitor (3 PRs: layout/telemetry/STOP; projected-vs-actual
   chart + live ETA; cure paused/resume overlay). deps: C3, B2; soft: B6 (resume
   overlay, 3rd PR). (§15)
+- [ ] **Bench-found follow-ups** (C6/C7 validation on the two-devkit bench against the A10 sim,
+  2026-07-19; a full cure ran ramp→hold→cool→"Run complete" end-to-end):
+  - **Ramp overshoot mitigation (control loop, §5).** On a fast ASAP ramp into a hold the PID
+    holds full duty through the whole ramp and overcharges the calrod (elementC≈1000 J/K); when the
+    control temp reaches setpoint the stored element heat carries the chamber ~15 °C past it (a
+    60 °C cure peaked ~75 °C on the sim). It settles, but the overshoot (a) trips the §16 deviation
+    cue and (b) stretches the cool-down. Fix is control-side (A5/A6): feedforward/derivative that
+    eases duty off *before* setpoint so the element isn't overcharged. A real oven with this
+    element mass would do the same — a genuine control-quality item, not sim-only. (deps: D7 PID
+    tuning.)
+  - **Door-open dismisses "Run complete" — but NOT a fault (§15/§16/§22).** Opening the oven door
+    on the terminal "Run complete" page should clear it to Home (the operator has opened the door
+    to retrieve the workpiece — the run is over and acknowledged by the act). A "Fault - run ended"
+    page must NOT be door-dismissable: a fault demands an explicit acknowledge (§22). Needs the
+    controller's `door_open` telemetry wired to the Run screen's Ended page. (goes with C8's fault
+    overlay + acknowledge path.)
 - [ ] **C8** [C] — Run Summary (§16) + Fault overlay (§22) + Settings hub + panels
   (§24), one each. deps: B7, B5, C1, C2, C3. *All deps now landed. Settings hub + panels slice
   already shipped with B5 (`settings_screen.*`); Run Summary + Fault overlay remain. B7 shipped
