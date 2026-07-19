@@ -310,6 +310,7 @@ void loop() {
     ts.setpoint = o.setpointC;
     ts.run_state = o.runState;
     ts.seg_idx = o.segIdx;
+    ts.elapsed_ms = o.elapsedMs; // §15: the CYD's ETA/progress + projection alignment
     ts.conv_fan = o.convFan;
     ts.uv_duty = o.uv ? 1.0F : 0.0F;
     ts.motor = o.motor;
@@ -349,10 +350,11 @@ void loop() {
 #if defined(CONTROL_SIM)
     // The simulated trajectory, so the bench operator can watch a run ramp/soak/peak/coast.
     const ProfileExecutor::Output &lo = g_runpath.output();
-    CONTROL_LOGF("[sim] state=%d seg=%u sp=%.1f wall=%.1f work=%.1f bay=%.1f duty=%.2f fault=%d\n",
-                 (int)lo.runState, (unsigned)lo.segIdx, lo.setpointC, g_plant.wallTempC(),
-                 g_plant.workpieceTempC(), g_plant.bayTempC(), g_heater.duty(),
-                 (int)g_safety.faultCode());
+    CONTROL_LOGF("[sim] state=%d seg=%u elapsed=%us sp=%.1f wall=%.1f work=%.1f bay=%.1f duty=%.2f "
+                 "fault=%d\n",
+                 (int)lo.runState, (unsigned)lo.segIdx, (unsigned)(lo.elapsedMs / 1000U),
+                 lo.setpointC, g_plant.wallTempC(), g_plant.workpieceTempC(), g_plant.bayTempC(),
+                 g_heater.duty(), (int)g_safety.faultCode());
 #endif
   }
   delay(10);

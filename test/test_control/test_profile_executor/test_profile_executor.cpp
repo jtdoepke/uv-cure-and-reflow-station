@@ -361,9 +361,38 @@ void test_link_seam_starts_and_aborts(void) {
   TEST_ASSERT_EQUAL(kIdle, exec.state());
 }
 
+// output().elapsedMs tracks time since start() into the whole run (§15): 0 before start, measured
+// from start() (not boot), growing while RUNNING, and back to 0 after abort. This is what the CYD's
+// ETA/progress + projection-vs-actual alignment read — it was previously never populated, so the
+// Run screen's ETA froze and the projection was read at t=0 (ambient), tripping a false deviation.
+void test_elapsed_ms_tracks_run(void) {
+  FakeClock clk;
+  ProfileExecutor exec(clk);
+  oven_Segment segs[] = {makeSeg(oven_Interp_INTERP_RAMP_OVER_TIME, 100.0f, 60000)};
+  exec.load(makeRecipe(segs, 1), /*holdEntryGated=*/true);
+  TEST_ASSERT_EQUAL_UINT32(0, exec.output().elapsedMs); // idle before start
+
+  clk.advance(5000); // time passes before the run begins
+  exec.start();
+  TEST_ASSERT_EQUAL_UINT32(0, exec.output().elapsedMs); // measured from start(), not boot
+
+  clk.advance(3000);
+  exec.tick(40.0f, true);
+  TEST_ASSERT_EQUAL_UINT32(3000, exec.output().elapsedMs);
+
+  clk.advance(4000);
+  exec.tick(70.0f, true);
+  TEST_ASSERT_EQUAL(kRunning, exec.state());
+  TEST_ASSERT_EQUAL_UINT32(7000, exec.output().elapsedMs);
+
+  exec.abort();
+  TEST_ASSERT_EQUAL_UINT32(0, exec.output().elapsedMs); // back to idle
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_ramp_over_time_sweeps_and_advances);
+  RUN_TEST(test_elapsed_ms_tracks_run);
   RUN_TEST(test_ramp_asap_advances_on_reaching_target);
   RUN_TEST(test_hold_gated_waits_for_arrival);
   RUN_TEST(test_hold_ungated_starts_immediately);

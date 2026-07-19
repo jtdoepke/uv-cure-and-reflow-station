@@ -76,7 +76,10 @@ public:
     uint32_t segIdx = 0;
     oven_RunState runState = oven_RunState_RUN_STATE_IDLE;
     oven_FaultCode fault = oven_FaultCode_FAULT_NONE;
-    bool safe = true; // true => the executor wants outputs off (idle / done / fault)
+    bool safe = true;       // true => the executor wants outputs off (idle / done / fault)
+    uint32_t elapsedMs = 0; // ms since start(), into the whole run — the CYD's ETA/progress + the
+                            // §15 projection-vs-actual alignment read this (0 when idle, frozen at
+                            // done/fault)
   };
 
   ProfileExecutor(IClock &clock, Config cfg) : clock_(clock), cfg_(cfg) {}
@@ -112,6 +115,7 @@ public:
     segIdx_ = 0;
     entered_ = false;
     cooling_ = false;
+    runStartMs_ = clock_.millis(); // mark run start for the run-elapsed telemetry (§15)
     state_ = recipe_.segments_count == 0 ? oven_RunState_RUN_STATE_DONE
                                          : oven_RunState_RUN_STATE_RUNNING;
     writeOutput();
@@ -312,6 +316,14 @@ private:
     out_.runState = state_;
     out_.fault = fault_;
     out_.safe = state_ != oven_RunState_RUN_STATE_RUNNING;
+    // Run elapsed (into the whole run, cooldown included) for the CYD's ETA/progress + the §15
+    // projection alignment. While RUNNING it tracks now - runStartMs_; IDLE zeroes it; DONE/FAULT
+    // freeze at the last running value (the final elapsed the summary reads).
+    if (state_ == oven_RunState_RUN_STATE_RUNNING) {
+      out_.elapsedMs = clock_.millis() - runStartMs_;
+    } else if (state_ == oven_RunState_RUN_STATE_IDLE) {
+      out_.elapsedMs = 0;
+    }
     if (state_ == oven_RunState_RUN_STATE_RUNNING && !cooling_) {
       const oven_Segment &s = recipe_.segments[segIdx_];
       out_.segIdx = segIdx_;
@@ -346,6 +358,7 @@ private:
 
   bool entered_ = false;
   uint32_t segStartMs_ = 0;
+  uint32_t runStartMs_ = 0; // clock at start(), for the run-elapsed telemetry (§15)
   float rampFromC_ = 0.0f;
 
   bool holdStarted_ = false;
