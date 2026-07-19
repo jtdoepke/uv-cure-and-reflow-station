@@ -61,6 +61,11 @@ public:
     segCount_ = cr.hardValid ? cr.recipe.segments_count : 0;
     for (size_t i = 0; i < segCount_ && i < kMaxSegments; ++i) {
       segPhase_[i] = cr.segmentPhase[i];
+      // Durations too, for holdProgress01(): B6's resume generator needs to know how much of the
+      // interrupted phase's soak actually happened, and the compiled timeline is the only place
+      // that says. Captured here rather than recompiled later so it cannot drift from the recipe
+      // the controller is executing — the same reason the phase map is captured at begin().
+      segDurMs_[i] = cr.recipe.segments[i].dur_ms;
     }
 
     // Projected achievable trajectory + total duration, computed once (they don't change mid-run).
@@ -176,6 +181,50 @@ public:
     return draft_.phaseCount; // cool tail / not-yet-started clamp
   }
 
+  // Fraction [0,1] of the CURRENT authored phase's HOLD already delivered — what B6's resume
+  // generator scales the remaining soak/UV dose by (§15).
+  //
+  // Read off the compiled timeline rather than wall-clock: a phase lowers to a ramp segment then a
+  // hold segment, and the controller reports which segment it is in plus the run-into elapsed time,
+  // so "how much soak happened" is (elapsed − start of the hold segment) / its duration. Doing it
+  // from elapsed alone would count the ramp as soak, and on an ASAP ramp that ran long it would
+  // report a phase as finished that never held at all.
+  //
+  // 0 while still ramping (no soak yet), 1 once past the phase. The hold is the LAST segment mapped
+  // to the phase — B1 emits at most ramp+hold and omits a degenerate one, so a phase with no hold
+  // segment at all reads 1 (nothing to redo).
+  float holdProgress01() const {
+    if (segCount_ == 0 || curPhase_ >= draft_.phaseCount) {
+      return 1.0f; // not in an authored phase — nothing of one is outstanding
+    }
+    // Locate the phase's last segment (its hold) and that segment's start time.
+    size_t holdSeg = segCount_;
+    uint32_t startMs = 0;
+    uint32_t accum = 0;
+    for (size_t i = 0; i < segCount_ && i < kMaxSegments; ++i) {
+      if (segPhase_[i] == curPhase_) {
+        holdSeg = i;
+        startMs = accum;
+      }
+      accum += segDurMs_[i];
+    }
+    if (holdSeg >= segCount_ || segDurMs_[holdSeg] == 0) {
+      return 1.0f;
+    }
+    if (segIdx_ < holdSeg) {
+      return 0.0f; // still ramping toward the target — none of the soak has happened
+    }
+    if (segIdx_ > holdSeg) {
+      return 1.0f; // past this phase entirely
+    }
+    if (elapsedMs_ <= startMs) {
+      return 0.0f;
+    }
+    const float frac =
+        static_cast<float>(elapsedMs_ - startMs) / static_cast<float>(segDurMs_[holdSeg]);
+    return frac > 1.0f ? 1.0f : frac;
+  }
+
   // The current phase's operator-visible name ("Cool" in the tail, "" before the run enters one).
   const char *phaseName() const {
     if (curPhase_ == kCoolPhase) {
@@ -240,6 +289,7 @@ private:
 
   // Segment->phase map captured from the compile (parallel to the executed recipe.segments).
   uint8_t segPhase_[kMaxSegments] = {};
+  uint32_t segDurMs_[kMaxSegments] = {};
   size_t segCount_ = 0;
 
   // Projected achievable curve + total, computed once at begin().
