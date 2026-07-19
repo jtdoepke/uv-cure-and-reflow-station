@@ -25,6 +25,7 @@
 #include "oven_cal.h"
 #include "phase.h"
 #include "phase_codec.h"
+#include "profile_draft.h" // ProfileDraft — the run working copy the Setup picker hands back (C6)
 #include "profile_facts.h"
 
 class ProfileLibraryViewModel {
@@ -129,6 +130,23 @@ public:
   void clearDetail() { have_detail_ = false; }
 
   size_t phaseCount() const { return detail_count_; }
+
+  // Assemble the run working copy the Setup picker hands back (C6): the selected row's name/stock +
+  // this mode + the decoded detail phases. Requires haveDetail() (the caller fetches the detail for
+  // the preview first, then picks). Fills a valid empty draft if the row is out of range.
+  void detailToDraft(size_t row, ProfileDraft &out) const {
+    out = ProfileDraft{};
+    out.mode = recipeMode();
+    if (row < count_) {
+      std::strncpy(out.name, name_buf_[row], kProfileNameCap - 1);
+      out.name[kProfileNameCap - 1] = '\0';
+      out.stock = stock_[row];
+    }
+    out.phaseCount = detail_count_ <= kMaxPhases ? detail_count_ : kMaxPhases;
+    for (size_t i = 0; i < out.phaseCount; ++i) {
+      out.phases[i] = detail_phases_[i];
+    }
+  }
 
   profile_facts::ProfileFacts facts() const {
     if (!have_detail_) {

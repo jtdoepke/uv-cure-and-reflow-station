@@ -50,6 +50,14 @@ static void on_exit(void *) {
   g_exited = true;
 }
 
+// Pick-mode handoff (C6): the chosen profile's run working copy comes back here.
+static bool g_picked;
+static ProfileDraft g_pick_draft;
+static void on_pick(void *, const ProfileDraft &d) {
+  g_picked = true;
+  g_pick_draft = d;
+}
+
 // Pump both link directions + poll the screen until it leaves Loading (or a bound is hit). An
 // action re-lists, so two round-trips can be needed — the loop covers it.
 static void settle() {
@@ -77,6 +85,8 @@ void setUp(void) {
   cyd_router.setObserver(client);
   client.clear();
   g_exited = false;
+  g_picked = false;
+  g_pick_draft = ProfileDraft{};
 }
 void tearDown(void) {
   lv_deinit();
@@ -334,6 +344,71 @@ void test_detail_actions_gate_on_link(void) {
   TEST_ASSERT_TRUE(lv_obj_has_state(clone, LV_STATE_DISABLED));
 }
 
+// --- Pick mode (§19/C6): the Setup screen's "Load a profile" ---
+
+// beginPick skips the chooser (Setup already picked the mode) and lands on the mode's list, ordered
+// most-recently-used by default.
+void test_pick_mode_enters_list_mru(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.setExitHandler(on_exit, nullptr);
+  screen.setPickHandler(on_pick, nullptr);
+  screen.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
+  settle();
+  TEST_ASSERT_TRUE(screen.pickMode());
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page());
+  TEST_ASSERT_EQUAL_INT((int)RecipeMode::Reflow, (int)screen.mode());
+  TEST_ASSERT_TRUE(screen.vm().mruSort()); // MRU by default (§23)
+}
+
+// The sort toggle flips MRU⇄alpha and re-fetches (the controller sorts); the list survives.
+void test_pick_sort_toggle_reloads(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.setPickHandler(on_pick, nullptr);
+  screen.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
+  settle();
+  TEST_ASSERT_TRUE(screen.vm().mruSort());
+
+  screen.toggleSortAndReload();
+  settle();
+  TEST_ASSERT_FALSE(screen.vm().mruSort()); // now alphabetical
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page());
+  TEST_ASSERT_EQUAL_UINT(1, screen.vm().count());
+}
+
+// Selecting a profile's "Use this profile" hands the assembled run draft (name + mode + phases)
+// back to the pick handler — the editor is never opened.
+void test_pick_use_hands_back_draft(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.setPickHandler(on_pick, nullptr);
+  screen.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
+  settle();
+
+  screen.listModel().select(indexOf("LF-245"));
+  screen.listModel().onOpen(); // pick mode opens the detail preview
+  settle();
+  TEST_ASSERT_EQUAL_INT((int)Page::Detail, (int)screen.page());
+
+  TEST_ASSERT_FALSE(g_picked);
+  screen.onPickUse();
+  TEST_ASSERT_TRUE(g_picked);
+  TEST_ASSERT_EQUAL_STRING("LF-245", g_pick_draft.name);
+  TEST_ASSERT_EQUAL_INT((int)RecipeMode::Reflow, (int)g_pick_draft.mode);
+  TEST_ASSERT_EQUAL_UINT(3, g_pick_draft.phaseCount);
+}
+
+// Back from the pick list exits to the caller (Setup) — there is no chooser to fall back to.
+void test_pick_back_exits(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.setExitHandler(on_exit, nullptr);
+  screen.setPickHandler(on_pick, nullptr);
+  screen.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
+  settle();
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page());
+
+  screen.back();
+  TEST_ASSERT_TRUE(g_exited);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_chooser_to_list_to_detail_and_back);
@@ -348,5 +423,9 @@ int main(int, char **) {
   RUN_TEST(test_link_down_shows_error);
   RUN_TEST(test_chooser_tiles_gate_on_link);
   RUN_TEST(test_detail_actions_gate_on_link);
+  RUN_TEST(test_pick_mode_enters_list_mru);
+  RUN_TEST(test_pick_sort_toggle_reloads);
+  RUN_TEST(test_pick_use_hands_back_draft);
+  RUN_TEST(test_pick_back_exits);
   return UNITY_END();
 }

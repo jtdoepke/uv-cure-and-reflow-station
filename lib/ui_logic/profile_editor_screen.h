@@ -53,6 +53,12 @@ public:
   void beginExisting(oven_Mode mode, const char *name, ManagementClient &client, bool saveAs,
                      const OvenModel &model = oven_cal::kDefaultModel);
 
+  // Start editing a WORKING COPY for THIS run only (Setup → Edit, §19/C6): `seed` is copied in and
+  // Save updates the in-RAM copy and returns — NO library write, no controller round-trip (there is
+  // no client). The caller reads working() on the exit-with-savedOk() to adopt the tweaks; a Back
+  // (savedOk() stays false) discards them. Synchronous. The Overview Save button reads "Use".
+  void beginWorkingCopy(const ProfileDraft &seed, const OvenModel &model = oven_cal::kDefaultModel);
+
   // Drive the async state machine: call every loop after client.service(). Adopts a fetched profile
   // or completes a Save; a no-op unless the editor is waiting on a reply.
   void poll();
@@ -147,6 +153,7 @@ private:
   const OvenModel *model_ = &oven_cal::kDefaultModel;
   bool save_as_ = false;
   bool saved_ok_ = false;
+  bool working_copy_ = false; // Setup → Edit: Save updates the in-RAM copy, no library write (C6)
   RecipeMode mode_ = RecipeMode::Reflow;
   int selected_phase_ = 0; // highlighted phase (Overview), restored returning from the phase editor
   int field_sel_ = 0; // highlighted field row (Phase editor), restored returning from the keypad

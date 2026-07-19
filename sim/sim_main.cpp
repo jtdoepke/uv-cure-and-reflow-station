@@ -5,7 +5,7 @@
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
 // Usage: program [--out PATH] [--screen
-// home|stepper|keypad|list|settings|alerts|curve|profile-library|editor] [ACTION...]
+// home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|editor] [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
@@ -52,6 +52,7 @@
 #include "profile_library_screen.h"
 #include "profile_templates.h"
 #include "selectable_list.h"
+#include "setup_screen.h"
 #include "settings_screen.h"
 #include "subjects.h"
 #include "theme.h"
@@ -408,15 +409,16 @@ static bool parse_i32(const char *s, int32_t *out) {
 }
 
 static int usage(const char *argv0) {
-  std::fprintf(stderr,
-               "Usage: %s [--out PATH] [--screen "
-               "home|stepper|keypad|list|settings|alerts|curve|profile-library|editor]\n"
-               "          [ACTION...]\n"
-               "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
-               "         frame PATH (unsettled capture - for photographing animation)\n"
-               "         temp N | state idle|hot|running|fault | link ok|none|schema\n"
-               "         sensor on|off (ambient-light sensor fitted; off = the 3.5\" board)\n",
-               argv0);
+  std::fprintf(
+      stderr,
+      "Usage: %s [--out PATH] [--screen "
+      "home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|editor]\n"
+      "          [ACTION...]\n"
+      "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
+      "         frame PATH (unsettled capture - for photographing animation)\n"
+      "         temp N | state idle|hot|running|fault | link ok|none|schema\n"
+      "         sensor on|off (ambient-light sensor fitted; off = the 3.5\" board)\n",
+      argv0);
   return 1;
 }
 
@@ -482,6 +484,7 @@ int main(int argc, char **argv) {
 
   ProfileLibraryScreen profiles;
   ProfileEditorScreen editor;
+  SetupScreen setup_scr;
   if (screen == "settings") {
     // The full Settings hub over an in-memory store (defaults). Navigate with click actions.
     settings_store.load();
@@ -554,6 +557,45 @@ int main(int argc, char **argv) {
     g_link_ctrl = &ctrl_link;
     g_client = &client;
     g_profiles_screen = &profiles;
+  } else if (screen == "picker") {
+    // The §19/C6 Setup picker: the library in pick mode (Load a profile). Skips the chooser, lists
+    // reflow profiles most-recently-used with the sort toggle on top; click a row → detail preview
+    // → "Use this profile". pump_link()/settle() drives the round-trips.
+    Phase lf245[4] = {};
+    lf245[0].targetC = 150.0f;
+    lf245[0].rampSeconds = 90.0f;
+    lf245[0].holdSeconds = 90.0f;
+    lf245[1].targetC = 180.0f;
+    lf245[1].rampSeconds = 60.0f;
+    lf245[1].holdSeconds = 60.0f;
+    lf245[2].targetC = 245.0f;
+    lf245[2].rampSeconds = 35.0f;
+    lf245[2].holdSeconds = 30.0f;
+    lf245[3].targetC = 50.0f;
+    Phase sac305[3] = {};
+    sac305[0].targetC = 165.0f;
+    sac305[1].targetC = 249.0f;
+    sac305[2].targetC = 50.0f;
+    seed_profile(reflow_profiles, RecipeMode::Reflow, "LF-245", /*stock=*/false, lf245, 4);
+    seed_profile(reflow_profiles, RecipeMode::Reflow, "SAC305", /*stock=*/true, sac305, 3);
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    profiles.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
+    g_link_cyd = &cyd_link;
+    g_link_ctrl = &ctrl_link;
+    g_client = &client;
+    g_profiles_screen = &profiles;
+  } else if (screen == "setup" || screen == "setup-empty") {
+    // The §19/C6 Setup screen. `setup-empty` shows the "Load a profile" call to action; `setup`
+    // shows the loaded state (provenance + feasibility preview + Load/Edit/Save-as + readiness +
+    // Start) over a representative reflow run draft.
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    setup_scr.enterMode(RecipeMode::Reflow);
+    if (screen == "setup") {
+      ProfileDraft d = profile_templates::defaultTemplate(RecipeMode::Reflow);
+      std::strncpy(d.name, "LF-245", kProfileNameCap - 1);
+      setup_scr.setDraft(d);
+    }
+    setup_scr.render(lv_screen_active());
   } else if (screen == "editor" || screen == "editor-cure") {
     // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
     // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile

@@ -54,6 +54,12 @@ struct ProfileThunks {
     static_cast<ProfileLibraryScreen *>(ud)->onDeleteConfirmed();
   }
   static void cancel_delete(void *ud) { static_cast<ProfileLibraryScreen *>(ud)->back(); }
+  static void pick_use(lv_event_t *e) {
+    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onPickUse();
+  }
+  static void sort_toggle(lv_event_t *e) {
+    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->toggleSortAndReload();
+  }
 };
 
 // --- Lifecycle ---
@@ -63,12 +69,28 @@ void ProfileLibraryScreen::begin(lv_obj_t *parent, ManagementClient &client,
   parent_ = parent;
   client_ = &client;
   model_ = &model;
+  pick_ = false; // the Profiles branch manages profiles; pick mode is beginPick's
   showChooser(); // the one view-model is init'd per mode in openMode()
+}
+
+void ProfileLibraryScreen::beginPick(lv_obj_t *parent, ManagementClient &client, RecipeMode mode,
+                                     const OvenModel &model) {
+  parent_ = parent;
+  client_ = &client;
+  model_ = &model;
+  pick_ = true;   // read-only selection; skip the chooser, hide management verbs
+  openMode(mode); // straight into the mode's list (MRU-ordered by default — see openMode)
 }
 
 void ProfileLibraryScreen::setExitHandler(void (*cb)(void *), void *user_data) {
   on_exit_ = cb;
   exit_ud_ = user_data;
+}
+
+void ProfileLibraryScreen::setPickHandler(void (*cb)(void *, const ProfileDraft &),
+                                          void *user_data) {
+  on_pick_ = cb;
+  pick_ud_ = user_data;
 }
 
 void ProfileLibraryScreen::publishNav(int nav_request) {
@@ -128,6 +150,10 @@ void ProfileLibraryScreen::openMode(RecipeMode mode) {
   current_ = &vm_;
   vm_.init(*client_, phase_codec::modeToWire(mode), *model_);
   current_->setFahrenheit(lv_subject_get_int(&subj_units) != 0);
+  // The Setup picker defaults to most-recently-used (§23, the run-start use case); the manage-
+  // library base stays alphabetical. The controller sorts (§2/§6a) — this only sets which order
+  // the requestList() below asks for.
+  current_->setMruSort(pick_);
   selected_ = 0;
   return_page_ = Page::Chooser;
   // Fetch this mode's library from the controller (§9). The reply lands in poll() → buildList().
@@ -240,7 +266,14 @@ void ProfileLibraryScreen::back() {
     buildList();
     break;
   case Page::List:
-    showChooser();
+    // Pick mode has no chooser (Setup already chose the mode) — Back exits to Setup.
+    if (pick_) {
+      if (on_exit_ != nullptr) {
+        on_exit_(exit_ud_);
+      }
+    } else {
+      showChooser();
+    }
     break;
   case Page::Loading:
   case Page::Error:
@@ -250,6 +283,10 @@ void ProfileLibraryScreen::back() {
     if (return_page_ == Page::List) {
       page_ = Page::List;
       buildList();
+    } else if (pick_) {
+      if (on_exit_ != nullptr) {
+        on_exit_(exit_ud_); // pick mode's stable page is the list; a pre-list failure exits
+      }
     } else {
       showChooser();
     }
@@ -316,18 +353,40 @@ void ProfileLibraryScreen::buildChooser() {
 void ProfileLibraryScreen::buildList() {
   clearParent();
   configParent();
-  buildHeader(mode_ == RecipeMode::Cure ? "Cure profiles" : "Reflow profiles");
+  // Pick mode is titled by intent ("Load a profile"), not by which library it happens to be.
+  buildHeader(pick_ ? "Load a profile"
+                    : (mode_ == RecipeMode::Cure ? "Cure profiles" : "Reflow profiles"));
+
+  // Pick mode: a full-width sort toggle above the list (§23). Its label is the CURRENT order, so
+  // the operator reads what they have, and tapping flips it and re-fetches (the controller sorts).
+  if (pick_) {
+    lv_obj_t *sort = lv_button_create(parent_);
+    theme::apply_secondary(sort);
+    lv_obj_set_width(sort, lv_pct(100));
+    lv_obj_set_height(sort, theme::SECONDARY_H);
+    lv_obj_t *sort_lbl = lv_label_create(sort);
+    // Label reads "Sort: <current order>" — plain text (the subsetted font has no loop/refresh
+    // glyph; a tofu box is worse than none). Tapping flips it and re-fetches.
+    lv_label_set_text(sort_lbl, current_->mruSort() ? "Sort: Recently used" : "Sort: A - Z");
+    lv_obj_center(sort_lbl);
+    lv_obj_add_event_cb(sort, ProfileThunks::sort_toggle, LV_EVENT_CLICKED, this);
+  }
 
   const size_t n = current_->count();
   SelectableListItem items[ProfileLibraryViewModel::kMaxRows];
   for (size_t i = 0; i < n; ++i) {
-    // Borrowed pointers into the VM's buffers (they outlive this list — VM is a member).
-    items[i] = SelectableListItem{current_->rowLabel(i), current_->rowValue(i), true, "Open"};
+    // Borrowed pointers into the VM's buffers (they outlive this list — VM is a member). Pick mode
+    // opens the same detail preview; its verb reads "Use" since selecting it starts a run.
+    items[i] = SelectableListItem{current_->rowLabel(i), current_->rowValue(i), true,
+                                  pick_ ? "Use" : "Open"};
   }
   list_model_.init(items, static_cast<int>(n), /*wrap=*/false);
   list_model_.setOpenHandler(ProfileThunks::list_open, this);
 
-  const LeadingAction new_action{"+ New", ProfileThunks::new_evt, this};
+  // The manage-library "+ New" makes no sense while picking one to run — pick mode has no leading
+  // action (a plain 3-button footer).
+  const LeadingAction new_action =
+      pick_ ? LeadingAction{} : LeadingAction{"+ New", ProfileThunks::new_evt, this};
   SelectableList ui = create_selectable_list(parent_, list_model_, new_action);
 
   if (n == 0) {
@@ -466,6 +525,20 @@ void ProfileLibraryScreen::buildDetail() {
   lv_label_set_text(facts_label, facts);
   theme::apply_caption(facts_label);
 
+  // Pick mode (§19/C6): this detail is the Load preview, so the only action is committing the
+  // choice. One full-width primary button hands the run draft back; Back returns to the list.
+  if (pick_) {
+    lv_obj_t *use = lv_button_create(parent_);
+    theme::apply_mode_tile(use); // the big primary action for this page
+    lv_obj_set_width(use, lv_pct(100));
+    lv_obj_set_height(use, theme::SECONDARY_H);
+    lv_obj_t *use_lbl = lv_label_create(use);
+    lv_label_set_text(use_lbl, "Use this profile");
+    lv_obj_center(use_lbl);
+    lv_obj_add_event_cb(use, ProfileThunks::pick_use, LV_EVENT_CLICKED, this);
+    return;
+  }
+
   // Action row (managing profiles only — running one is a separate path, Home → UV Cure / Reflow →
   // Setup, §19, so there is no Load here). A STOCK profile is read-only: it shows just Delete
   // (greyed) · Clone — Clone is the way to fork it into an editable user copy, so a separate
@@ -573,6 +646,33 @@ void ProfileLibraryScreen::onDeleteConfirmed() {
     page_ = Page::Loading;
     pending_ = Pending::Action;
     buildLoading("Working...");
+  } else {
+    page_ = Page::Error;
+    buildError();
+  }
+}
+
+// --- Pick mode (§19/C6) ---
+
+void ProfileLibraryScreen::onPickUse() {
+  // The detail is loaded (we are on Page::Detail), so assemble the run working copy from it + the
+  // selected row and hand it to Setup. Setup navigates away; this screen does not rebuild.
+  if (on_pick_ == nullptr || !current_->haveDetail()) {
+    return;
+  }
+  ProfileDraft draft;
+  current_->detailToDraft(static_cast<size_t>(selected_), draft);
+  on_pick_(pick_ud_, draft);
+}
+
+void ProfileLibraryScreen::toggleSortAndReload() {
+  current_->toggleSort();
+  // Re-fetch in the new order (the controller sorts) — same async path as openMode's list fetch.
+  return_page_ = Page::List;
+  if (current_->requestList()) {
+    page_ = Page::Loading;
+    pending_ = Pending::List;
+    buildLoading("Loading profiles...");
   } else {
     page_ = Page::Error;
     buildError();

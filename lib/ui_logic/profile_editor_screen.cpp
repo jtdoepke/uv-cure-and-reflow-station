@@ -80,6 +80,29 @@ void ProfileEditorScreen::beginNew(const ProfileDraft &seed, ManagementClient &c
   model_ = &model;
   save_as_ = saveAs;
   saved_ok_ = false;
+  working_copy_ = false;
+  pending_ = Pending::None;
+  working_ = seed;
+  mode_ = seed.mode;
+  if (working_.phaseCount > kMaxPhases) {
+    working_.phaseCount = kMaxPhases;
+  }
+  selected_phase_ = 0;
+  field_sel_ = 0;
+  naming_phase_ = -1;
+  page_ = Page::Overview;
+  recompute();
+}
+
+void ProfileEditorScreen::beginWorkingCopy(const ProfileDraft &seed, const OvenModel &model) {
+  // A run's working copy (§19/C6): edited like New/Edit, but Save keeps the tweaks in RAM and
+  // returns — no client, no library write. save_as_ stays false so Save never routes through name
+  // entry (the draft already carries the source profile's name).
+  client_ = nullptr;
+  model_ = &model;
+  save_as_ = false;
+  saved_ok_ = false;
+  working_copy_ = true;
   pending_ = Pending::None;
   working_ = seed;
   mode_ = seed.mode;
@@ -99,6 +122,7 @@ void ProfileEditorScreen::beginExisting(oven_Mode mode, const char *name, Manage
   model_ = &model;
   save_as_ = saveAs;
   saved_ok_ = false;
+  working_copy_ = false;
   mode_ = phase_codec::modeFromWire(mode);
   working_ = ProfileDraft{};
   working_.mode = mode_;
@@ -474,13 +498,18 @@ void ProfileEditorScreen::buildOverview() {
   // Phase list + footer. The leading footer button is Save (commits the whole profile); Edit drills
   // into the highlighted phase's field editor. Save disables while the profile is hard-invalid.
   rebuildOverviewRows();
-  LeadingAction save{"Save", EditorThunks::save_evt, this};
+  // A working copy's Save keeps the tweaks in RAM ("Use"); a real edit commits over the link
+  // ("Save"). The label says which — never a bare verb that means two different things.
+  LeadingAction save{working_copy_ ? "Use" : "Save", EditorThunks::save_evt, this};
   SelectableList list = create_selectable_list(parent_, list_model_, save);
   if (list.btn_leading != nullptr) {
-    // Save commits over the link (§9), so gate it on a healthy link like the library's actions —
-    // AND keep the existing hard-invalid disable. onSave() guards the seam either way.
-    lv_obj_bind_flag_if_eq(list.btn_leading, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
-    lv_obj_bind_state_if_not_eq(list.btn_leading, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
+    // A real Save commits over the link (§9), so gate it on a healthy link like the library's
+    // actions. A working copy touches no link, so it is NOT link-gated — only the hard-invalid
+    // disable applies. onSave() guards the seam either way.
+    if (!working_copy_) {
+      lv_obj_bind_flag_if_eq(list.btn_leading, &subj_link_state, LV_OBJ_FLAG_CLICKABLE, LINK_OK);
+      lv_obj_bind_state_if_not_eq(list.btn_leading, &subj_link_state, LV_STATE_DISABLED, LINK_OK);
+    }
     if (!validation_.hardValid) {
       lv_obj_add_state(list.btn_leading, LV_STATE_DISABLED);
     }
@@ -863,6 +892,16 @@ void ProfileEditorScreen::openPhaseName(int index) {
 }
 
 void ProfileEditorScreen::doSave() {
+  // Working copy (§19/C6): the tweaks already live in working_; "Save" (shown as "Use") just marks
+  // them accepted and returns. The caller reads working() on exit-with-savedOk(). No client, no
+  // library write.
+  if (working_copy_) {
+    saved_ok_ = true;
+    if (on_exit_ != nullptr) {
+      on_exit_(exit_ud_);
+    }
+    return;
+  }
   if (client_ == nullptr) {
     return;
   }

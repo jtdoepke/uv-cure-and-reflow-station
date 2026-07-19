@@ -290,6 +290,45 @@ void test_save_gates_on_link(void) {
   TEST_ASSERT_TRUE(lv_obj_has_state(save, LV_STATE_DISABLED));
 }
 
+// Setup → Edit (§19/C6): a working copy's Save keeps the tweaks in RAM and exits — no store write,
+// no client round-trip — and the Overview commit button reads "Use", not "Save". The caller adopts
+// working() on savedOk().
+void test_working_copy_save_keeps_in_ram(void) {
+  ProfileDraft p = profile_templates::defaultTemplate(RecipeMode::Reflow);
+  std::strncpy(p.name, "RunCopy", kProfileNameCap - 1);
+  editor.beginWorkingCopy(p); // no client
+  editor.render(lv_screen_active());
+  TEST_ASSERT_NOT_NULL(findByLabel(lv_screen_active(), "Use")); // labelled "Use", not "Save"
+  TEST_ASSERT_NULL(findByLabel(lv_screen_active(), "Save"));
+
+  // Tweak phase 0's target, then Use.
+  editor.openPhase(0);
+  editor.onFieldOpen(1); // Target row → keypad
+  keypad_enter(160);
+  editor.back(); // phase editor → overview
+  editor.onSave();
+
+  TEST_ASSERT_TRUE(editor.savedOk());
+  TEST_ASSERT_TRUE(g_exited);
+  TEST_ASSERT_EQUAL_FLOAT(160.0f, editor.working().phases[0].targetC); // tweak kept in RAM
+  oven_Profile loaded = oven_Profile_init_zero;
+  TEST_ASSERT_FALSE(reflow_store.load("RunCopy", loaded)); // nothing written to the store
+}
+
+// A working copy's Save is NOT link-gated (it touches no controller): "Use" stays enabled with the
+// link down, unlike a real Save.
+void test_working_copy_use_not_link_gated(void) {
+  ProfileDraft p = profile_templates::defaultTemplate(RecipeMode::Reflow);
+  std::strncpy(p.name, "RunCopy", kProfileNameCap - 1);
+  editor.beginWorkingCopy(p);
+  editor.render(lv_screen_active());
+  lv_obj_t *use = findByLabel(lv_screen_active(), "Use");
+  TEST_ASSERT_NOT_NULL(use);
+  lv_subject_set_int(&subj_link_state, LINK_NONE);
+  TEST_ASSERT_TRUE(lv_obj_has_flag(use, LV_OBJ_FLAG_CLICKABLE));
+  TEST_ASSERT_FALSE(lv_obj_has_state(use, LV_STATE_DISABLED));
+}
+
 // Editing an existing profile fetches it from the controller first.
 void test_begin_existing_fetches(void) {
   oven_Profile seed = oven_Profile_init_zero;
@@ -358,6 +397,8 @@ int main(int, char **) {
   RUN_TEST(test_invalid_name_stays_on_name_entry);
   RUN_TEST(test_hard_invalid_blocks_save);
   RUN_TEST(test_save_gates_on_link);
+  RUN_TEST(test_working_copy_save_keeps_in_ram);
+  RUN_TEST(test_working_copy_use_not_link_gated);
   RUN_TEST(test_begin_existing_fetches);
   RUN_TEST(test_advanced_add_and_delete_phase);
   RUN_TEST(test_delete_never_below_one_phase);

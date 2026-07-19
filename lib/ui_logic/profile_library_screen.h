@@ -18,6 +18,7 @@
 
 #include "management_client.h"
 #include "oven_cal.h"
+#include "profile_draft.h" // ProfileDraft — the run working copy pick mode hands back (C6)
 #include "profile_library_viewmodel.h"
 #include "selectable_list.h"
 
@@ -33,6 +34,17 @@ public:
   // ui_subjects_init(). `model` defaults to the compiled-in calibration; a test may pass a toy one.
   void begin(lv_obj_t *parent, ManagementClient &client,
              const OvenModel &model = oven_cal::kDefaultModel);
+
+  // Enter PICK mode for the Setup screen's "Load a profile" (§19/C6): skip the mode chooser (Setup
+  // already knows the mode), open that mode's list ordered most-recently-used by default with a
+  // sort toggle, and on a profile's "Use this profile" hand the assembled run ProfileDraft to the
+  // pick handler instead of opening the editor. Back exits to Setup. Management verbs are hidden —
+  // pick mode is read-only selection, never a mutation. `parent`/`client`/`model` must outlive
+  // this.
+  void beginPick(lv_obj_t *parent, ManagementClient &client, RecipeMode mode,
+                 const OvenModel &model = oven_cal::kDefaultModel);
+  // Pick handler: fired with the chosen profile's run working copy (§19/C6). Set before beginPick.
+  void setPickHandler(void (*cb)(void *user_data, const ProfileDraft &draft), void *user_data);
 
   // Drive the async state machine: call every loop iteration (after client.service()). Consumes a
   // Ready/Failed reply for this screen's outstanding request and rebuilds the page. A no-op unless
@@ -56,6 +68,12 @@ public:
   void onRenameCommit(const char *text); // ✓ on the keyboard → rename in the store, back to list
   void onDeleteRequested();              // → the confirm dialog
   void onDeleteConfirmed();              // Delete, then back to the list
+
+  // Pick-mode actions (§19/C6).
+  void onPickUse();           // detail "Use this profile" → hand the run draft to the pick handler
+  void toggleSortAndReload(); // list sort toggle → flip MRU⇄alpha and re-fetch the list
+
+  bool pickMode() const { return pick_; }
 
   // Inspection (tests).
   Page page() const { return page_; }
@@ -88,6 +106,12 @@ private:
   ManagementClient *client_ = nullptr;
   Pending pending_ = Pending::None;
   Page return_page_ = Page::Chooser; // where an error's Back goes (the last stable page)
+
+  // Pick mode (§19/C6): the Setup screen's "Load a profile". Read-only selection — no chooser, no
+  // management verbs; a chosen profile's run draft goes to on_pick_ instead of the editor.
+  bool pick_ = false;
+  void (*on_pick_)(void *, const ProfileDraft &) = nullptr;
+  void *pick_ud_ = nullptr;
 
   // One view-model, re-init'd with the mode on openMode (only one mode's library is ever shown —
   // two full caches wasted ~3 KB of the scarce DRAM). current_ keeps the existing *current_ call
