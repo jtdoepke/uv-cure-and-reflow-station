@@ -176,9 +176,18 @@ inline CompileResult compileRecipe(const Phase *phases, size_t count, RecipeMode
       // Cooling is passive — no chamber cool fan (§6) — so the fan-off cool envelope always.
       const RateEnvelope &env = heating ? model.heat.pick(fans.convFan) : model.cool.off;
       oven_Segment seg = recipe_compiler::baseSegment(p, fans);
-      if (p.rampSeconds <= 0.0f) {
-        // ASAP: executed to target; dur_ms is the projected-duration estimate (ETA / watchdog, §5).
+      if (p.rampSeconds <= 0.0f && heating) {
+        // ASAP: driven to target at full duty; dur_ms is the projected reach (ETA / watchdog, §5).
         seg.interp = oven_Interp_INTERP_RAMP_ASAP;
+        seg.dur_ms = recipe_compiler::secondsToMs(rampDurationSeconds(env, prevC, p.targetC));
+      } else if (p.rampSeconds <= 0.0f) {
+        // Cooling is PASSIVE — there is no cool actuator (§6), so "ASAP" is meaningless and a
+        // target-gated watchdog can never be satisfied faster; a coast takes as long as physics
+        // dictates. Emit a time-based sweep over the projected coast duration (like the implicit
+        // cool tail) so the executor advances on time, not on reaching the temp, and never faults
+        // TARGET_UNREACHABLE on a slow (e.g. overshoot-extended) cool-down. The backup cooldown
+        // still closed-loop-gates touch-safe before Done.
+        seg.interp = oven_Interp_INTERP_RAMP_OVER_TIME;
         seg.dur_ms = recipe_compiler::secondsToMs(rampDurationSeconds(env, prevC, p.targetC));
       } else {
         // Over-time: keep the requested sweep; the controller's hold-entry gate absorbs any lag, so

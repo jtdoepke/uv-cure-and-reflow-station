@@ -106,6 +106,42 @@ void test_reflow_ramp_over_time_then_hold(void) {
   assertUploadable(r.recipe);
 }
 
+// A DESCENDING phase with rampSeconds=0 must NOT compile to RAMP_ASAP: cooling is passive (no
+// actuator), so the executor would target-gate-watchdog it and fault TARGET_UNREACHABLE on a slow
+// coast. It must be a time-based RAMP_OVER_TIME over the projected coast, so the executor advances
+// on time. (Bench-found: a cure whose overshoot slowed the cool-to-40 phase faulted here.)
+void test_descending_asap_phase_is_time_based(void) {
+  const OvenModel m = calibratedModel();
+  Phase phases[2];
+  phases[0].targetC = 100.0f;
+  phases[0].rampSeconds = 0.0f; // heat ASAP
+  phases[0].holdSeconds = 0.0f;
+  phases[1].targetC = 40.0f; // cool to 40, no ramp time given
+  phases[1].rampSeconds = 0.0f;
+  phases[1].holdSeconds = 0.0f;
+
+  CompileResult r = compileRecipe(phases, 2, RecipeMode::Reflow, m, kReflowCaps, kAmbient, 1, 1);
+  TEST_ASSERT_TRUE(r.hardValid);
+
+  // The heat-up is still ASAP; the cool-down must be time-based (never ASAP).
+  bool foundCool = false;
+  for (pb_size_t s = 0; s < r.recipe.segments_count; ++s) {
+    const oven_Segment &seg = r.recipe.segments[s];
+    if (seg.interp == oven_Interp_INTERP_HOLD) {
+      continue;
+    }
+    const float d = seg.heat_c - 40.0f;
+    if ((d < 0.5f && d > -0.5f)) { // the cool-to-40 ramp
+      TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_OVER_TIME, seg.interp);
+      TEST_ASSERT_TRUE(seg.dur_ms > 0);
+      foundCool = true;
+    } else if (seg.heat_c > 90.0f) { // the heat-to-100 ramp
+      TEST_ASSERT_EQUAL(oven_Interp_INTERP_RAMP_ASAP, seg.interp);
+    }
+  }
+  TEST_ASSERT_TRUE(foundCool);
+}
+
 void test_cure_exposure_to_hold_calibrated(void) {
   const OvenModel m = calibratedModel(); // beamCoverage 0.5
   Phase p;
@@ -279,6 +315,7 @@ void test_reject_too_many_segments(void) {
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_reflow_ramp_over_time_then_hold);
+  RUN_TEST(test_descending_asap_phase_is_time_based);
   RUN_TEST(test_cure_exposure_to_hold_calibrated);
   RUN_TEST(test_cure_exposure_uncalibrated_is_estimated);
   RUN_TEST(test_cure_turntable_off_falls_back_to_seconds);
