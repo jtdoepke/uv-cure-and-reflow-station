@@ -111,6 +111,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - [x] **C3** [C] — Home/Status hub. deps: none. *Sets the visual language; do
   early.* (§14) Also laid the reusable MVVM UI foundation — theme tokens, shared
   `lv_subject_t` subjects, view-model/view split — and the Red Hat Mono default font.
+  **Live 2026-07-18 (with A10):** the placeholder chamber temp + status dot are now driven by the
+  controller's telemetry. The status badge folds run-state AND link health into one dot+word (green
+  IDLE / amber RUNNING / amber HOT / red FAULT·NO LINK·SCHEMA — the separate header link readout is
+  gone), and the chamber readout's digits are coloured by temperature (white < touch-safe, amber,
+  red at the burn line). "HOT" is reserved for an idle chamber at/above touch-safe, so a cold
+  chamber mid-run never mislabels.
 - [x] **C9** [C] — sleep/wake (§17) + auto-brightness (§18). deps: none. *Ports
   `IAmbientLight`/`IBacklight` (`lib/display_port`) + host-tested `AutoBrightness`
   (filter→curve→additive-bias→hysteresis→ramp→floor/ceiling; sole backlight owner) and
@@ -118,6 +124,10 @@ existing `IClock`/`IHeaterSwitch` idiom:
   ESP32 adapters + `main.cpp` wiring with live bias preview. Curve calibrated + inverted for
   this board's LDR (GPIO34 reads ~0 in room light, climbs in the dark). Verified on hardware.
   Door-open wake deferred until the controller reports door state over telemetry (§9).*
+  **Extended 2026-07-18 (with A10):** the sleep gate now shares one predicate with the idle dot
+  (`HomeViewModel::atRest`) — the screen may sleep only when idle AND touch-safe, stays awake during
+  a run (which also keeps the heartbeat alive) or while the chamber is hot, and a sleeping screen
+  relights if the chamber climbs past touch-safe. Door-open wake still waits on the door sensor.
 - [x] **A7** [A] — controller-side recipe validation: range checks,
   mode-from-content derivation, NAK reasons (plugs into A2's `ISetupValidator`
   seam). deps: A2. (§4, §9)
@@ -379,7 +389,7 @@ existing `IClock`/`IHeaterSwitch` idiom:
   now, the sensor doesn't. Verified on the bench: holding the controller in reset reads
   `matched=1 sawPeer=1 alive=0 state=LINK_NONE` — the latch and the decay disagreeing, exactly as
   intended — and it recovers on its own when telemetry resumes.*
-- [ ] **A10** [A] — physical-oven plant simulator for bench testing with the real
+- [x] **A10** [A] — physical-oven plant simulator for bench testing with the real
   controller. A thermal-plant model — heater duty → wall/workpiece temperature via the
   shared first-order envelopes + lag (reuse `thermal_math.h` / `oven_cal.h` so the sim and
   the planner/preview agree), passive cooling (no chamber cool fan, §6), plus convection-fan
@@ -395,6 +405,23 @@ existing `IClock`/`IHeaterSwitch` idiom:
   telemetry), and/or a host/second-devkit plant node — pick during design; keep the model in
   `lib/` (host-testable, board-agnostic) with only the injection adapter board-specific.
   deps: A5, A6, A8. (§5, §6, §8 step 1)
+  **DONE 2026-07-18.** Form chosen (with the user): a **physics twin + back-fit cal**
+  (first-principles lumped-capacitance model, then linearized into `oven_cal.h` so the sim and
+  the CYD preview/ETA agree by construction), running **on-device + host** (real firmware via
+  `CONTROL_SIM`, plus a host closed-loop harness), with **physics-anchored** constants (the donor
+  is assumed faulty, so no measured heat-up data). Landed: `lib/plant/oven_plant.h` (energy model —
+  loss-limited ceiling, asymptotic cooling, element overshoot) + `lib/plant/sim_thermocouples.h`
+  (an `IThermocouples` backed by the plant, with quantization + open/short fault injection);
+  `lib/control_logic/run_path.h` — the first composition of executor + PID + safety + heater into
+  one tick sequence, which D4 reuses (and which surfaced a real bug: an executor fault wasn't
+  reaching the supervisor); `oven_cal.h` re-authored physics-anchored (`CALIBRATED` stays false);
+  `esp32dev_control_sim` env; `test_oven_plant` + a cal-consistency test, the closed-loop
+  `test_sim_run`, and `fuzz_oven_plant` / `fuzz_sim_run` (plant robustness + whole-run
+  safety/liveness/cooldown invariants). Bench-verified end-to-end on the two-devkit rig: a cure
+  profile ramped → held → coasted to 43 °C → reported **DONE** (fault=0). Follow-on the same day:
+  the CYD Home screen was wired to the sim's telemetry (temp-driven status badge + readout colours,
+  sleep gating), and the touch-safe temperature was unified into one shared
+  `lib/calibration/touch_safe.h` (`oven_domain::kTouchSafeC`).
 - [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
   **REWIRED 2026-07-17 (Wave R3):** the view-model binds to a `ProfileClient` (remote,
   over the link) instead of a local `ProfileStore`, gaining loading/error states; the

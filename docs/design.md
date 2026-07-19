@@ -1759,7 +1759,10 @@ opening the mode's Profile library in **pick mode** (§23), then the editor on t
 - **Header:** screen title + **machine-state badge** (IDLE / HEATING / HOT / CURING
   / FAULT) + **link indicator**. The indicator pairs a **glyph + word** — `✓ Link` /
   `✗ No link` (schema mismatch = `✗ Schema`) — **never a bare colour dot** (a green/red
-  dot alone fails the CVD rule; ~8% of males can't distinguish it).
+  dot alone fails the CVD rule; ~8% of males can't distinguish it). **Home is the one
+  exception (§14):** it has no separate link readout — link health is folded into its
+  single status badge (dot+word), so the badge itself reads `NO LINK`/`SCHEMA` when the
+  link is unhealthy. Same word-paired, colour-never-alone rule; one fewer widget.
 - **Footer:** Back (left) + **STOP** (large red, right) — present + armed on every
   *running* screen; never blocked by UI work (machine work is off the LVGL loop).
 - **Run-navigation lock (DECIDED — the rule, stated once):** while a run is
@@ -1789,9 +1792,9 @@ Primary job: pick what to do, while making the machine's safety state unmissable
 
 ```text
 ┌──────────────────────────────────────┐
-│ Oven Controller               ✓ Link  │  header: name + link (glyph+word, not dot)
+│ Oven Controller                       │  header: title only (link folded into badge)
 ├──────────────────────────────────────┤
-│   ● IDLE            Chamber  24 °C     │  status band (state + chamber temp)
+│   ● IDLE            Chamber  24 °C     │  status badge (state+link) + chamber temp (colour by °C)
 ├───────────────────┬──────────────────┤
 │      ☀            │       ⧉           │  two big mode buttons
 │    UV CURE        │     REFLOW        │  (~155×110 px, primary, isolated)
@@ -1802,18 +1805,29 @@ Primary job: pick what to do, while making the machine's safety state unmissable
 
 ### State treatments (where the safety UX lives)
 
-- **Idle & cool:** `● IDLE` (green) + neutral chamber temp.
-- **Hot after a run:** band → `⚠ HOT — Chamber 118 °C (cooling)`, **amber/red + the
-  word HOT** (never colour alone). Mode buttons stay enabled (set up next run while
-  it cools).
-- **Link lost / schema mismatch:** header indicator flips to `✗ No link` / `✗ Schema`
-  (glyph+word + red, not colour alone) + body banner `⚠ Controller not responding`;
-  **mode buttons disabled** — no run flow without a healthy link (mirrors §9).
+The single status badge folds machine state AND link health into one dot+word (the §13
+colour-blind rule: always a word, never colour alone), and the chamber readout's digits
+are coloured by the measured temperature. Badge priority, highest first:
+
+- **Link lost / schema mismatch:** badge → `NO LINK` / `SCHEMA` (red) + body banner
+  `⚠ Controller not responding`; **mode buttons disabled** — no run flow without a
+  healthy link (mirrors §9). This wins over any run/temp state.
+- **Fault:** badge → `FAULT` (red).
+- **Running:** badge → `RUNNING` (amber). A fail-safe: a run normally leaves Home for
+  Run/Monitor, but if Home is ever shown mid-run the badge must not read a reassuring
+  green. Distinct from HOT so a cold chamber at run start never mislabels as "HOT".
+- **Hot after a run (idle & chamber ≥ touch-safe):** badge → `HOT` (amber). Mode
+  buttons stay enabled (set up the next run while it cools).
+- **Idle & cool:** badge → `IDLE` (green) + touch-safe chamber temp.
+- **Chamber readout colour** (independent of the badge): white while touch-safe
+  (< `kTouchSafeC`), amber as it climbs, red past the burn line — the colour reinforces
+  the digits, never replaces them.
 
 ### Visual language established for all screens
 
-- Header = title + machine-state badge + link glyph+word. **The footer rule has
-  exactly two exceptions (§13):** the root hub — no Back (it's root), no STOP
+- Header = title + status badge (on Home the badge folds link health in; other screens
+  carry the separate header link glyph+word per the global chrome above). **The footer
+  rule has exactly two exceptions (§13):** the root hub — no Back (it's root), no STOP
   (idle; unreachable during a run per the navigation lock) — and Run/Monitor,
   whose footer is the full-width STOP with no Back. Here, secondary actions live
   in the bottom row instead.
@@ -2073,6 +2087,9 @@ honest (so state is current on wake and door-wake is a simple event).
     actuating the control beneath it).
   - **Door-open event** from the controller.
   - **Incoming fault/alarm** — never hide a fault behind a dark screen (§22).
+  - **Chamber crossing touch-safe** — if telemetry shows the chamber heating past the
+    safe-touch threshold while the screen is asleep, it relights so the `HOT` state is
+    visible (the wake half of "suppress sleep while HOT").
 - **Requires door state on the CYD:** the door interlock is on the controller/mains
   side (§6), so the controller **reports door state over UART** — a `doorOpen` bit in
   telemetry **plus an immediate unsolicited telemetry on change** for low-latency
