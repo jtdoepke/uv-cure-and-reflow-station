@@ -47,6 +47,9 @@ void RunScreen::begin(const ProfileDraft &draft, uint32_t session, protocol::Cyd
   fit_ = RunFitResult{};
   actual_last_ = -1;
   deviated_ = false;
+  resumed_ = false;
+  resume_from01_ = 0.0f;
+  gap_idx_ = -1;
 
   // Arm the tracker over the same compile inputs the recipe was uploaded with (§15): the mode's
   // user cap (§24) floored at 0, the shared default ambient — so its segment→phase map matches the
@@ -56,6 +59,63 @@ void RunScreen::begin(const ProfileDraft &draft, uint32_t session, protocol::Cyd
   const Caps caps{0.0f, static_cast<float>(cap)};
   tracker_.begin(draft_, *model_, caps, profile_facts::kDefaultAmbientC, lv_tick_get());
   prepareCurve();
+}
+
+void RunScreen::beginResumed(const ProfileDraft &remainder, uint32_t session,
+                             protocol::CydLink &link, const OvenModel &model) {
+  // Snapshot the paused run's chart BEFORE begin() re-arms the tracker and prepareCurve()
+  // overwrites both buffers. The tracker still holds the pause point: with only RUNNING frames
+  // reaching it, its last update was the last live frame before the door opened.
+  float savedProj[kCurvePoints];
+  float savedActual[kCurvePoints];
+  for (uint16_t i = 0; i < kCurvePoints; ++i) {
+    savedProj[i] = proj_[i];
+    savedActual[i] = actual_[i];
+  }
+  const int32_t savedLast = actual_last_;
+  const int32_t savedLo = y_lo_;
+  const int32_t savedHi = y_hi_;
+  float pausedAt = tracker_.progress01();
+
+  begin(remainder, session, link, model);
+
+  // Put the ORIGINAL job's curve back. Its y-range comes back too, so the resumed trace is drawn to
+  // the same scale as the part before it — a chart that silently rescaled mid-job would make the
+  // two halves visually incomparable, which is the one thing this view exists to allow.
+  for (uint16_t i = 0; i < kCurvePoints; ++i) {
+    proj_[i] = savedProj[i];
+    actual_[i] = savedActual[i];
+  }
+  actual_last_ = savedLast;
+  y_lo_ = savedLo;
+  y_hi_ = savedHi;
+
+  (void)pausedAt;
+  // Define the resume origin in INDEX space, not as a raw fraction: it must leave exactly one blank
+  // column between the two legs, and it must never land on top of the pre-pause data it is meant to
+  // continue. Two columns past the last measured point gives the gap somewhere to live.
+  gap_idx_ = savedLast + 1;
+  int32_t resumeIdx = savedLast + 2;
+  if (resumeIdx > static_cast<int32_t>(kCurvePoints) - 1) {
+    resumeIdx = static_cast<int32_t>(kCurvePoints) - 1; // a pause at the very end: still drawable
+    gap_idx_ = resumeIdx - 1;
+  }
+  if (gap_idx_ < 0) {
+    gap_idx_ = -1; // paused before any sample landed — nothing to break
+  }
+  resumed_ = true;
+  resume_from01_ = static_cast<float>(resumeIdx) / static_cast<float>(kCurvePoints - 1);
+}
+
+float RunScreen::chartFrac01(float runFrac01) const {
+  if (!resumed_) {
+    return runFrac01;
+  }
+  // The tracker measures progress through the REMAINDER; the chart spans the ORIGINAL job. Both are
+  // "fraction of the work that was left", so mapping one onto the span after the pause point is the
+  // honest placement — exact durations cannot line up anyway, since the remainder's ASAP re-heat is
+  // time the original never budgeted for.
+  return resume_from01_ + (1.0f - resume_from01_) * runFrac01;
 }
 
 // Sample the projected trajectory once per run. The y-range is widened as measured points arrive
@@ -101,8 +161,15 @@ void RunScreen::recordActual(float frac01, float valueC) {
   } else if (idx >= static_cast<int32_t>(kCurvePoints)) {
     idx = kCurvePoints - 1;
   }
-  // Same gap-fill rule as run_curve_push_actual, so a replay reproduces the live trace exactly.
-  const int32_t from = (idx > actual_last_) ? actual_last_ + 1 : idx;
+  // Same gap-fill rule as run_curve_push_actual, so a replay reproduces the live trace exactly —
+  // except that it never fills ACROSS the pause column, which exists precisely to stay empty.
+  int32_t from = (idx > actual_last_) ? actual_last_ + 1 : idx;
+  if (gap_idx_ >= 0 && from <= gap_idx_) {
+    from = gap_idx_ + 1;
+  }
+  if (idx < from) {
+    return; // the resumed leg has not reached its own origin column yet
+  }
   for (int32_t j = from; j <= idx; ++j) {
     actual_[j] = valueC;
   }
@@ -123,6 +190,7 @@ void RunScreen::recordActual(float frac01, float valueC) {
 void RunScreen::buildCurve() {
   run_curve_ = create_run_curve(parent_, proj_, kCurvePoints, y_lo_, y_hi_);
   run_curve_set_actual(run_curve_, actual_, actual_last_, deviated_);
+  run_curve_set_gap(run_curve_, gap_idx_); // no-op when there was no pause
 }
 
 void RunScreen::render(lv_obj_t *parent) {
@@ -201,8 +269,10 @@ void RunScreen::poll() {
     // The retained buffer is written first and unconditionally: the summary redraws from it after
     // the live widget is gone, so it must not depend on the widget existing.
     deviated_ = tracker_.deviating();
-    recordActual(tracker_.progress01(), controlTempC(t));
-    run_curve_push_actual(run_curve_, tracker_.progress01(), controlTempC(t), deviated_);
+    const float cf = chartFrac01(tracker_.progress01());
+    recordActual(cf, controlTempC(t));
+    run_curve_push_actual(run_curve_, cf, controlTempC(t), deviated_);
+    run_curve_set_gap(run_curve_, gap_idx_); // push's backfill would otherwise close the pause gap
   }
   refresh(t, ours);
 

@@ -418,6 +418,62 @@ void test_paused_ends_on_lost_link(void) {
   TEST_ASSERT_EQUAL_INT((int)Page::Ended, (int)screen.page());
 }
 
+// The resumed run's CHART spans the ORIGINAL job, not just the remainder: the operator interrupted
+// one cure and wants to see the whole of it. The tracker still tracks the remainder (that is what
+// is executing), so the two are deliberately different things.
+void test_resumed_chart_keeps_the_original_timeline(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  for (int i = 1; i <= 6; ++i) {
+    feed(kSession, oven_RunState_RUN_STATE_RUNNING, 40.0f + static_cast<float>(i), 1,
+         static_cast<uint32_t>(i) * 20000);
+    screen.poll();
+  }
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 140000, /*doorOpen=*/true);
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)Page::Paused, (int)screen.page());
+  const float pausedAt = screen.tracker().progress01();
+  TEST_ASSERT_TRUE(pausedAt > 0.0f); // the run got somewhere before the door opened
+
+  const ProfileDraft rem = screen.remainder();
+  screen.beginResumed(rem, kSession + 1, cydlink);
+  screen.render(lv_screen_active());
+
+  TEST_ASSERT_TRUE(screen.resumed());
+  // The resumed leg starts JUST AFTER the pause point in the ORIGINAL timeline — strictly after, so
+  // it cannot overwrite the trace it is continuing, and close behind, so the two read as one job.
+  // The exact offset is quantised to chart columns (two of them: one blank column for the gap).
+  TEST_ASSERT_TRUE(screen.resumeFrom01() > pausedAt);
+  const float kColumn = 1.0f / static_cast<float>(RunScreen::kCurvePoints - 1);
+  TEST_ASSERT_TRUE(screen.resumeFrom01() - pausedAt < 4.0f * kColumn);
+  // ...and the tracker is armed on the REMAINDER, which is a shorter job than the original.
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(cureDraft().phaseCount, screen.tracker().phaseCount());
+  TEST_ASSERT_EQUAL_UINT32(rem.phaseCount, screen.tracker().phaseCount());
+}
+
+// A resumed run that is 0% through its remainder plots at the PAUSE point, not at the chart's left
+// edge — otherwise the resumed leg would overwrite the part of the trace it is meant to continue.
+void test_resumed_samples_land_after_the_pause_point(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  for (int i = 1; i <= 6; ++i) {
+    feed(kSession, oven_RunState_RUN_STATE_RUNNING, 40.0f + static_cast<float>(i), 1,
+         static_cast<uint32_t>(i) * 20000);
+    screen.poll();
+  }
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 140000, /*doorOpen=*/true);
+  screen.poll();
+
+  screen.beginResumed(screen.remainder(), kSession + 1, cydlink);
+  screen.render(lv_screen_active());
+  TEST_ASSERT_TRUE(screen.resumeFrom01() > 0.0f);
+
+  // A fresh run maps identically; a resumed one is offset by the pause point.
+  screen.begin(cureDraft(), kSession + 2, cydlink);
+  TEST_ASSERT_FALSE(screen.resumed());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, screen.resumeFrom01());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_running_follows_telemetry);
@@ -440,5 +496,7 @@ int main(int, char **) {
   RUN_TEST(test_resume_starts_the_remainder);
   RUN_TEST(test_paused_abort_ends_run);
   RUN_TEST(test_paused_ends_on_lost_link);
+  RUN_TEST(test_resumed_chart_keeps_the_original_timeline);
+  RUN_TEST(test_resumed_samples_land_after_the_pause_point);
   return UNITY_END();
 }

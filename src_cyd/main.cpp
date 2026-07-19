@@ -352,9 +352,15 @@ static void on_picker_exit(void *) {
   go_home();
 }
 
+// Set between Resume and the Confirm commit landing, so on_confirm_commit knows to re-arm the Run
+// screen with its chart preserved. A flag rather than a parameter because the two are separated by
+// the whole §9 start handshake, which has no business carrying UI context through it.
+static bool g_resume_pending = false;
+
 // Confirm Back → the picker, to choose a different profile.
 static void on_confirm_exit(void *) {
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  g_resume_pending = false; // backing out of Confirm abandons the resume; the next run is its own
   g_router.show(SCREEN_PICKER);
 }
 
@@ -362,7 +368,14 @@ static void on_confirm_exit(void *) {
 // Run screen (§15), which arms a RunTracker and monitors the live telemetry.
 static void on_confirm_commit(void *, const ProfileDraft &draft) {
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
-  run_screen().begin(draft, g_run_session, g_cyd_link);
+  if (g_resume_pending) {
+    // A resumed cure (§15): the controller executes the remainder, but the chart keeps showing the
+    // whole original job — the operator interrupted one cure, not two.
+    g_resume_pending = false;
+    run_screen().beginResumed(draft, g_run_session, g_cyd_link);
+  } else {
+    run_screen().begin(draft, g_run_session, g_cyd_link);
+  }
   g_router.show(SCREEN_RUN);
 }
 

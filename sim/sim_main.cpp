@@ -652,7 +652,7 @@ int main(int argc, char **argv) {
       run_link.onTelemetry(t);
       run.poll();
     }
-  } else if (screen == "paused" || screen == "paused-ready") {
+  } else if (screen == "paused" || screen == "paused-ready" || screen == "resumed") {
     // The §15 cure Paused page (C7 PR3): a cure interrupted by the door, offering B6's remainder.
     // Rendered with the door still OPEN, which is the state the operator actually meets — Resume
     // disabled, the amber "Door open · UV OFF" cue up.
@@ -695,6 +695,35 @@ int main(int argc, char **argv) {
     }
     pause_link.onTelemetry(stop);
     run.poll();
+    if (screen == "resumed") {
+      // Resume it, then feed the resumed leg. The chart must keep the ORIGINAL job's projection
+      // with the pre-pause trace intact, and the new samples must continue from the pause point
+      // rather than restarting at the left edge.
+      const ProfileDraft rem = run.remainder();
+      const uint32_t sess2 = sess + 1;
+      run.beginResumed(rem, sess2, pause_link);
+      run.render(lv_screen_active());
+      const float rtotal = run.tracker().totalSeconds();
+      for (int i = 0; i <= 8; ++i) {
+        const float ts = rtotal * 0.5f * (static_cast<float>(i) / 8.0f);
+        oven_Telemetry r = oven_Telemetry_init_zero;
+        r.session = sess2;
+        r.seq = ++seq;
+        r.run_state = oven_RunState_RUN_STATE_RUNNING;
+        r.setpoint = run.tracker().projectedAt(ts);
+        r.wall_temp_count = 4;
+        for (size_t k = 0; k < 4; ++k) {
+          r.wall_temp[k] = run.tracker().projectedAt(ts) - 3.0f;
+        }
+        r.elapsed_ms = static_cast<uint32_t>(ts * 1000.0f);
+        r.seg_idx = 0;
+        r.uv_duty = 1.0f;
+        r.motor = true;
+        pause_link.onTelemetry(r);
+        run.poll();
+        lv_tick_inc(static_cast<uint32_t>(rtotal * 500.0f) / 9U);
+      }
+    }
     if (screen == "paused-ready") {
       // Door shut again: Resume becomes live. This is the state the operator acts on, so it is
       // worth a fixture of its own — a disabled control tells you nothing about the enabled one.

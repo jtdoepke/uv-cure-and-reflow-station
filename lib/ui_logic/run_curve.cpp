@@ -106,6 +106,15 @@ void run_curve_push_actual(RunCurve &rc, float frac01, float valueC, bool deviat
   lv_chart_refresh(rc.chart);
 }
 
+void run_curve_set_gap(RunCurve &rc, int32_t idx) {
+  if (rc.chart == nullptr || rc.actual_y == nullptr || idx < 0 ||
+      idx >= static_cast<int32_t>(rc.points)) {
+    return;
+  }
+  rc.actual_y[idx] = LV_CHART_POINT_NONE;
+  lv_chart_refresh(rc.chart);
+}
+
 void run_curve_set_actual(RunCurve &rc, const float *actual, int32_t lastIdx, bool deviating) {
   if (rc.chart == nullptr || rc.actual_y == nullptr || actual == nullptr || rc.points < 2) {
     return;

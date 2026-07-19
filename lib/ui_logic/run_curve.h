@@ -49,3 +49,9 @@ void run_curve_push_actual(RunCurve &rc, float frac01, float valueC, bool deviat
 // and by a mid-run rebuild, so a re-shown Running page comes back with its history intact.
 // `lastIdx < 0` leaves the series empty.
 void run_curve_set_actual(RunCurve &rc, const float *actual, int32_t lastIdx, bool deviating);
+
+// Punch a HOLE in the measured trace at `idx`, breaking the polyline there. Used by a resumed run
+// (§15): nothing was measured while the door stood open, and a line joining the two legs would
+// assert a temperature history that was never sampled. A gap says "there is no data here", which
+// is the truth.
+void run_curve_set_gap(RunCurve &rc, int32_t idx);

@@ -50,6 +50,16 @@ public:
   void begin(const ProfileDraft &draft, uint32_t session, protocol::CydLink &link,
              const OvenModel &model = oven_cal::kDefaultModel);
 
+  // Arm a RESUMED run (§15): the controller is executing `remainder`, so phases, ETA and the §16
+  // fit all track that — but the CHART keeps the ORIGINAL job's projection and the measured trace
+  // from before the pause. The operator interrupted one cure, not two, and a graph that restarted
+  // at the remainder would throw away the part of the run they are actually trying to judge.
+  //
+  // Must be called on the SAME RunScreen instance that was paused: it snapshots that run's retained
+  // curve before re-arming over the remainder.
+  void beginResumed(const ProfileDraft &remainder, uint32_t session, protocol::CydLink &link,
+                    const OvenModel &model = oven_cal::kDefaultModel);
+
   // Build the current page under `parent` (the router build cb; call after begin()).
   void render(lv_obj_t *parent);
 
@@ -93,6 +103,9 @@ public:
   fault_table::FaultCodeWire faultCode() const { return fault_code_; }
   // The authored draft this run executed — what "Run again" re-confirms.
   const ProfileDraft &draft() const { return draft_; }
+  // Is this a resumed remainder, and where in the ORIGINAL timeline did the pause happen?
+  bool resumed() const { return resumed_; }
+  float resumeFrom01() const { return resume_from01_; }
 
   // Chart resolution across the run — the retained sample buffers are sized to it.
   static constexpr uint16_t kCurvePoints = 48;
@@ -127,6 +140,9 @@ private:
   // Build the chart under `parent_`, replaying every retained actual sample. Used by both pages —
   // live (grown per frame after this) and complete (the §16 overlay).
   void buildCurve();
+  // Map a progress fraction reported by the tracker onto the chart's x-axis. Identity for a normal
+  // run; for a resumed one it compresses the remainder into the span left after the pause point.
+  float chartFrac01(float runFrac01) const;
 
   // The mode's control variable (§5): reflow tracks the workpiece TC, cure the hottest wall
   // channel.
@@ -158,7 +174,13 @@ private:
   int32_t actual_last_ = -1; // highest filled index in actual_ (-1 = no telemetry yet)
   int32_t y_lo_ = 0;
   int32_t y_hi_ = 0;
-  bool deviated_ = false;      // last-applied cue colour, replayed onto a rebuilt chart
+  bool deviated_ = false; // last-applied cue colour, replayed onto a rebuilt chart
+  // Resume context (§15). While set, measured points are placed in the ORIGINAL job's timeline:
+  // the tracker reports progress through the REMAINDER, which is only the tail of what the chart
+  // is showing.
+  bool resumed_ = false;
+  float resume_from01_ = 0.0f;
+  int32_t gap_idx_ = -1;       // blank chart column marking the pause; -1 = none
   bool door_was_open_ = false; // edge detector for the summary's door dismiss
 
   // §15 pause state — all CYD-side. `remainder_` is generated ONCE at pause, from the progress the
