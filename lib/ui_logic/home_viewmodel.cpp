@@ -2,50 +2,64 @@
 
 #include "theme.h"
 
-const char *HomeViewModel::stateText(int run_state) {
+const char *HomeViewModel::badgeText(int run_state, int link_state) {
+  // Link trouble is shown on the badge itself now (no separate link readout). A distinct word for
+  // each so the operator knows which fix it is: reseat the cable vs reflash the matched pair (§9).
+  if (link_state == LINK_NONE) {
+    return "NO LINK";
+  }
+  if (link_state == LINK_SCHEMA) {
+    return "SCHEMA";
+  }
   switch (run_state) {
-  case RUN_IDLE:
-    return "IDLE";
-  case RUN_HOT:
-    return "HOT";
-  case RUN_RUNNING:
-    return "RUNNING";
   case RUN_FAULT:
     return "FAULT";
-  default:
-    return "--";
-  }
-}
-
-uint32_t HomeViewModel::stateColor(int run_state) {
-  switch (run_state) {
-  case RUN_IDLE:
-    return theme::IDLE; // green — safe / cool
-  case RUN_HOT:
-    return theme::WARN; // amber — hot surface
   case RUN_RUNNING:
-    return theme::WARN; // amber — energised (Home is idle-only, but keep it honest)
-  case RUN_FAULT:
-    return theme::FAULT; // red — danger
+    // Fail-safe amber even though a run normally never shows on Home (§14).
+    return "RUNNING";
+  case RUN_HOT:
+    // Idle AND hot only: runStateFrom never returns RUN_HOT mid-run, so "HOT" can't show cold.
+    return "HOT";
   default:
-    return theme::TEXT_DIM;
+    return "IDLE";
   }
 }
 
-const char *HomeViewModel::linkText(int link_state) {
-  switch (link_state) {
-  case LINK_OK:
-    return LV_SYMBOL_OK " Link";
-  case LINK_SCHEMA:
-    return LV_SYMBOL_WARNING " Schema";
-  case LINK_NONE:
-  default:
-    return LV_SYMBOL_CLOSE " No link";
+uint32_t HomeViewModel::badgeColor(int run_state, int link_state) {
+  if (link_state != LINK_OK) {
+    return theme::FAULT; // red — controller unreachable or schema-skewed (§9)
   }
+  if (run_state == RUN_FAULT) {
+    return theme::FAULT; // red — controller fault
+  }
+  if (run_state == RUN_HOT || run_state == RUN_RUNNING) {
+    return theme::WARN; // amber — a run in progress, or a hot (not touch-safe) idle chamber
+  }
+  return theme::IDLE; // green — idle, cool, and linked
 }
 
-uint32_t HomeViewModel::linkColor(int link_state) {
-  return link_state == LINK_OK ? theme::IDLE : theme::FAULT;
+uint32_t HomeViewModel::chamberColor(int celsius) {
+  if (celsius >= kHotC) {
+    return theme::FAULT; // red — a genuine burn risk
+  }
+  if (celsius >= kTouchSafeC) {
+    return theme::WARN; // amber — warm, past the touch-safe point
+  }
+  return theme::TEXT; // white/primary — touch-safe
+}
+
+int HomeViewModel::runStateFrom(bool running, bool faulted, bool hot) {
+  // Severity order: a fault is the safety-critical state and must never be masked by "running" or
+  // "hot" (§14). A live run is next. Otherwise the machine is idle — but idle-and-hot gets the HOT
+  // treatment so the operator is warned the chamber is still dangerous to touch (§14/§17), which is
+  // also what keeps sleep suppressed while it cools (main.cpp only sleeps when RUN_IDLE).
+  if (faulted) {
+    return RUN_FAULT;
+  }
+  if (running) {
+    return RUN_RUNNING;
+  }
+  return hot ? RUN_HOT : RUN_IDLE;
 }
 
 int HomeViewModel::linkStateFrom(bool saw_peer, bool matched, bool alive) {

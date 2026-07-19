@@ -47,6 +47,22 @@ void test_activity_wakes_and_resets_timer(void) {
   TEST_ASSERT_FALSE(sc.awake());
 }
 
+// The chamber heats up while the screen is already asleep: sleepAllowed drops from true to false
+// (the run-state subject crosses into HOT as the temp passes touch-safe), and the very next tick()
+// must relight the screen — a hot chamber behind a dark screen is exactly the §17/§22 hazard the
+// policy exists to prevent. This is the SleepController half of "wake up if the temp rises above
+// touch-safe while asleep"; the firmware also drives it immediately via the on_run_state observer.
+void test_wakes_when_sleep_disallowed_while_asleep(void) {
+  SleepController sc;
+  sc.tick(0, /*sleepAllowed=*/true);
+  sc.tick(120000, true);
+  TEST_ASSERT_FALSE(sc.awake()); // asleep, machine was idle and cool
+
+  // Chamber climbs past touch-safe -> sleepAllowed goes false -> the screen wakes.
+  sc.tick(120001, /*sleepAllowed=*/false);
+  TEST_ASSERT_TRUE(sc.awake());
+}
+
 void test_timeout_is_configurable(void) {
   SleepController sc;
   sc.setIdleTimeoutMs(1000);
@@ -128,6 +144,7 @@ int main(int, char **) {
   RUN_TEST(test_sleeps_after_timeout_when_idle);
   RUN_TEST(test_never_sleeps_while_not_allowed);
   RUN_TEST(test_activity_wakes_and_resets_timer);
+  RUN_TEST(test_wakes_when_sleep_disallowed_while_asleep);
   RUN_TEST(test_timeout_is_configurable);
   RUN_TEST(test_activity_timestamped_after_now_stays_awake);
   RUN_TEST(test_survives_millis_wrap);

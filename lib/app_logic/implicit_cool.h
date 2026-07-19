@@ -14,11 +14,13 @@
 
 #include "phase.h"
 #include "thermal_math.h"
+#include "touch_safe.h" // the ONE codebase-wide touch-safe temperature (oven_domain::kTouchSafeC)
 
 // The touch-safe chamber temperature every run cools down to before it reports Done (§5/§6): cool
-// enough that the operator can open the door and handle the workpiece. The controller mirrors this
-// as oven_safety.h's TOUCH_SAFE_C for its independent backup cooldown; keep the two values in step.
-inline constexpr float kTouchSafeC = 43.0f;
+// enough that the operator can open the door and handle the workpiece. This name is the CYD-side
+// spelling of the single shared constant (touch_safe.h); the controller reads the same source as
+// oven_safety.h's TOUCH_SAFE_C for its independent backup cooldown, so the two cannot drift.
+inline constexpr float kTouchSafeC = oven_domain::kTouchSafeC;
 
 // The role label the preview shows for the appended cool-down phase (borrowed literal, never
 // freed).

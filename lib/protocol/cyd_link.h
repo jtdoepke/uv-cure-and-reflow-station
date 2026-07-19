@@ -21,6 +21,7 @@
 #include "heartbeat_sender.h"
 #include "link_params.h"
 #include "message_router.h"
+#include "oven.pb.h"
 #include "reliable_sender.h"
 
 namespace protocol {
@@ -57,12 +58,22 @@ public:
   // Fail-closed: false until the first frame lands.
   bool linkAlive() const { return !telemetry_.expired(kLinkTimeoutMs); }
 
+  // The most recent telemetry frame, and whether one has ever arrived. The CYD reads this each
+  // loop to drive Home's live chamber temp + run-state badge (§14) — the same "CydLink reads the
+  // stream on its own account" posture as linkAlive(), so the single app observer (the
+  // ManagementClient) stays free for request/reply correlation. Pair with linkAlive() before
+  // trusting the contents: a stale frame past the timeout is no longer the machine's real state.
+  const oven_Telemetry &lastTelemetry() const { return last_telemetry_; }
+  bool hasTelemetry() const { return have_telemetry_; }
+
   // IMessageObserver — reliability messages handled here; content forwarded.
   void onHello(const oven_Hello &h) override { handshake_.onPeerHello(h); }
   void onAck(const oven_Ack &a) override { sender_.onAck(a); }
   void onNak(const oven_Nak &n) override { sender_.onNak(n); }
   void onTelemetry(const oven_Telemetry &t) override {
     telemetry_.feed(); // arrival is the liveness signal, whatever the frame says
+    last_telemetry_ = t;
+    have_telemetry_ = true;
     if (app_ != nullptr) {
       app_->onTelemetry(t);
     }
@@ -107,6 +118,8 @@ private:
   HeartbeatSender heartbeat_;
   ReliableSender sender_;
   HeartbeatMonitor telemetry_; // freshness of the controller's stream, not of a heartbeat
+  oven_Telemetry last_telemetry_ = oven_Telemetry_init_zero; // last payload, for Home's live values
+  bool have_telemetry_ = false;
   IMessageObserver *app_ = nullptr;
 };
 

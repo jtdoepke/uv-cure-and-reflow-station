@@ -33,7 +33,8 @@
 #include "settings_store.h"         // typed device settings (lib/app_logic)
 #include "sleep_controller.h"       // idle sleep/wake policy (lib/app_logic, §17)
 #include "subjects.h"
-#include "schema.h" // shared wire-contract identity (lib/protocol)
+#include "schema.h"     // shared wire-contract identity (lib/protocol)
+#include "touch_safe.h" // the ONE codebase-wide touch-safe temperature (lib/calibration)
 #if defined(UI_DEV_TOOLS)
 #include "injected_touch.h" // ITouch decorator letting the dev API pre-empt the panel
 #include "ui_dev_tools.h"   // WiFi screenshot/touch API (esp32dev_cyd_uidev env only)
@@ -62,6 +63,13 @@ static uint8_t *draw_buf = nullptr;
 static uint8_t *draw_buf2 = nullptr; // second buffer: render next chunk while this one DMAs out
 #endif
 static uint32_t last_tick = 0;
+
+// Chamber temperature (°C) at/above which Home shows the HOT badge instead of IDLE while not
+// running (§14/§17) — the firmware owns this policy so lib/ui_logic stays threshold-free. This is
+// the touch-safe cooldown target: the single shared oven_domain::kTouchSafeC (touch_safe.h, the
+// same source the controller's oven_safety::TOUCH_SAFE_C reads), not the control-side safety
+// header.
+static constexpr int kHomeHotThresholdC = static_cast<int>(oven_domain::kTouchSafeC);
 
 // Device settings (§24). REVISED (Wave R3b): they persist on the CONTROLLER now (§4/§7), so the
 // CYD keeps an in-RAM SettingsStore synced over the link — fetched on connect, pushed on change
@@ -162,13 +170,33 @@ static void bench_link_stimulus() {
 
   if (!g_bench_recipe_sent) {
     if (tx.state() == ReliableSender::State::Idle) {
+      // A full cure profile: warm to 80 °C (convection + UV + turntable), hold, then a passive
+      // cool tail to touch-safe. For the A8 dummy-load proof the controller ignores the recipe
+      // content (it only needs authorize()), but for the A10 plant simulator this drives a real
+      // ramp -> hold -> coast -> DONE run whose Sum(dur)x1.5 runtime budget covers the actual time.
       oven_Recipe rec = oven_Recipe_init_default;
       rec.id = 1;
       rec.mode = oven_Mode_MODE_CURE;
-      rec.segments_count = 1;
-      rec.segments[0].dur_ms = 60000;
+      rec.segments_count = 3;
+      rec.segments[0].interp = oven_Interp_INTERP_RAMP_OVER_TIME;
       rec.segments[0].heat_c = 80.0F;
-      rec.segments[0].interp = oven_Interp_INTERP_HOLD;
+      rec.segments[0].dur_ms = 120000;
+      rec.segments[0].conv_fan = true;
+      rec.segments[0].uv = true;
+      rec.segments[0].motor = true;
+      rec.segments[1].interp = oven_Interp_INTERP_HOLD;
+      rec.segments[1].heat_c = 80.0F;
+      rec.segments[1].dur_ms = 60000;
+      rec.segments[1].conv_fan = true;
+      rec.segments[1].uv = true;
+      rec.segments[1].motor = true;
+      rec.segments[2].interp = oven_Interp_INTERP_RAMP_OVER_TIME;
+      rec.segments[2].heat_c = oven_domain::kTouchSafeC; // coast to the shared touch-safe target
+      // ~600 s: the real uninsulated passive coast 80 -> 43 C runs ~500 s, and the L3 runtime
+      // budget is Sum(dur)x1.5, so the cool tail must be sized to the physics or the supervisor
+      // trips RUNTIME_EXCEEDED during the (correct) slow cooldown. In production B1 computes this
+      // from the oven_cal cool envelope; this hand-authored bench recipe matches it.
+      rec.segments[2].dur_ms = 600000;
       g_bench_recipe_sent = tx.sendRecipe(rec); // the sender stamps the seq
     }
     return;
@@ -668,15 +696,43 @@ void loop() {
                                                   g_cyd_link.handshake().matched(),
                                                   g_cyd_link.linkAlive()));
 
+  // Drive Home's live chamber temp + run-state badge from the controller's telemetry (§14) — the
+  // "controller-link integration" the earlier placeholders anticipated. Only while the link is
+  // alive AND a frame has arrived: a stale frame past the timeout is no longer the machine's real
+  // state (the link banner already flags that). The chamber reading is the hottest wall channel —
+  // the conservative "how hot is it in there" number, matching the L3 high-limit; the run-state
+  // badge folds the wire run_state + fault code + a touch-safe HOT check into Home's RunState.
+  if (g_cyd_link.linkAlive() && g_cyd_link.hasTelemetry()) {
+    const oven_Telemetry &t = g_cyd_link.lastTelemetry();
+    if (t.wall_temp_count > 0) {
+      float hottest = t.wall_temp[0];
+      for (pb_size_t i = 1; i < t.wall_temp_count; ++i) {
+        if (t.wall_temp[i] > hottest) {
+          hottest = t.wall_temp[i];
+        }
+      }
+      lv_subject_set_int(&subj_chamber_temp, static_cast<int>(lroundf(hottest)));
+    }
+    const bool faulted =
+        t.fault_code != oven_FaultCode_FAULT_NONE || t.run_state == oven_RunState_RUN_STATE_FAULT;
+    const bool running = t.run_state == oven_RunState_RUN_STATE_RUNNING;
+    const bool hot = lv_subject_get_int(&subj_chamber_temp) > kHomeHotThresholdC;
+    lv_subject_set_int(&subj_run_state, HomeViewModel::runStateFrom(running, faulted, hot));
+  }
+
   lv_tick_inc(now - last_tick);
   last_tick = now;
   lv_timer_handler();
 
-  // Sleep/wake (§17) + auto-brightness (§18). Sleep only when idle AND cool — the run-state
-  // subject already folds HOT/running/fault into non-idle states, so that is a single predicate.
-  // Never sleep during a run: the Run screen keeps the machine non-idle, and a dark screen would
-  // stop the heartbeat -> controller aborts to safe (§9).
-  bool sleep_allowed = (lv_subject_get_int(&subj_run_state) == RUN_IDLE);
+  // Sleep/wake (§17) + auto-brightness (§18). The screen may sleep ONLY when the machine is at
+  // rest — HomeViewModel::atRest is the same predicate the green idle dot uses (idle AND touch-safe
+  // AND unfaulted), so the two can never drift. Never sleep during a run (a dark screen would stall
+  // the heartbeat -> controller aborts to safe, §9) or while the chamber is still hot (§17/§22).
+  // Wake-on-hot-while-asleep is covered twice over: the on_run_state observer fires noteActivity()
+  // the instant run_state leaves IDLE (an IDLE->HOT transition when the chamber crosses
+  // touch-safe), and this tick() also force-wakes whenever sleep_allowed is false — so a sleeping
+  // screen relights as soon as the telemetry shows the chamber above touch-safe.
+  bool sleep_allowed = HomeViewModel::atRest(lv_subject_get_int(&subj_run_state));
   g_sleep.setIdleTimeoutMs(static_cast<uint32_t>(g_settings.idleTimeoutMin()) * 60000U);
   g_sleep.tick(now, sleep_allowed);
   g_auto_brightness.setAwake(g_sleep.awake());
@@ -736,6 +792,11 @@ void loop() {
                   static_cast<int>(lv_subject_get_int(&subj_link_state)),
                   static_cast<unsigned long>(g_cyd_link.handshake().bootNonce()),
                   static_cast<unsigned long>(g_cyd_link.handshake().peer().boot_nonce));
+    // What Home is actually showing, driven by the controller's telemetry (§14): run-state badge
+    // (0=IDLE 1=HOT 2=RUNNING 3=FAULT) and the live chamber temp.
+    Serial.printf("[home] run_state=%d chamber=%dC\n",
+                  static_cast<int>(lv_subject_get_int(&subj_run_state)),
+                  static_cast<int>(lv_subject_get_int(&subj_chamber_temp)));
   }
 
 #if defined(UI_DEV_TOOLS)

@@ -17,6 +17,7 @@
 #include <cstdint>
 
 #include "oven.pb.h"
+#include "touch_safe.h" // the ONE codebase-wide touch-safe temperature (oven_domain::kTouchSafeC)
 
 namespace oven_safety {
 
@@ -31,13 +32,14 @@ constexpr float CURE_HARD_MAX_C = 120.0F; // TBD §10
 constexpr float MIN_SEGMENT_C = 0.0F;
 
 // The touch-safe chamber temperature a run must cool below before it reports DONE (design.md
-// §5/§6). The CYD's recipe compiler appends a passive cool-down segment aiming for this (the
-// CYD-side mirror is implicit_cool.h's kTouchSafeC — keep the two values in step), but the
+// §5/§6). The CYD's recipe compiler appends a passive cool-down segment aiming for this, but the
 // controller ALSO enforces its own independent backup cooldown to this threshold on MEASURED
 // temperature: it will not leave the run until the control sensor confirms touch-safe, so an
-// optimistic or absent compiled cool tail cannot hand the operator a still-hot chamber. Reviewed
-// here, in the controller tree — never trusted from the CYD.
-constexpr float TOUCH_SAFE_C = 43.0F;
+// optimistic or absent compiled cool tail cannot hand the operator a still-hot chamber. The value
+// is the single shared oven_domain::kTouchSafeC (touch_safe.h) — a reviewed compile-time constant
+// baked in here, never wire data trusted from the CYD (touch_safe.h explains why sharing the
+// source is safe). The CYD's implicit_cool.h reads the same source, so the two cannot drift.
+constexpr float TOUCH_SAFE_C = oven_domain::kTouchSafeC;
 
 // --- L3 clamp thresholds (design.md §4 "L3 clamps", backlog A4b) ------------------
 // These bound the *independent* safety layer that acts on MEASURED temperature, so it

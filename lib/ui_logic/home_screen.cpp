@@ -12,24 +12,23 @@ namespace {
 
 // --- Observers: state → view. Each pairs a colour with text/glyph (never colour alone). ---
 
-void on_link_changed(lv_observer_t *observer, lv_subject_t *subject) {
+// The status badge folds machine state AND link health into one dot + word (§14): both callbacks
+// read both subjects, so a change in either repaints the badge. The run-state subject already folds
+// the chamber-hot check (RUN_HOT is set only when idle AND hot), so "HOT" never shows over a cold
+// chamber. Bound to subj_run_state and subj_link_state below — no separate link readout any more.
+void on_state_label_changed(lv_observer_t *observer, lv_subject_t *) {
   lv_obj_t *label = lv_observer_get_target_obj(observer);
-  int link = lv_subject_get_int(subject);
-  lv_label_set_text(label, HomeViewModel::linkText(link));
-  lv_obj_set_style_text_color(label, theme::col(HomeViewModel::linkColor(link)), 0);
+  int rs = lv_subject_get_int(&subj_run_state);
+  int ls = lv_subject_get_int(&subj_link_state);
+  lv_label_set_text(label, HomeViewModel::badgeText(rs, ls));
+  lv_obj_set_style_text_color(label, theme::col(HomeViewModel::badgeColor(rs, ls)), 0);
 }
 
-void on_state_label_changed(lv_observer_t *observer, lv_subject_t *subject) {
-  lv_obj_t *label = lv_observer_get_target_obj(observer);
-  int state = lv_subject_get_int(subject);
-  lv_label_set_text(label, HomeViewModel::stateText(state));
-  lv_obj_set_style_text_color(label, theme::col(HomeViewModel::stateColor(state)), 0);
-}
-
-void on_state_dot_changed(lv_observer_t *observer, lv_subject_t *subject) {
+void on_state_dot_changed(lv_observer_t *observer, lv_subject_t *) {
   lv_obj_t *dot = lv_observer_get_target_obj(observer);
-  lv_obj_set_style_bg_color(dot, theme::col(HomeViewModel::stateColor(lv_subject_get_int(subject))),
-                            0);
+  int rs = lv_subject_get_int(&subj_run_state);
+  int ls = lv_subject_get_int(&subj_link_state);
+  lv_obj_set_style_bg_color(dot, theme::col(HomeViewModel::badgeColor(rs, ls)), 0);
 }
 
 // Chamber temperature, shown in the user's chosen unit (§24). Bound to both subjects so it
@@ -42,6 +41,9 @@ void on_chamber_changed(lv_observer_t *observer, lv_subject_t *) {
   // The word "CHAMBER" is a separate dim caption widget above this one (the FUI labelled-numeric
   // column), so the value label carries the number alone.
   lv_label_set_text_fmt(label, "%d %s", shown, fahrenheit ? "°F" : "°C");
+  // Colour the digits by the actual temperature (always the stored °C, never the displayed value):
+  // white while touch-safe, amber warm, red dangerous (§14/§17). Colour reinforces the number.
+  lv_obj_set_style_text_color(label, theme::col(HomeViewModel::chamberColor(celsius)), 0);
 }
 
 // Build a labelled button and route its click to the view model. `on_click` is a captureless
@@ -86,9 +88,7 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
 
   lv_obj_t *title = lv_label_create(header);
   lv_label_set_text(title, "Oven Controller");
-
-  ui.link_label = lv_label_create(header);
-  lv_subject_add_observer_obj(&subj_link_state, on_link_changed, ui.link_label, nullptr);
+  // No link readout here any more — the status badge below folds link health into its dot (§14).
 
   // --- Status band: state badge (dot + word) left, live chamber temp right ---
   lv_obj_t *band = lv_obj_create(parent);
@@ -113,10 +113,13 @@ HomeScreen create_home_screen(lv_obj_t *parent) {
   lv_obj_set_style_radius(ui.state_dot, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_width(ui.state_dot, 0, 0);
   lv_obj_remove_flag(ui.state_dot, LV_OBJ_FLAG_SCROLLABLE);
+  // Bound to BOTH subjects: the badge colour/word depends on run-state and link health together.
   lv_subject_add_observer_obj(&subj_run_state, on_state_dot_changed, ui.state_dot, nullptr);
+  lv_subject_add_observer_obj(&subj_link_state, on_state_dot_changed, ui.state_dot, nullptr);
 
   ui.state_label = lv_label_create(badge);
   lv_subject_add_observer_obj(&subj_run_state, on_state_label_changed, ui.state_label, nullptr);
+  lv_subject_add_observer_obj(&subj_link_state, on_state_label_changed, ui.state_label, nullptr);
 
   // The right-hand column: a dim "CHAMBER" caption over the live value — the FUI
   // labelled-numeric column (§14).
