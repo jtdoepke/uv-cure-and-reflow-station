@@ -374,11 +374,14 @@ void loop() {
 #if defined(CONTROL_SIM)
     // The simulated trajectory, so the bench operator can watch a run ramp/soak/peak/coast.
     const ProfileExecutor::Output &lo = g_runpath.output();
+    // `door` is on this line because it is the one input the bench operator drives BY HAND (a
+    // jumper on kDoorPin standing in for DS3), so it is the one they need to see echoed back to
+    // know the firmware agreed with what they just did.
     CONTROL_LOGF("[sim] state=%d seg=%u elapsed=%us sp=%.1f wall=%.1f work=%.1f bay=%.1f duty=%.2f "
-                 "fault=%d\n",
+                 "door=%d fault=%d\n",
                  (int)lo.runState, (unsigned)lo.segIdx, (unsigned)(lo.elapsedMs / 1000U),
                  lo.setpointC, g_plant.wallTempC(), g_plant.workpieceTempC(), g_plant.bayTempC(),
-                 g_heater.duty(), (int)g_safety.faultCode());
+                 g_heater.duty(), door_open ? 1 : 0, (int)g_safety.faultCode());
 #endif
   }
   delay(10);
