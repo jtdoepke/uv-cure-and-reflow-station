@@ -624,35 +624,46 @@ int main(int argc, char **argv) {
     confirm.begin(d, 0xABCD0001, confirm_link, client);
     confirm.render(lv_screen_active());
   } else if (screen == "run" || screen == "run-cure") {
-    // The §15/C7a Run monitor at a representative mid-run instant. A single fed telemetry frame
-    // populates the readout (control temp vs setpoint, phase, ETA, progress, indicators); STOP is
-    // the immediate red control. `run-cure` shows the UV indicator lit + turntable on.
+    // The §15/C7a+C7b Run monitor part-way through a run. A sequence of telemetry frames is fed so
+    // the projected-vs-actual chart shows the measured trace growing over the ghost, tracking the
+    // projection; the readout + indicators follow. `run-cure` lights UV + turntable and plots the
+    // wall channel. STOP is the immediate red control.
     const bool cure = screen == "run-cure";
     static protocol::CydLink run_link(cyd_link, clk);
     lv_subject_set_int(&subj_link_state, LINK_OK); // the run monitor's link banner is subject-bound
     const uint32_t sess = 0x5100BEEF;
-    oven_Telemetry t = oven_Telemetry_init_zero;
-    t.session = sess;
-    t.seq = 1;
-    t.run_state = oven_RunState_RUN_STATE_RUNNING;
-    t.work_temp = cure ? 78.0f : 176.0f;
-    t.setpoint = cure ? 80.0f : 180.0f;
-    t.seg_idx = 2;
-    t.elapsed_ms = cure ? 90000 : 210000;
-    t.wall_temp_count = 4;
-    for (size_t i = 0; i < 4; ++i) {
-      t.wall_temp[i] = cure ? 79.0f : 176.0f;
-    }
-    t.conv_fan = true;
-    t.uv_duty = cure ? 1.0f : 0.0f;
-    t.motor = cure;
-    run_link.onTelemetry(t);
     ProfileDraft d =
         profile_templates::defaultTemplate(cure ? RecipeMode::Cure : RecipeMode::Reflow);
     std::strncpy(d.name, cure ? "Resin-A" : "LF-245", kProfileNameCap - 1);
     run.begin(d, sess, run_link);
     run.render(lv_screen_active());
-    run.poll(); // refresh the live fields from the fed frame
+    // Feed frames from the start up to ~40% of the run; the measured temp tracks the projection so
+    // the actual trace overlays the ghost. run.poll() consumes each frame (by seq) and grows the
+    // chart.
+    const float total = run.tracker().totalSeconds();
+    const int frames = 20;
+    uint32_t seq = 0;
+    for (int i = 0; i <= frames; ++i) {
+      const float ts = total * 0.4f * (static_cast<float>(i) / static_cast<float>(frames));
+      const float proj = run.tracker().projectedAt(ts);
+      oven_Telemetry t = oven_Telemetry_init_zero;
+      t.session = sess;
+      t.seq = ++seq;
+      t.run_state = oven_RunState_RUN_STATE_RUNNING;
+      t.setpoint = proj;
+      t.work_temp = cure ? 25.0f : proj; // reflow control = work TC; cure = walls (set below)
+      t.wall_temp_count = 4;
+      for (size_t k = 0; k < 4; ++k) {
+        t.wall_temp[k] = cure ? proj : 40.0f;
+      }
+      t.elapsed_ms = static_cast<uint32_t>(ts * 1000.0f);
+      t.seg_idx = 1;
+      t.conv_fan = true;
+      t.uv_duty = cure ? 1.0f : 0.0f;
+      t.motor = cure;
+      run_link.onTelemetry(t);
+      run.poll();
+    }
   } else if (screen == "editor" || screen == "editor-cure") {
     // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
     // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile

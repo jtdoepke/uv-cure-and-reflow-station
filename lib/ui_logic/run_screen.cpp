@@ -86,6 +86,8 @@ void RunScreen::poll() {
     last_seq_ = t.seq;
     have_seq_ = true;
     tracker_.update(t, lv_tick_get());
+    // Append the measured point to the chart, amber while off-plan (§16 shares the cue object).
+    run_curve_push_actual(run_curve_, tracker_.progress01(), controlTempC(t), tracker_.deviating());
   }
   refresh(t, ours);
 
@@ -123,20 +125,32 @@ void RunScreen::refresh(const oven_Telemetry &t, bool ours) {
     lv_label_set_text(setpoint_lbl_, set_buf_);
   }
   if (phase_lbl_ != nullptr) {
+    // One line: phase N/M · ETA. The setpoint is the chart's projected ghost, so it needs no text
+    // here; short forms ("2/4") keep it on one line on the narrow 2.8".
     char dur[16];
     profile_facts::formatDuration(tracker_.etaSeconds(), dur, sizeof(dur));
     if (tracker_.inCooldown()) {
       std::snprintf(phase_buf_, sizeof(phase_buf_), "Cooling \xC2\xB7 %s left", dur);
     } else {
-      std::snprintf(phase_buf_, sizeof(phase_buf_), "%s %u of %u \xC2\xB7 %s left",
+      std::snprintf(phase_buf_, sizeof(phase_buf_), "%s %u/%u \xC2\xB7 %s left",
                     tracker_.phaseName(), static_cast<unsigned>(tracker_.phaseOrdinal()),
                     static_cast<unsigned>(tracker_.phaseCount()), dur);
     }
     lv_label_set_text(phase_lbl_, phase_buf_);
   }
-  if (progress_bar_ != nullptr) {
-    lv_bar_set_value(progress_bar_, static_cast<int32_t>(tracker_.progress01() * 100.0f),
-                     LV_ANIM_OFF);
+  // Status cue: door open takes priority (§22 caution), then the off-plan deviation cue (§16), else
+  // on-plan. The chart's trace colour echoes the deviation; the word is the colour-blind read.
+  if (cue_lbl_ != nullptr) {
+    if (t.door_open) {
+      lv_label_set_text(cue_lbl_, LV_SYMBOL_WARNING " DOOR OPEN");
+      lv_obj_set_style_text_color(cue_lbl_, theme::col(theme::WARN), 0);
+    } else if (tracker_.deviating()) {
+      lv_label_set_text(cue_lbl_, "Off plan - check the oven");
+      lv_obj_set_style_text_color(cue_lbl_, theme::col(theme::WARN), 0);
+    } else {
+      lv_label_set_text(cue_lbl_, "On plan");
+      lv_obj_set_style_text_color(cue_lbl_, theme::col(theme::TEXT_DIM), 0);
+    }
   }
   // Indicators: lit in their reserved hue when the output is on, receded when off (word + colour,
   // so they read without relying on colour alone — the label text is always present).
@@ -151,10 +165,6 @@ void RunScreen::refresh(const oven_Telemetry &t, bool ours) {
   if (motor_pill_ != nullptr) {
     lv_obj_set_style_text_color(motor_pill_, theme::col(t.motor ? theme::ACCENT : theme::TEXT_DIM),
                                 0);
-  }
-  if (door_lbl_ != nullptr) {
-    lv_label_set_text(door_lbl_, t.door_open ? LV_SYMBOL_WARNING " DOOR OPEN" : "");
-    lv_obj_set_style_text_color(door_lbl_, theme::col(theme::WARN), 0);
   }
 }
 
@@ -231,40 +241,56 @@ void RunScreen::buildRunning() {
   lv_obj_set_style_text_color(badge, theme::col(theme::ACCENT), 0);
   create_link_banner(parent_);
 
-  // The readout block — takes the vertical slack so the big temp centres and STOP pins to the
-  // bottom.
-  lv_obj_t *block = lv_obj_create(parent_);
-  lv_obj_remove_style_all(block);
-  lv_obj_set_width(block, lv_pct(100));
-  lv_obj_set_flex_grow(block, 1);
-  lv_obj_set_flex_flow(block, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_flex_align(block, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_remove_flag(block, LV_OBJ_FLAG_CLICKABLE);
+  // Readout band: the headline control temperature (big) over one compact info line (target · phase
+  // · ETA). Centred, content-height, so the chart below takes the slack — and full-width lines so
+  // nothing wraps on the narrow 2.8".
+  lv_obj_t *band = lv_obj_create(parent_);
+  lv_obj_remove_style_all(band);
+  lv_obj_set_width(band, lv_pct(100));
+  lv_obj_set_height(band, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(band, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(band, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_remove_flag(band, LV_OBJ_FLAG_CLICKABLE);
 
-  temp_lbl_ = lv_label_create(block);
+  temp_lbl_ = lv_label_create(band);
   lv_label_set_text(temp_lbl_, "--\xC2\xB0");
   lv_obj_set_style_text_font(temp_lbl_, &theme::big_font(), 0);
 
-  setpoint_lbl_ = lv_label_create(block);
-  lv_label_set_text(setpoint_lbl_, "starting...");
-  theme::apply_caption(setpoint_lbl_);
+  // setpoint_lbl_ is left unused (its target is folded into phase_lbl_); refresh() guards on null.
+  setpoint_lbl_ = nullptr;
+  phase_lbl_ = lv_label_create(band);
+  lv_label_set_text(phase_lbl_, "starting...");
+  lv_obj_set_width(phase_lbl_, lv_pct(100));
+  lv_label_set_long_mode(phase_lbl_, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(phase_lbl_, LV_TEXT_ALIGN_CENTER, 0);
+  theme::apply_caption(phase_lbl_);
 
-  phase_lbl_ = lv_label_create(block);
-  lv_label_set_text(phase_lbl_, "");
-  lv_obj_set_style_text_color(phase_lbl_, theme::col(theme::TEXT), 0);
+  // The projected-vs-actual chart (C7b) — the star of the screen; grows to fill the slack.
+  constexpr uint16_t kChartPoints = 48;
+  float proj[kChartPoints];
+  const float total = tracker_.totalSeconds();
+  float yLo = 1.0e30f;
+  float yHi = -1.0e30f;
+  for (uint16_t i = 0; i < kChartPoints; ++i) {
+    const float ts =
+        total > 0.0f ? static_cast<float>(i) / static_cast<float>(kChartPoints - 1) * total : 0.0f;
+    proj[i] = tracker_.projectedAt(ts);
+    if (proj[i] < yLo) {
+      yLo = proj[i];
+    }
+    if (proj[i] > yHi) {
+      yHi = proj[i];
+    }
+  }
+  run_curve_ = create_run_curve(parent_, proj, kChartPoints, static_cast<int32_t>(yLo) - 5,
+                                static_cast<int32_t>(yHi) + 10);
 
-  door_lbl_ = lv_label_create(parent_);
-  lv_label_set_text(door_lbl_, "");
-  lv_obj_set_width(door_lbl_, lv_pct(100));
-  lv_obj_set_style_text_align(door_lbl_, LV_TEXT_ALIGN_CENTER, 0);
-
-  // Progress bar (§15) — elapsed against the projected total.
-  progress_bar_ = lv_bar_create(parent_);
-  lv_obj_set_width(progress_bar_, lv_pct(100));
-  lv_obj_set_height(progress_bar_, theme::GAP * 3);
-  lv_bar_set_range(progress_bar_, 0, 100);
-  lv_bar_set_value(progress_bar_, 0, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(progress_bar_, theme::col(theme::ACCENT), LV_PART_INDICATOR);
+  // Status cue (§15/§16): door open (priority) / off-plan / on-plan. The chart's actual trace also
+  // turns amber off-plan, but the word carries it for a colour-blind read.
+  cue_lbl_ = lv_label_create(parent_);
+  lv_label_set_text(cue_lbl_, "");
+  lv_obj_set_width(cue_lbl_, lv_pct(100));
+  lv_obj_set_style_text_align(cue_lbl_, LV_TEXT_ALIGN_CENTER, 0);
 
   // Output indicators.
   lv_obj_t *ind = lv_obj_create(parent_);
@@ -293,15 +319,16 @@ void RunScreen::buildRunning() {
 void RunScreen::buildEnded() {
   clearParent();
   configParent();
-  // The Running-page widget pointers are gone now — clear them so a stray poll() can't touch them.
+  // The Running-page widget pointers are gone now — clear them so a stray poll()/push can't touch
+  // them (the chart's actual_y buffer is freed with the widget tree).
   temp_lbl_ = nullptr;
   setpoint_lbl_ = nullptr;
   phase_lbl_ = nullptr;
-  progress_bar_ = nullptr;
+  cue_lbl_ = nullptr;
   uv_pill_ = nullptr;
   fan_pill_ = nullptr;
   motor_pill_ = nullptr;
-  door_lbl_ = nullptr;
+  run_curve_ = RunCurve{};
 
   const char *heading;
   uint32_t hue;

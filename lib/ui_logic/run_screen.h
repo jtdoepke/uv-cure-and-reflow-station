@@ -26,6 +26,7 @@
 #include "cyd_link.h"
 #include "oven_cal.h"
 #include "profile_draft.h"
+#include "run_curve.h"
 #include "run_tracker.h"
 
 class RunScreen {
@@ -88,14 +89,14 @@ private:
   lv_obj_t *temp_lbl_ = nullptr;
   lv_obj_t *setpoint_lbl_ = nullptr;
   lv_obj_t *phase_lbl_ = nullptr; // "Soak 2 of 4 · ~4:32 left" (phase + ETA on one line)
-  lv_obj_t *progress_bar_ = nullptr;
+  lv_obj_t *cue_lbl_ = nullptr;   // door / deviation / on-plan status line (§15/§16)
   lv_obj_t *uv_pill_ = nullptr;
   lv_obj_t *fan_pill_ = nullptr;
   lv_obj_t *motor_pill_ = nullptr;
-  lv_obj_t *door_lbl_ = nullptr;
+  RunCurve run_curve_{}; // projected-vs-actual chart (C7b)
   char temp_buf_[16]{};
   char set_buf_[24]{};
-  char phase_buf_[40]{}; // phase + ETA combined onto one line (fits the short 2.8" landscape)
+  char phase_buf_[56]{}; // target · phase · ETA on one line (fits the short 2.8" landscape)
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;
