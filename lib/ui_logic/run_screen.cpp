@@ -629,7 +629,11 @@ void RunScreen::buildPaused() {
   // Abort is a plain tap (giving up is safe); Resume is press-and-hold, because it re-energizes UV
   // and heat — §19's rule, and §15 calls for exactly the same friction as any other start.
   lv_obj_t *abort = lv_button_create(parent_);
-  theme::apply_secondary(abort);
+  theme::apply_mode_tile(abort);
+  // Same red as the Running page's STOP, and for the same reason: this is the control that ends the
+  // run. An operator who has just watched STOP turn red mid-run should not have to re-learn which
+  // button gives up when the machine pauses — the colour is the continuity.
+  lv_obj_set_style_bg_color(abort, theme::col(theme::FAULT), 0);
   lv_obj_set_width(abort, lv_pct(100));
   lv_obj_set_height(abort, theme::SECONDARY_H);
   lv_obj_t *abort_lbl = lv_label_create(abort);
