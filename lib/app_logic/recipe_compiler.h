@@ -67,6 +67,12 @@ struct PhaseAdvisory {
   bool fanHeuristic = false; // a fan Auto was resolved by the pre-calibration heuristic
 };
 
+// The authored phase a compiled segment came from, indexed by segment position. The implicit
+// cool-down tail belongs to no authored phase and carries this sentinel — the Run/Monitor tracker
+// (C7) maps telemetry seg_idx back through this to name the current phase and drive the per-phase
+// run-fit checks (each phase compiles to 0-2 segments, so seg_idx != phase index).
+inline constexpr uint8_t kCoolSegment = 0xFF;
+
 struct CompileResult {
   oven_Recipe recipe = oven_Recipe_init_default; // filled iff hardValid
   bool hardValid = true;
@@ -75,6 +81,9 @@ struct CompileResult {
   bool uncalibratedPreview = false; // whole preview is idealized-linear (!model.calibrated, §12)
   PhaseAdvisory phases[kMaxPhases] = {};
   size_t phaseCount = 0;
+  // Per-segment authored-phase index (kCoolSegment for the implicit cool tail); segmentPhase[j]
+  // pairs with recipe.segments[j]. Only the first recipe.segments_count entries are meaningful.
+  uint8_t segmentPhase[kMaxSegments] = {};
 
   // Any reason the UI should show amber (per-phase flag or the whole-recipe uncalibrated preview).
   bool hasAmber() const {
@@ -183,6 +192,7 @@ inline CompileResult compileRecipe(const Phase *phases, size_t count, RecipeMode
       if (seg.dur_ms > 0) {
         if (segCount >= kMaxSegments)
           return fail(CompileReject::TooManySegments, i);
+        r.segmentPhase[segCount] = static_cast<uint8_t>(i);
         r.recipe.segments[segCount++] = seg;
       }
     }
@@ -208,6 +218,7 @@ inline CompileResult compileRecipe(const Phase *phases, size_t count, RecipeMode
       seg.dur_ms = holdMs;
       if (segCount >= kMaxSegments)
         return fail(CompileReject::TooManySegments, i);
+      r.segmentPhase[segCount] = static_cast<uint8_t>(i);
       r.recipe.segments[segCount++] = seg;
     }
 
@@ -234,6 +245,7 @@ inline CompileResult compileRecipe(const Phase *phases, size_t count, RecipeMode
       seg.dur_ms = coolMs;
       if (segCount >= kMaxSegments)
         return fail(CompileReject::TooManySegments, count - 1);
+      r.segmentPhase[segCount] = kCoolSegment;
       r.recipe.segments[segCount++] = seg;
     }
   }

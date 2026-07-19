@@ -29,7 +29,8 @@ namespace protocol {
 class CydLink : public IMessageObserver {
 public:
   CydLink(FrameLink &link, IClock &clock)
-      : handshake_(link, clock), heartbeat_(link, clock), sender_(link, clock), telemetry_(clock) {}
+      : link_(link), handshake_(link, clock), heartbeat_(link, clock), sender_(link, clock),
+        telemetry_(clock) {}
 
   // Send our Hello at boot. boot_nonce must differ across boots of this board — it is
   // what lets the controller notice a CYD restart and re-announce itself (§9 re-sync).
@@ -48,6 +49,18 @@ public:
   Handshake &handshake() { return handshake_; }
   HeartbeatSender &heartbeat() { return heartbeat_; }
   ReliableSender &sender() { return sender_; }
+
+  // Emergency STOP (§15): abort the run to safe state. Fire-and-forget — NOT the reliable setup
+  // path — because it must act now and is idempotent: the controller safes on the bare Abort frame,
+  // and independently on the heartbeat we stop authorizing here. Both act; whichever lands first
+  // wins, a lost Abort self-heals on the command-timeout. Clearing enable also stops a future
+  // heartbeat from re-authorizing. Returns false only if TinyFrame rejected the frame (the
+  // de-authorize still took effect).
+  bool sendAbort() {
+    heartbeat_.setEnable(false); // stop authorizing first, so we safe even if the frame is dropped
+    uint8_t none = 0;
+    return link_.send(kTfTypeAbort, &none, 0); // Abort {} — a bare frame, no payload
+  }
 
   // Is the controller still there? True only while its telemetry keeps arriving (§9: it sends
   // unconditionally at kTelemetryPeriodMs, run or no run).
@@ -114,6 +127,8 @@ public:
   }
 
 private:
+  FrameLink &link_; // kept for the fire-and-forget Abort path (sendAbort); the reliability
+                    // members own their own reference for cadence sends
   Handshake handshake_;
   HeartbeatSender heartbeat_;
   ReliableSender sender_;

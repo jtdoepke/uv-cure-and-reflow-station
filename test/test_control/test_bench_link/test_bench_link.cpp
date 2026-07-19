@@ -204,6 +204,26 @@ void test_restored_link_reauthorizes(void) {
   TEST_ASSERT_TRUE(r.contactor.closed);
 }
 
+// Emergency STOP (§15, C7): the CYD's sendAbort() drops a live run to safe state. Two independent
+// mechanisms, both exercised here: the controller clears the session on the Abort FRAME
+// (onAbort -> gate.clearSession), and the CYD stops authorizing locally (heartbeat enable=false) so
+// no stray heartbeat re-arms it. The heater output cuts and the contactor opens.
+void test_sendabort_cuts_the_output(void) {
+  BenchRig r;
+  r.bringUpAuthorizedRun();
+  r.run(1000);
+  TEST_ASSERT_TRUE(r.contactor.closed); // running before STOP
+
+  TEST_ASSERT_TRUE(r.cyd.sendAbort());           // the Abort frame is emitted...
+  TEST_ASSERT_FALSE(r.cyd.heartbeat().enable()); // ...and we stop authorizing locally at once
+  r.run(protocol::kHeartbeatPeriodMs + 50);      // let the frame land + safety have the last word
+
+  TEST_ASSERT_FALSE(r.ctrl.authorized());
+  TEST_ASSERT_FALSE(r.heater_sw.on);
+  TEST_ASSERT_FALSE(r.contactor.closed);
+  TEST_ASSERT_TRUE(r.safety.safe());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_boot_defaults_are_safe);
@@ -211,5 +231,6 @@ int main(int, char **) {
   RUN_TEST(test_pulled_tx_cuts_the_output_within_the_timeout);
   RUN_TEST(test_enable_low_cuts_the_output_immediately);
   RUN_TEST(test_restored_link_reauthorizes);
+  RUN_TEST(test_sendabort_cuts_the_output);
   return UNITY_END();
 }
