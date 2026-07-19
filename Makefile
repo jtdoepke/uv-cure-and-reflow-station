@@ -53,6 +53,7 @@ build:     ## Firmware compile-check (both MCUs + both bench envs + the on-targe
 # Unlike esp32dev_cyd35_uidev they need no secrets.h, so there is no reason to leave them out.
 	pio run -e esp32dev_cyd -e esp32dev_cyd35 -e esp32dev_control \
 		-e esp32dev_cyd_bench -e esp32dev_cyd35_bench -e esp32dev_control_bench \
+		-e esp32dev_control_sim \
 		-e touch_calib_cyd -e touch_calib_cyd35
 # The embedded suites need a board to RUN, but not to build — and building them here is the only
 # thing standing between them and bit-rot. It was broken for exactly this reason: nothing built it.

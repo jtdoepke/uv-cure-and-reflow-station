@@ -136,12 +136,18 @@ void test_default_model_is_uncalibrated_and_sane(void) {
   TEST_ASSERT_TRUE(m.lag.off.tau > 0.0f && m.lag.on.tau > 0.0f);
 }
 
-void test_default_model_gives_idealized_linear_duration(void) {
-  // Uncalibrated (slope-0) envelopes → duration is exactly ΔT / constant-rate.
+void test_default_model_ramp_duration_is_temperature_dependent(void) {
+  // The defaults are now the LINEARIZATION of the oven_plant.h twin (A10): a nonzero-slope envelope
+  // where heating slows as it warms toward the loss-limited ceiling. So a ramp is NOT ΔT/rate at a
+  // single point — its duration sits strictly between the two endpoint-rate extremes.
   const OvenModel &m = oven_cal::kDefaultModel;
-  const float rate = heatRate(m, 100.0f, false); // constant across T
+  const float rCold = m.heat.off.rate(20.0f); // faster (cooler end)
+  const float rHot = m.heat.off.rate(120.0f); // slower (hotter end)
+  TEST_ASSERT_TRUE(rCold > rHot);             // heating slows toward the ceiling
+  const float span = 100.0f;
   const float t = rampDurationSeconds(m.heat.off, 20.0f, 120.0f);
-  assert_close(100.0f / rate, t, 1e-2f);
+  TEST_ASSERT_TRUE(t > span / rCold); // slower than if it stayed at the cold-end (fast) rate
+  TEST_ASSERT_TRUE(t < span / rHot);  // faster than if it stayed at the hot-end (slow) rate
 }
 
 int main(int, char **) {
@@ -160,6 +166,6 @@ int main(int, char **) {
   RUN_TEST(test_fan_pick_selects_variant);
   RUN_TEST(test_steady_state_duty_clamped);
   RUN_TEST(test_default_model_is_uncalibrated_and_sane);
-  RUN_TEST(test_default_model_gives_idealized_linear_duration);
+  RUN_TEST(test_default_model_ramp_duration_is_temperature_dependent);
   return UNITY_END();
 }

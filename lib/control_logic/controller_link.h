@@ -63,6 +63,13 @@ public:
   protocol::Handshake &handshake() { return handshake_; }
   SessionGate &gate() { return gate_; }
 
+  // The last accepted Recipe, for a caller that must arm run-scoped machinery the link does not
+  // own — the SafetySupervisor's L3 checks (armRun) via the run path (A10). have_recipe_ is set on
+  // onRecipeAccepted and never cleared (a run always re-sends its Recipe before Start); read it
+  // only in tandem with the executor being RUNNING.
+  bool hasRecipe() const { return have_recipe_; }
+  const oven_Recipe &acceptedRecipe() const { return recipe_; }
+
   // IMessageObserver — route each message to the piece that owns it. A peer that
   // just (re)booted invalidates the setup dedup cache: its ReliableSender re-seeded
   // its seq, so an old cached verdict must not shadow the new run's first command.

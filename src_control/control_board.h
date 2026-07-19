@@ -25,9 +25,14 @@
 
 #include <Arduino.h>
 
-#if defined(CONTROL_BENCH)
+// CONTROL_SIM (the A10 bench plant simulator, env esp32dev_control_sim) shares CONTROL_BENCH's
+// console policy for the same reason: both boards sit on USB during a two-devkit bench run, so the
+// link cannot own UART0 (the USB bridge's port) and moves to UART2, freeing UART0 for the console
+// that logs the simulated trajectory. It is not production and, like the bench build, must never be
+// flashed at a real oven — it fabricates sensor readings from the plant model.
+#if defined(CONTROL_BENCH) || defined(CONTROL_SIM)
 
-// Bench: link on UART2 (Serial2's stock pins), console on UART0/USB.
+// Bench / sim: link on UART2 (Serial2's stock pins), console on UART0/USB.
 inline HardwareSerial &linkSerial() {
   return Serial2;
 }

@@ -34,6 +34,17 @@
 #include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
 #include "telemetry_sender.h"
 
+#if defined(CONTROL_SIM)
+// A10 bench plant simulator (env esp32dev_control_sim): closes the control loop against a synthetic
+// oven so the real firmware run path is exercised before mains hardware (D3/D4) exists.
+#include "heater_control.h" // A5 PID (run path)
+#include "oven_cal.h"       // kDefaultModel — the feedforward model, physics-anchored to the plant
+#include "oven_plant.h"     // A10 thermal-plant twin
+#include "profile_executor.h"  // A6 run engine (driven by the link, ticked by the run path)
+#include "run_path.h"          // ControllerRunPath — executor + PID composition
+#include "sim_thermocouples.h" // plant-backed IThermocouples (replaces the stub)
+#endif
+
 // Bigger loopTask stack: the profile library added a deep call chain with large stack locals —
 // control::ProfileStore::list() holds ProfileEntry[32] (~1 KB) + Summary[32] (~1.4 KB) and calls
 // loadBlob() which nests a kBlobCap (~1.5 KB) decode buffer, and the responder's reply path adds an
@@ -82,17 +93,37 @@ static ManagementResponder g_mgmt(g_link, g_cure_store, g_reflow_store);
 static Esp32HeaterSwitch g_heater_sw(kHeaterPin);
 static Esp32Contactor g_contactor(kContactorPin);
 static HeaterActuator g_heater(g_heater_sw, g_clk);
+
+#if defined(CONTROL_SIM)
+// The bench simulator's temperature source: the OvenPlant turns commanded outputs into
+// temperatures, and SimThermocouples feeds them back through the real IThermocouples port in place
+// of the stub. The executor (A6) + PID (A5) are the same units the production loop will run once
+// D4's real TC adapter lands — composed here by ControllerRunPath. NOT production; fabricates
+// readings, so never at a real oven.
+static ProfileExecutor g_exec(g_clk);
+static HeaterControl g_pid(g_clk);
+static OvenPlant g_plant;
+static SimThermocouples g_tc(g_plant);
+#else
 // High-limit input for the L3 over-temp / stuck-heater checks (§4). Stubbed (reports no
 // usable channel) until D4's real TC adapter; the L3 checks only run once a run is armed,
 // which rides in with D4. See stub_thermocouples.h.
 static StubThermocouples g_tc;
+#endif
 static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor, g_tc, g_clk);
+#if defined(CONTROL_SIM)
+// Declared after the supervisor it references. The link (setExecutor below) owns the executor's
+// load/start/abort lifecycle; the run path ticks it each loop with the measured control temp,
+// drives the PID, and arms/disarms the supervisor's L3 checks around the run.
+static ControllerRunPath g_runpath(g_exec, g_pid, g_safety, g_heater, g_ctrl, g_tc,
+                                   oven_cal::kDefaultModel);
+#endif
 
 static Esp32Watchdog g_wdt;
 
 namespace {
 
-#if defined(CONTROL_BENCH)
+#if defined(CONTROL_BENCH) || defined(CONTROL_SIM)
 const char *causeName(ResetCause c) {
   switch (c) {
   case ResetCause::PowerOn:
@@ -136,11 +167,16 @@ void setup() {
   }
   g_settings.load(); // persisted settings (or defaults), caps re-clamped to hard-max (§4)
 
-#if defined(CONTROL_BENCH)
-  Serial.begin(115200); // bench only: UART0 is the console, the link is on UART2
+#if defined(CONTROL_BENCH) || defined(CONTROL_SIM)
+  Serial.begin(115200); // bench/sim only: UART0 is the console, the link is on UART2
   Serial.println();
+#if defined(CONTROL_SIM)
+  Serial.printf("[control] boot (SIM: link UART2 rx=%d tx=%d, plant simulator)\n", kLinkRxPin,
+                kLinkTxPin);
+#else
   Serial.printf("[control] boot (BENCH: link UART2 rx=%d tx=%d, LED dummy load)\n", kLinkRxPin,
                 kLinkTxPin);
+#endif
   CONTROL_LOGF("[control] reset cause: %s (raw=%d)\n", causeName(g_wdt.lastResetCause()),
                (int)g_wdt.rawResetReason());
   // Two %08lx halves: 32-bit printf has no portable 64-bit format here.
@@ -159,7 +195,14 @@ void setup() {
   g_mgmt.setSettingsStore(g_settings);   // answer SettingsGet/Put too (§9, R2b)
   g_ctrl.setManagementResponder(g_mgmt); // route the CYD's profile-management requests (§9, R2)
 
-#if defined(CONTROL_BENCH)
+#if defined(CONTROL_SIM)
+  // Let the link drive the executor off the accepted Recipe/Start/Abort (load/start/abort); the run
+  // path ticks it each loop. Without this the CYD's bench stimulus would authorize the link but no
+  // run would ever begin.
+  g_ctrl.setExecutor(g_exec);
+#endif
+
+#if defined(CONTROL_BENCH) || defined(CONTROL_SIM)
   {
     control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
     const size_t nc = g_cure_store.list(rows, control::ProfileStore::kMaxListed);
@@ -211,9 +254,31 @@ void loop() {
   }
 #endif
 
+#if defined(CONTROL_SIM)
+  // Closed loop against the plant: read the sim thermocouples, advance the executor + PID, command
+  // the resulting duty, and arm/disarm the L3 checks. Runs before the actuator/safety ticks so
+  // safety still has the final word (below).
+  g_runpath.tick();
+#endif
+
   g_heater.tick();
   g_safety.tick(); // LAST: safety has the final word over whatever duty was commanded (§4)
-  g_wdt.kick();    // only after a full pass: this is what proves the loop got here
+
+#if defined(CONTROL_SIM)
+  // Integrate the plant over this loop interval with the POST-safety applied duty — what the heater
+  // actually did (safety may have forced it off) — plus the executor's channel states. One-loop-
+  // delayed feedback; the next iteration reads the updated temps. Real-time on-device (~10 ms
+  // loop); the host sim advances the clock faster.
+  {
+    static uint32_t sim_last_ms = 0;
+    const float dtS = sim_last_ms == 0 ? 0.0F : static_cast<float>(now - sim_last_ms) / 1000.0F;
+    sim_last_ms = now;
+    const ProfileExecutor::Output &so = g_runpath.output();
+    g_plant.step(dtS, g_heater.duty(), so.convFan, so.uv, so.motor);
+  }
+#endif
+
+  g_wdt.kick(); // only after a full pass: this is what proves the loop got here
 
   // Report what the outputs actually ended up doing, so telemetry reflects the post-safety
   // truth rather than what the control loop asked for. session 0 = IDLE telemetry (§9): we are
@@ -222,6 +287,34 @@ void loop() {
   const oven_FaultCode fault = g_safety.faultCode();
   g_telemetry.state().heater_duty = g_heater.duty();
   g_telemetry.state().fault_code = fault; // continuous backup for the §22 annunciation
+
+#if defined(CONTROL_SIM)
+  // Fill the live telemetry the CYD's Home screen renders (§14): the sim thermocouples' wall +
+  // workpiece readings and the run path's setpoint / channels / run state. Non-sim builds leave
+  // these zero (StubThermocouples reports no channel) until D4's real TC adapter lands. Faulted
+  // channels are omitted so a stray 0 can't masquerade as a reading.
+  {
+    oven_Telemetry &ts = g_telemetry.state();
+    constexpr pb_size_t kMaxWall = sizeof(ts.wall_temp) / sizeof(ts.wall_temp[0]);
+    ts.wall_temp_count = 0;
+    const int nw = g_tc.wallCount();
+    for (int i = 0; i < nw && ts.wall_temp_count < kMaxWall; ++i) {
+      const TcReading r = g_tc.wall(i);
+      if (!r.fault) {
+        ts.wall_temp[ts.wall_temp_count++] = r.celsius;
+      }
+    }
+    const TcReading wp = g_tc.workpiece();
+    ts.work_temp = wp.fault ? 0.0F : wp.celsius;
+    const ProfileExecutor::Output &o = g_runpath.output();
+    ts.setpoint = o.setpointC;
+    ts.run_state = o.runState;
+    ts.seg_idx = o.segIdx;
+    ts.conv_fan = o.convFan;
+    ts.uv_duty = o.uv ? 1.0F : 0.0F;
+    ts.motor = o.motor;
+  }
+#endif
   g_telemetry.setSession(session);
   g_telemetry.service();
 
@@ -253,6 +346,14 @@ void loop() {
     last_log_ms = now;
     CONTROL_LOGF("[control] matched=%d authorized=%d safe=%d\n", (int)g_ctrl.handshake().matched(),
                  (int)g_ctrl.authorized(), (int)g_safety.safe());
+#if defined(CONTROL_SIM)
+    // The simulated trajectory, so the bench operator can watch a run ramp/soak/peak/coast.
+    const ProfileExecutor::Output &lo = g_runpath.output();
+    CONTROL_LOGF("[sim] state=%d seg=%u sp=%.1f wall=%.1f work=%.1f bay=%.1f duty=%.2f fault=%d\n",
+                 (int)lo.runState, (unsigned)lo.segIdx, lo.setpointC, g_plant.wallTempC(),
+                 g_plant.workpieceTempC(), g_plant.bayTempC(), g_heater.duty(),
+                 (int)g_safety.faultCode());
+#endif
   }
   delay(10);
 }
