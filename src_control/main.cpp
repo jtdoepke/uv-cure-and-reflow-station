@@ -32,6 +32,7 @@
 #include "safety_supervisor.h"
 #include "schema.h"             // shared wire-contract identity (lib/protocol)
 #include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
+#include "esp32_door_sensor.h"  // IDoorSensor adapter — the donor's DS3 dry contact (§4/§15)
 #include "telemetry_sender.h"
 
 #if defined(CONTROL_SIM)
@@ -110,12 +111,18 @@ static SimThermocouples g_tc(g_plant);
 // which rides in with D4. See stub_thermocouples.h.
 static StubThermocouples g_tc;
 #endif
+// Door sense (§4/§6/§15). Declared UNCONDITIONALLY — unlike the plant, this is production wiring:
+// a real GPIO reading the donor's DS3 dry contact, the same posture A8 took with the contactor. On
+// the bench a jumper to GND stands in for DS3. Nothing here gates power; the DS1 interlock does
+// that in hardware (§4 L0), and this only tells the firmware what happened.
+static Esp32DoorSensor g_door(kDoorPin, kDoorDebounceMs);
+
 static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor, g_tc, g_clk);
 #if defined(CONTROL_SIM)
 // Declared after the supervisor it references. The link (setExecutor below) owns the executor's
 // load/start/abort lifecycle; the run path ticks it each loop with the measured control temp,
 // drives the PID, and arms/disarms the supervisor's L3 checks around the run.
-static ControllerRunPath g_runpath(g_exec, g_pid, g_safety, g_heater, g_ctrl, g_tc,
+static ControllerRunPath g_runpath(g_exec, g_pid, g_safety, g_heater, g_ctrl, g_tc, g_door,
                                    oven_cal::kDefaultModel);
 #endif
 
@@ -152,6 +159,7 @@ void setup() {
   // whole guarantee — which is the point of them. These calls are what make it firmware's.
   g_heater_sw.begin();
   g_contactor.begin();
+  g_door.begin(); // seeds the debounce from the pin's actual level — booting open reports open
 
   g_wdt.begin(kWatchdogTimeoutMs);
   // Map the previous boot's reset cause onto a boot fault: a watchdog reset is reported once
@@ -274,7 +282,9 @@ void loop() {
     const float dtS = sim_last_ms == 0 ? 0.0F : static_cast<float>(now - sim_last_ms) / 1000.0F;
     sim_last_ms = now;
     const ProfileExecutor::Output &so = g_runpath.output();
-    g_plant.step(dtS, g_heater.duty(), so.convFan, so.uv, so.motor);
+    // The door is handed to the PLANT, not just reported: DS1 sits in the element's line
+    // conductor, so an open door removes heater power in hardware whatever duty was commanded.
+    g_plant.step(dtS, g_heater.duty(), so.convFan, so.uv, so.motor, g_door.isOpen());
   }
 #endif
 
@@ -287,6 +297,8 @@ void loop() {
   const oven_FaultCode fault = g_safety.faultCode();
   g_telemetry.state().heater_duty = g_heater.duty();
   g_telemetry.state().fault_code = fault; // continuous backup for the §22 annunciation
+  const bool door_open = g_door.isOpen();
+  g_telemetry.state().door_open = door_open;
 
 #if defined(CONTROL_SIM)
   // Fill the live telemetry the CYD's Home screen renders (§14): the sim thermocouples' wall +
@@ -317,7 +329,19 @@ void loop() {
   }
 #endif
   g_telemetry.setSession(session);
-  g_telemetry.service();
+  // §9: "an immediate unsolicited telemetry on doorOpen change". The 250 ms cadence is fine for a
+  // temperature graph but not for the things the door gates — waking the display (§17), ending the
+  // run page (§15), enabling Start (§19) — where a quarter second of the UI disagreeing with the
+  // physical machine is exactly the lag an operator reads as the thing being broken.
+  static bool door_open_prev = false;
+  static bool door_seen = false;
+  if (!door_seen || door_open != door_open_prev) {
+    door_seen = true;
+    door_open_prev = door_open;
+    g_telemetry.sendNow();
+  } else {
+    g_telemetry.service();
+  }
 
   // Dedicated Fault frame: fires on change, re-sends while active (§22). The supervisor has
   // already safed the outputs; this is the CYD-facing annunciation.

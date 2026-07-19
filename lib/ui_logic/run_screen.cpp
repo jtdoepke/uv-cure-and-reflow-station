@@ -149,7 +149,11 @@ float RunScreen::controlTempC(const oven_Telemetry &t) const {
 // --- poll(): telemetry → tracker + live refresh + terminal transition ---
 
 void RunScreen::poll() {
-  if (link_ == nullptr || page_ != Page::Running) {
+  if (link_ == nullptr) {
+    return;
+  }
+  if (page_ == Page::Ended) {
+    pollEnded();
     return;
   }
   const bool alive = link_->linkAlive() && link_->hasTelemetry();
@@ -178,6 +182,19 @@ void RunScreen::poll() {
   if (t.run_state == oven_RunState_RUN_STATE_RUNNING) {
     saw_running_ = true;
   }
+  // §15 door-open: the controller safed and ended the run to IDLE on its own — no fault, no DONE,
+  // it simply stops being RUNNING. So the CYD detects it by the door bit plus "we were running",
+  // which is also why this is checked before the DONE/FAULT arms: a door abort that happened to
+  // coincide with a stale DONE must read as the door, whose wording tells the operator what they
+  // actually did. (Cure resume — §15's Paused overlay + remainder profile — is C7 PR3/B6; this
+  // lands the reflow half, "aborted", which §15 specifies for both modes until then.)
+  if (t.door_open && saw_running_ && t.run_state != oven_RunState_RUN_STATE_RUNNING) {
+    endRun(RunOutcome::DoorOpened);
+    if (link_ != nullptr) {
+      link_->sendAbort(); // de-authorize: the run is over, so stop authorizing one (§4/§9)
+    }
+    return;
+  }
   // Read the untrusted enum field as its raw wire integer: nanopb stores the decoded varint
   // verbatim, and an enum-typed load of an out-of-enum value is UB (protocol::wireEnum).
   const fault_table::FaultCodeWire fault_wire = protocol::wireEnum(t.fault_code);
@@ -189,6 +206,32 @@ void RunScreen::poll() {
     // controller adopts our session's RUNNING.
     endRun(RunOutcome::Completed);
   }
+}
+
+// The summary's own poll: a door-open EDGE dismisses it to Home.
+//
+// The bench rationale (2026-07-19): the operator opens the door to retrieve the workpiece, and that
+// act *is* the acknowledgement — making them also tap Home is a second acknowledgement of something
+// they have already physically done, on a screen whose whole content is "the run is over".
+//
+// NEVER on a Fault outcome (§22). A fault demands an explicit acknowledge, and someone opening the
+// door to look at a scorched board must not thereby clear the record of why it scorched. Guarded on
+// the outcome rather than on whether the §22 modal happens to be up, because the modal is
+// dismissable and this page outlives it.
+//
+// EDGE, not level: a door left open (the common case after retrieving a board) would otherwise make
+// the summary un-viewable — you could never walk back to read it.
+void RunScreen::pollEnded() {
+  if (!link_->linkAlive() || !link_->hasTelemetry()) {
+    return;
+  }
+  const bool open = link_->lastTelemetry().door_open;
+  const bool was = door_was_open_;
+  door_was_open_ = open;
+  if (!open || was || outcome_ == RunOutcome::Fault) {
+    return;
+  }
+  dismiss();
 }
 
 void RunScreen::refresh(const oven_Telemetry &t, bool ours) {
@@ -257,6 +300,10 @@ void RunScreen::endRun(RunOutcome outcome) {
   outcome_ = outcome;
   fit_ = tracker_.finish(outcome, lv_tick_get()); // the §16 fit the summary renders
   page_ = Page::Ended;
+  // Seed the dismiss edge detector from the door's CURRENT state, so the very open that ended the
+  // run is not then read as a fresh edge and used to dismiss the summary the operator has not seen
+  // yet. Without this a door-ended run would flash its summary for one frame.
+  door_was_open_ = link_ != nullptr && link_->hasTelemetry() && link_->lastTelemetry().door_open;
   buildEnded();
 }
 
@@ -442,6 +489,13 @@ void RunScreen::buildEnded() {
     heading = "Run stopped";
     hue = theme::WARN;
     break;
+  case RunOutcome::DoorOpened:
+    // §15's wording. Amber, not red: an operator opening the door is an expected event, and
+    // spending the reserved hazard colour on it is what makes the red overlay stop meaning
+    // anything (§22's "keeping the red fault overlay rare is what preserves its force").
+    heading = "Run aborted - door opened";
+    hue = theme::WARN;
+    break;
   case RunOutcome::Fault:
   default:
     heading = "Fault - run ended";
@@ -453,8 +507,14 @@ void RunScreen::buildEnded() {
   lv_obj_t *header = lv_obj_create(parent_);
   theme::apply_panel(header);
   lv_obj_set_width(header, lv_pct(100));
-  lv_obj_set_height(header, theme::HEADER_H);
-  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  // WRAPPING row at content height, not a fixed-height one. The outcome headings are not all the
+  // same length — "Run aborted - door opened" is more than twice "Run complete" — and on a
+  // single-line row a long one starved the profile name's flex slot until it rendered as two
+  // characters of nonsense. Wrapping drops the name to its own line instead, which is the right
+  // trade: the outcome is why you are looking at the screen, and the name still says which run.
+  lv_obj_set_height(header, LV_SIZE_CONTENT);
+  lv_obj_set_style_min_height(header, theme::HEADER_H, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_gap(header, theme::PAD_M, 0);
   lv_obj_t *h = lv_label_create(header);
@@ -462,9 +522,7 @@ void RunScreen::buildEnded() {
   lv_obj_set_style_text_color(h, theme::col(hue), 0);
   lv_obj_t *sub = lv_label_create(header);
   lv_label_set_text(sub, draft_.name);
-  lv_obj_set_flex_grow(sub, 1);
   lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_RIGHT, 0);
   theme::apply_caption(sub);
 
   // §16's "(+ cause)" — the plain-language fault title, from the same table the §22 overlay reads.

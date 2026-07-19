@@ -67,7 +67,7 @@ static ProfileDraft reflowDraft() {
 
 // Inject a telemetry frame (as if received over the wire).
 static void feed(uint32_t session, oven_RunState state, float work, uint32_t seg,
-                 uint32_t elapsedMs) {
+                 uint32_t elapsedMs, bool doorOpen = false) {
   oven_Telemetry t = oven_Telemetry_init_zero;
   t.session = session;
   t.seq = ++g_seq;
@@ -76,6 +76,7 @@ static void feed(uint32_t session, oven_RunState state, float work, uint32_t seg
   t.setpoint = 180.0f;
   t.seg_idx = seg;
   t.elapsed_ms = elapsedMs;
+  t.door_open = doorOpen;
   t.wall_temp_count = 4;
   for (size_t i = 0; i < 4; ++i) {
     t.wall_temp[i] = 60.0f;
@@ -241,6 +242,78 @@ void test_summary_run_again_routes(void) {
   TEST_ASSERT_FALSE(g_exited); // Run again is NOT the Home hop
 }
 
+// --- §15 door-open (PR3) ---
+
+// The controller safes and ends the run to IDLE on a door-open — no fault, no DONE. The CYD reads
+// that as its own outcome so the summary can say what actually happened.
+void test_door_open_ends_run_aborted(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  cydlink.heartbeat().setEnable(true);
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 180.0f, 2, 20000);
+  screen.poll();
+
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 150.0f, 2, 21000, /*doorOpen=*/true);
+  screen.poll();
+
+  TEST_ASSERT_EQUAL_INT((int)Page::Ended, (int)screen.page());
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::DoorOpened, (int)screen.outcome());
+  TEST_ASSERT_FALSE(screen.fit().computed);        // an incomplete run has no fit (§16)
+  TEST_ASSERT_FALSE(cydlink.heartbeat().enable()); // de-authorized: the run is over
+}
+
+// The door that ENDED the run must not immediately dismiss the summary — the operator has not seen
+// it yet. Only a fresh open (they came back to take the board out) dismisses.
+void test_door_that_ended_run_does_not_dismiss_summary(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 180.0f, 2, 20000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 150.0f, 2, 21000, /*doorOpen=*/true);
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::DoorOpened, (int)screen.outcome());
+
+  for (int i = 0; i < 5; ++i) { // door still open, frames keep arriving
+    feed(kSession, oven_RunState_RUN_STATE_IDLE, 140.0f, 2, 22000, /*doorOpen=*/true);
+    screen.poll();
+  }
+  TEST_ASSERT_FALSE(g_exited); // summary still up
+}
+
+// The bench ask: on a completed run, opening the door IS the acknowledgement — clear to Home.
+void test_door_open_dismisses_completed_summary(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 200.0f, 2, 30000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_DONE, 43.0f, 4, 600000);
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::Completed, (int)screen.outcome());
+  TEST_ASSERT_FALSE(g_exited);
+
+  feed(kSession, oven_RunState_RUN_STATE_DONE, 43.0f, 4, 601000, /*doorOpen=*/true);
+  screen.poll();
+  TEST_ASSERT_TRUE(g_exited);
+}
+
+// ...but a FAULT summary is NOT door-dismissable (§22): a fault demands an explicit acknowledge,
+// and opening the door to look at a scorched board must not clear the record of why it scorched.
+void test_door_open_does_not_dismiss_fault_summary(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 210.0f, 2, 40000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_FAULT, 250.0f, 2, 41000);
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::Fault, (int)screen.outcome());
+
+  for (int i = 0; i < 5; ++i) {
+    feed(kSession, oven_RunState_RUN_STATE_FAULT, 250.0f, 2, 42000, /*doorOpen=*/true);
+    screen.poll();
+  }
+  TEST_ASSERT_FALSE(g_exited); // still demanding the explicit tap
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_running_follows_telemetry);
@@ -254,5 +327,9 @@ int main(int, char **) {
   RUN_TEST(test_summary_stopped_skips_fit);
   RUN_TEST(test_summary_fault_keeps_cause);
   RUN_TEST(test_summary_run_again_routes);
+  RUN_TEST(test_door_open_ends_run_aborted);
+  RUN_TEST(test_door_that_ended_run_does_not_dismiss_summary);
+  RUN_TEST(test_door_open_dismisses_completed_summary);
+  RUN_TEST(test_door_open_does_not_dismiss_fault_summary);
   return UNITY_END();
 }

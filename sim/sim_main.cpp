@@ -652,11 +652,12 @@ int main(int argc, char **argv) {
       run_link.onTelemetry(t);
       run.poll();
     }
-  } else if (screen == "summary" || screen == "summary-fault") {
+  } else if (screen == "summary" || screen == "summary-fault" || screen == "summary-door") {
     // The §16 Run Summary (C8) — the Ended page. A whole run is fed so both curves are complete,
     // then a terminal frame lands the summary:
     //   summary        a completed run → verdict + deviation numbers + the amber drift advisory
     //   summary-fault  an over-temp abort → badge + cause, no fit ("data incomplete", §16)
+    //   summary-door   §15's door abort → "Run aborted - door opened", amber not red
     //
     // This fixture is for LAYOUT, and its numbers are not a claim about the control loop: seg_idx
     // marches here on a fixed schedule rather than following the projection's phase boundaries, so
@@ -665,6 +666,7 @@ int main(int argc, char **argv) {
     // flattering "Good / no advisory" shot — a fixture that has to lie to look clean is worse than
     // one that shows the busiest layout the screen can produce.
     const bool fault = screen == "summary-fault";
+    const bool door = screen == "summary-door";
     static protocol::CydLink sum_link(cyd_link, clk);
     lv_subject_set_int(&subj_link_state, LINK_OK);
     const uint32_t sess = 0x5100BEEF;
@@ -706,7 +708,9 @@ int main(int argc, char **argv) {
     oven_Telemetry end = oven_Telemetry_init_zero;
     end.session = sess;
     end.seq = ++seq;
-    end.run_state = fault ? oven_RunState_RUN_STATE_FAULT : oven_RunState_RUN_STATE_DONE;
+    end.run_state = fault ? oven_RunState_RUN_STATE_FAULT
+                          : (door ? oven_RunState_RUN_STATE_IDLE : oven_RunState_RUN_STATE_DONE);
+    end.door_open = door; // §15: the controller ends the run to IDLE with the door bit set
     end.fault_code = fault ? oven_FaultCode_FAULT_OVERTEMP_CHAMBER : oven_FaultCode_FAULT_NONE;
     end.work_temp = fault ? 268.0f : 43.0f;
     end.elapsed_ms = static_cast<uint32_t>(total * 1000.0f);

@@ -87,6 +87,16 @@ struct PlantParams {
   float uvWatts = 60.0f;
   float uvChamberFraction = 0.1f; // fraction of UV power reaching the chamber (rest → bay)
 
+  // Door open (§4/§6). Two separate physical effects, both required for the sim to be honest:
+  //   - DS1, the primary interlock, sits in the LINE CONDUCTOR feeding the element, so an open
+  //     door removes heater power regardless of the duty the firmware is commanding. Modelled by
+  //     zeroing pElem, not by asking the controller to behave. (The element stays hot and keeps
+  //     dumping its stored energy into the chamber — which is the point of modelling it this way.)
+  //   - An open cavity loses heat far faster than a shut one. Estimate, not a measurement: roughly
+  //     an order of magnitude over the sealed uaChamberLoss, which is the shape that matters here
+  //     (the chamber visibly dumps heat) rather than the exact number. Refine with D1/D7 data.
+  float uaDoorOpenExtra = 45.0f; // W/K added to the chamber loss while the door is open
+
   float ambientC = 25.0f; // room/starting temperature
 };
 
@@ -111,8 +121,16 @@ public:
   // POST-safety heater duty (HeaterActuator::duty() read after SafetySupervisor::tick()) — the
   // average power fraction actually applied, which is exactly what a lumped model integrates.
   // motor has no thermal effect (turntable). Robust to non-finite / huge / non-positive dt.
-  void step(float dtS, float appliedDuty, bool convFan, bool uv, bool /*motor*/) {
-    const float duty = clampf(finiteOr(appliedDuty, 0.0f), 0.0f, 1.0f);
+  // `doorOpen` models the HARDWARE interlock, not a firmware policy: DS1 removes element power and
+  // the UV rail's own door switch (§4) kills the array, whatever duty/uv the caller passes. A sim
+  // that only reported the door bit while still heating would be modelling an oven that heats with
+  // its door open, which is the one thing this fixture exists to disprove.
+  void step(float dtS, float appliedDuty, bool convFan, bool uv, bool /*motor*/,
+            bool doorOpen = false) {
+    const float duty =
+        doorOpen ? 0.0f : clampf(finiteOr(appliedDuty, 0.0f), 0.0f, 1.0f); // DS1 in the line
+    uv = uv && !doorOpen;                                                  // UV-rail door switch
+    door_open_ = doorOpen;
     float t = finiteOr(dtS, 0.0f);
     if (t <= 0.0f) {
       return; // no time passed (or a garbage dt) — nothing to integrate
@@ -146,7 +164,8 @@ private:
   // (standard forward Euler), then clamps each node to the physical band so no NaN/Inf escapes.
   void integrate(float h, float duty, bool convFan, bool uv) {
     const float gEC = convFan ? p_.gElemChamberOn : p_.gElemChamberOff;
-    const float ua = p_.uaChamberLoss * clampf(finiteOr(p_.insulationFactor, 1.0f), 0.05f, 1.0f);
+    const float ua = p_.uaChamberLoss * clampf(finiteOr(p_.insulationFactor, 1.0f), 0.05f, 1.0f) +
+                     (door_open_ ? clampf(finiteOr(p_.uaDoorOpenExtra, 0.0f), 0.0f, 1.0e4f) : 0.0f);
     const float tauWork = convFan ? p_.tauWorkOn : p_.tauWorkOff;
     const float uvW = finiteOr(p_.uvWatts, 0.0f) * (uv ? 1.0f : 0.0f);
 
@@ -188,8 +207,9 @@ private:
   static constexpr int kMaxSubSteps = 256;    // bound the sub-step loop under a huge dt
 
   PlantParams p_;
-  float elemC_;    // element sheath temperature
-  float chamberC_; // chamber wall/air temperature
-  float workLp_;   // workpiece low-pass state (pre-affine)
-  float bayC_;     // electronics-bay temperature
+  float elemC_;            // element sheath temperature
+  float chamberC_;         // chamber wall/air temperature
+  float workLp_;           // workpiece low-pass state (pre-affine)
+  float bayC_;             // electronics-bay temperature
+  bool door_open_ = false; // last step()'s door state — read by integrate() for the cavity loss
 };

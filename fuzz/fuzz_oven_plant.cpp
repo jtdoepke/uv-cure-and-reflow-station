@@ -51,13 +51,26 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const float duty = readF32(data + i);
     const float dt = readF32(data + i + 4);
     const uint8_t fl = data[i + 8];
-    p.step(dt, duty, (fl & 0x01) != 0, (fl & 0x02) != 0, (fl & 0x04) != 0);
+    const bool doorOpen = (fl & 0x08) != 0; // §15/§4: DS1 removes element power, cavity loss jumps
+    const float elemBefore = p.elementTempC();
+    const float chamberBefore = p.chamberTempC();
+    p.step(dt, duty, (fl & 0x01) != 0, (fl & 0x02) != 0, (fl & 0x04) != 0, doorOpen);
 
     FUZZ_ASSERT(finiteBounded(p.chamberTempC()));
     FUZZ_ASSERT(finiteBounded(p.wallTempC()));
     FUZZ_ASSERT(finiteBounded(p.workpieceTempC()));
     FUZZ_ASSERT(finiteBounded(p.bayTempC()));
     FUZZ_ASSERT(finiteBounded(p.elementTempC()));
+    // With the door open the element receives NO electrical power, whatever duty was commanded
+    // (DS1 is in its line conductor). So the only remaining way for it to gain heat is conduction
+    // back from a chamber that is hotter than it is — which the first version of this assertion
+    // forgot, and the fuzzer duly produced: park the element cold under a hot chamber and it warms,
+    // correctly. The real property is therefore about the ENERGY SOURCE: element-above-chamber ⇒ it
+    // can only cool. Guarded on a sane dt (a negative/NaN dt is clamped inside step() and says
+    // nothing about the physics); the epsilon covers Euler round-off, since the point is the sign.
+    if (doorOpen && dt > 0.0f && dt < 3600.0f && elemBefore >= chamberBefore) {
+      FUZZ_ASSERT(p.elementTempC() <= elemBefore + 0.001f);
+    }
   }
   return 0;
 }

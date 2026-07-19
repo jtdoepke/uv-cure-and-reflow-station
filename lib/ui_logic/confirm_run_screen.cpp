@@ -112,6 +112,13 @@ bool ConfirmRunScreen::ready() const {
   if (lv_subject_get_int(&subj_link_state) != LINK_OK) {
     return false;
   }
+  // §19: Start is enabled only when the door is CLOSED. The hardware interlock enforces the door
+  // regardless (§4 L0) — this exists so the UI does not offer an un-runnable Start and can say why
+  // it is blocked. Note the polarity of the guard: an unknown door (no telemetry yet) blocks, which
+  // matches the sensor's own fail-safe-to-open wiring rather than optimistically assuming shut.
+  if (!haveTelem() || telem().door_open) {
+    return false;
+  }
   if (isReflow()) {
     // Reflow refuses to start on a probe that is not attached and reading like the load.
     return haveTelem() && tcAttached(telem());
@@ -144,14 +151,22 @@ void ConfirmRunScreen::applyReady(bool r) {
       lv_obj_add_state(hold_btn_, LV_STATE_DISABLED);
     }
   }
-  if (gate_lbl_ != nullptr) { // reflow TC status line
+  if (gate_lbl_ != nullptr) {
+    // The §19 readiness line, most-blocking reason first. The door outranks the probe because it
+    // is the one an operator can act on without touching anything: "attach the probe" is useless
+    // advice while the door is shut, and the door is also the only one of the two that the
+    // hardware is independently enforcing.
     if (!haveTelem()) {
       std::snprintf(gate_buf_, sizeof(gate_buf_), "Waiting for the controller...");
-    } else if (tcAttached(telem())) {
+    } else if (telem().door_open) {
+      std::snprintf(gate_buf_, sizeof(gate_buf_), LV_SYMBOL_WARNING " Door open - close to start");
+    } else if (isReflow() && !tcAttached(telem())) {
+      std::snprintf(gate_buf_, sizeof(gate_buf_), "Attach the workpiece probe");
+    } else if (isReflow()) {
       std::snprintf(gate_buf_, sizeof(gate_buf_), "Probe OK - reads %.0f\xC2\xB0",
                     static_cast<double>(telem().work_temp));
     } else {
-      std::snprintf(gate_buf_, sizeof(gate_buf_), "Attach the workpiece probe");
+      std::snprintf(gate_buf_, sizeof(gate_buf_), "Door closed - ready");
     }
     lv_label_set_text(gate_lbl_, gate_buf_);
     lv_obj_set_style_text_color(gate_lbl_, theme::col(r ? theme::ACCENT : theme::WARN), 0);
@@ -359,19 +374,14 @@ void ConfirmRunScreen::buildReview() {
   lv_obj_set_style_text_align(facts_lbl, LV_TEXT_ALIGN_CENTER, 0);
   theme::apply_caption(facts_lbl);
 
-  // Safety precondition.
-  if (isReflow()) {
-    // The reflow precondition: the workpiece TC must be attached and reading plausibly. gate_lbl_
-    // is refreshed live by refreshGate(); its initial text is set by applyReady() below.
-    gate_lbl_ = lv_label_create(parent_);
-    lv_obj_set_width(gate_lbl_, lv_pct(100));
-    lv_obj_set_style_text_align(gate_lbl_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(gate_lbl_, LV_LABEL_LONG_WRAP);
-  } else {
-    // Cure has no precondition line: the UV array is filtered at the door window and the door
-    // latches cut the light when it opens, so no eye-hazard caution is needed.
-    gate_lbl_ = nullptr;
-  }
+  // The §19 readiness line, now present in BOTH modes: the door gate applies to cure too. (Cure
+  // still has no eye-hazard caution — the UV array is filtered at the door window and the latches
+  // cut the light when it opens — so this line carries only the door there.) Refreshed live by
+  // refreshGate(); its initial text is set by applyReady() below.
+  gate_lbl_ = lv_label_create(parent_);
+  lv_obj_set_width(gate_lbl_, lv_pct(100));
+  lv_obj_set_style_text_align(gate_lbl_, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(gate_lbl_, LV_LABEL_LONG_WRAP);
 
   // A flex-grow spacer takes the slack so the graph keeps its natural aspect and HOLD sits at the
   // bottom (thumb reach). On the short 2.8" landscape it collapses to nothing and the page scrolls.

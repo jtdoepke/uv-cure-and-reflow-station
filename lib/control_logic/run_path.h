@@ -26,6 +26,7 @@
 
 #include <cmath> // std::isfinite
 
+#include "IDoorSensor.h"
 #include "IThermocouples.h"
 #include "controller_link.h"
 #include "heater_actuator.h"
@@ -40,12 +41,30 @@ class ControllerRunPath {
 public:
   ControllerRunPath(ProfileExecutor &exec, HeaterControl &pid, SafetySupervisor &safety,
                     HeaterActuator &heater, ControllerLink &link, IThermocouples &tc,
-                    const OvenModel &model)
-      : exec_(exec), pid_(pid), safety_(safety), heater_(heater), link_(link), tc_(tc),
+                    IDoorSensor &door, const OvenModel &model)
+      : exec_(exec), pid_(pid), safety_(safety), heater_(heater), link_(link), tc_(tc), door_(door),
         model_(model) {}
 
   // Advance one control loop. Call before heater_.tick() and safety_.tick().
   void tick() {
+    // 0. Door open (§15, DECIDED): "the controller autonomously safes and ends the run to idle —
+    //    same for both modes, no pause state, no resume logic, no context retained (it stays a
+    //    stateless profile executor)". All resume intelligence is the CYD's.
+    //
+    //    Deliberately NOT a fault. §22 is explicit that a door-open during a run is an EXPECTED
+    //    event, not a red alarm — routing it through SafetySupervisor::trip() would latch a modal
+    //    that demands an acknowledge, and would keep the fault sticky after the door shut again.
+    //    The heat is already gone either way: DS1 removed element power in hardware before this
+    //    line ran (§4 L0). Ending the run is the *bookkeeping*, not the mitigation.
+    //
+    //    Checked first, so the abort lands before this tick computes a duty: the executor goes
+    //    IDLE, its Output.safe becomes true, and step 3 below commands OFF on the same iteration.
+    door_open_ = door_.isOpen();
+    if (door_open_ && exec_.state() == oven_RunState_RUN_STATE_RUNNING) {
+      exec_.abort();
+      door_aborted_ = true;
+    }
+
     // 1. The mode's control sensor. Cure controls on raw wall temp (a good air proxy at 80 °C),
     //    reflow on the workpiece probe (§5/§6). deriveMode keys off recipe content, not the tag.
     const bool cure =
@@ -98,6 +117,14 @@ public:
   const ProfileExecutor::Output &output() const { return exec_.output(); }
   bool armed() const { return armed_; }
 
+  // Door state as of the last tick() — what telemetry reports (§9's `doorOpen` bit) so the CYD can
+  // gate Start (§19), wake the display (§17) and say why a run ended (§15).
+  bool doorOpen() const { return door_open_; }
+  // Latched: did a door-open end a run? Cleared by clearDoorAbort(), which the caller does once it
+  // has reported the edge. Purely informational — nothing safety-critical reads it.
+  bool doorAborted() const { return door_aborted_; }
+  void clearDoorAbort() { door_aborted_ = false; }
+
 private:
   ProfileExecutor &exec_;
   HeaterControl &pid_;
@@ -105,6 +132,9 @@ private:
   HeaterActuator &heater_;
   ControllerLink &link_;
   IThermocouples &tc_;
+  IDoorSensor &door_;
   const OvenModel &model_;
   bool armed_ = false; // whether we have armed the supervisor for the current RUNNING run
+  bool door_open_ = false;
+  bool door_aborted_ = false;
 };

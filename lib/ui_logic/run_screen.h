@@ -87,6 +87,7 @@ private:
   void configParent();
   void clearParent();
   void refresh(const oven_Telemetry &t, bool ours); // update the live fields from a telemetry frame
+  void pollEnded(); // summary page: the §15 door-open dismiss (never on a Fault outcome)
   void endRun(RunOutcome outcome);
 
   // Sample the projected trajectory into proj_ and derive the chart's y-range. Once per run.
@@ -129,7 +130,8 @@ private:
   int32_t actual_last_ = -1; // highest filled index in actual_ (-1 = no telemetry yet)
   int32_t y_lo_ = 0;
   int32_t y_hi_ = 0;
-  bool deviated_ = false; // last-applied cue colour, replayed onto a rebuilt chart
+  bool deviated_ = false;      // last-applied cue colour, replayed onto a rebuilt chart
+  bool door_was_open_ = false; // edge detector for the summary's door dismiss
 
   // Live widgets refreshed in place by refresh() (no rebuild per frame). Owned by the widget tree.
   lv_obj_t *temp_lbl_ = nullptr;

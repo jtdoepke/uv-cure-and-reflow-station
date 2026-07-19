@@ -76,9 +76,10 @@ static ProfileDraft draft(RecipeMode mode, const char *name) {
 
 // Inject one telemetry frame (as if received over the wire) with the given workpiece temp; walls
 // sit at a cool 25 °C.
-static void feedTelem(float workC) {
+static void feedTelem(float workC, bool doorOpen = false) {
   oven_Telemetry t = oven_Telemetry_init_zero;
   t.work_temp = workC;
+  t.door_open = doorOpen;
   t.wall_temp_count = 4;
   for (size_t i = 0; i < 4; ++i) {
     t.wall_temp[i] = 25.0f;
@@ -145,6 +146,10 @@ void test_reflow_commit_starts_run(void) {
 void test_cure_needs_no_probe(void) {
   screen.begin(draft(RecipeMode::Cure, "Resin-A"), kSession, cydlink, mgmt);
   screen.render(lv_screen_active());
+  // Feed telemetry explicitly: `ready()` now needs a door reading, and CydLink's hasTelemetry()
+  // LATCHES, so without this the test would silently depend on an earlier one having fed a frame
+  // into the shared link — which is exactly how it passed before the door gate existed.
+  feedTelem(24.0f);
   screen.poll();
   TEST_ASSERT_TRUE(screen.ready()); // no probe required
 
@@ -202,6 +207,35 @@ void test_tc_attached_predicate(void) {
   TEST_ASSERT_FALSE(ConfirmRunScreen::tcAttached(t));
 }
 
+// §19: Start is gated on the door being CLOSED — in BOTH modes. The hardware interlock enforces
+// the door regardless (§4 L0); this is only so the UI never offers an un-runnable Start.
+void test_door_open_blocks_start(void) {
+  screen.begin(draft(RecipeMode::Cure, "Resin-A"), kSession, cydlink, mgmt);
+  screen.render(lv_screen_active());
+
+  feedTelem(24.0f, /*doorOpen=*/true);
+  screen.poll();
+  TEST_ASSERT_FALSE(screen.ready());
+
+  feedTelem(24.0f, /*doorOpen=*/false); // shut it
+  screen.poll();
+  TEST_ASSERT_TRUE(screen.ready());
+}
+
+// The same gate on the reflow path, where it stacks with the probe precondition.
+void test_door_open_blocks_reflow_start_even_with_probe(void) {
+  screen.begin(draft(RecipeMode::Reflow, "LF-245"), kSession, cydlink, mgmt);
+  screen.render(lv_screen_active());
+
+  feedTelem(24.0f, /*doorOpen=*/true); // probe is fine; the door is not
+  screen.poll();
+  TEST_ASSERT_FALSE(screen.ready());
+
+  feedTelem(24.0f, /*doorOpen=*/false);
+  screen.poll();
+  TEST_ASSERT_TRUE(screen.ready());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_reflow_gate_blocks_without_probe);
@@ -210,5 +244,7 @@ int main(int, char **) {
   RUN_TEST(test_nak_goes_to_failed);
   RUN_TEST(test_link_down_and_cancel);
   RUN_TEST(test_tc_attached_predicate);
+  RUN_TEST(test_door_open_blocks_start);
+  RUN_TEST(test_door_open_blocks_reflow_start_even_with_probe);
   return UNITY_END();
 }

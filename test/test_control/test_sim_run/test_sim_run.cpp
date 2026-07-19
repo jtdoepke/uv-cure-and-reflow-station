@@ -21,6 +21,7 @@
 #include "heater_control.h"
 #include "helpers/fake_clock.h"
 #include "helpers/fake_contactor.h"
+#include "helpers/fake_door_sensor.h"
 #include "helpers/fake_heater_switch.h"
 #include "helpers/pipe_transport.h"
 #include "link_params.h"
@@ -59,6 +60,7 @@ struct SimRig {
   HeaterControl pid;
   OvenPlant plant;
   SimThermocouples tc;
+  FakeDoorSensor door;
   SafetySupervisor safety;
   ControllerRunPath runpath;
 
@@ -69,7 +71,7 @@ struct SimRig {
       : cyd_router(), cyd_link(pipe.a(), TF_MASTER, cyd_router), cyd(cyd_link, clk), ctrl_router(),
         ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk), heater(heater_sw, clk),
         exec(clk), pid(clk), plant(), tc(plant), safety(ctrl, heater, contactor, tc, clk),
-        runpath(exec, pid, safety, heater, ctrl, tc, oven_cal::kDefaultModel) {
+        runpath(exec, pid, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
     ctrl.setExecutor(exec); // link drives load/start/abort; the run path ticks it
@@ -84,7 +86,7 @@ struct SimRig {
     safety.tick(); // LAST: safety has the final word
     const float applied = heater.duty() > weldDuty ? heater.duty() : weldDuty;
     const ProfileExecutor::Output &o = runpath.output();
-    plant.step(static_cast<float>(stepMs) / 1000.0f, applied, o.convFan, o.uv, o.motor);
+    plant.step(static_cast<float>(stepMs) / 1000.0f, applied, o.convFan, o.uv, o.motor, door.open);
   }
 
   void cydLoop() {
@@ -251,11 +253,71 @@ void test_sensor_fault_trips_when_control_channel_faults(void) {
   TEST_ASSERT_TRUE(r.safety.safe());
 }
 
+// §15 (DECIDED): opening the door mid-run safes and ends the run to IDLE — and is NOT a fault.
+// §22 is explicit that a door-open is an expected event, not a red alarm, so nothing here may
+// latch: the operator gets "Run aborted — door opened", not a modal demanding an acknowledge.
+void test_door_open_ends_run_to_idle_without_faulting(void) {
+  SimRig r;
+  r.startRun(cureRecipe());
+  TEST_ASSERT_TRUE(r.runUntil([&] { return r.plant.wallTempC() >= 60.0f; }, 400000));
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_RUNNING, r.exec.state());
+
+  r.door.open = true;
+  const bool ended =
+      r.runUntil([&] { return r.exec.state() != oven_RunState_RUN_STATE_RUNNING; }, 20000);
+
+  TEST_ASSERT_TRUE(ended);
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_IDLE, r.exec.state()); // idle, not DONE, not FAULT
+  TEST_ASSERT_FALSE(r.safety.faulted());                           // never latches (§22)
+  TEST_ASSERT_EQUAL(oven_FaultCode_FAULT_NONE, r.safety.faultCode());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.heater.duty()); // outputs commanded off the same tick
+  TEST_ASSERT_TRUE(r.runpath.doorAborted());      // the edge is reported for the UI
+  TEST_ASSERT_TRUE(r.runpath.doorOpen());
+}
+
+// The plant must model DS1, not merely report DS3: the interlock is in the element's LINE
+// CONDUCTOR, so an open door removes heater power regardless of commanded duty. Without this the
+// bench sim would model an oven that heats with its door open — and the door work would be tested
+// against a fiction.
+void test_door_open_kills_heat_even_with_duty_commanded(void) {
+  SimRig r;
+  r.startRun(cureRecipe());
+  TEST_ASSERT_TRUE(r.runUntil([&] { return r.plant.wallTempC() >= 60.0f; }, 400000));
+
+  // Weld the SSR full-on AND open the door. The commanded duty is irrelevant; DS1 wins.
+  r.weldDuty = 1.0f;
+  r.door.open = true;
+  const float atOpen = r.plant.chamberTempC();
+  r.run(120000);
+
+  TEST_ASSERT_TRUE(r.plant.chamberTempC() < atOpen); // cooling, not heating, at full commanded duty
+}
+
+// Closing the door does NOT resume: §15 keeps the controller stateless — "no pause state, no resume
+// logic, no context retained". Resume is the CYD re-Starting a generated remainder profile (B6).
+void test_closing_door_does_not_resume(void) {
+  SimRig r;
+  r.startRun(cureRecipe());
+  TEST_ASSERT_TRUE(r.runUntil([&] { return r.plant.wallTempC() >= 60.0f; }, 400000));
+
+  r.door.open = true;
+  TEST_ASSERT_TRUE(
+      r.runUntil([&] { return r.exec.state() != oven_RunState_RUN_STATE_RUNNING; }, 20000));
+
+  r.door.open = false;
+  r.run(60000);
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_IDLE, r.exec.state()); // stays idle
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.heater.duty());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_cure_run_ramps_holds_and_finishes_touch_safe);
   RUN_TEST(test_reflow_run_reaches_peak_and_finishes);
   RUN_TEST(test_welded_ssr_trips_stuck_heater);
   RUN_TEST(test_sensor_fault_trips_when_control_channel_faults);
+  RUN_TEST(test_door_open_ends_run_to_idle_without_faulting);
+  RUN_TEST(test_door_open_kills_heat_even_with_duty_commanded);
+  RUN_TEST(test_closing_door_does_not_resume);
   return UNITY_END();
 }

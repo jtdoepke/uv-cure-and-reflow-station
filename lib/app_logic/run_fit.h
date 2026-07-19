@@ -25,7 +25,12 @@
 #include "deviation_monitor.h"
 
 // §16's outcome badge. Only Completed computes a fit — "abort/fault skip it — data incomplete".
-enum class RunOutcome : uint8_t { Completed, Stopped, Fault };
+//
+// DoorOpened is its own outcome rather than a flavour of Stopped: §15 gives it different wording
+// ("Run aborted — door opened"), §22 excludes it from the red modal, and — the reason it cannot be
+// folded into Fault — the terminal page is DISMISSABLE by the door itself, which a fault must never
+// be. It needs no special case in the fit rule: every non-Completed outcome already skips it.
+enum class RunOutcome : uint8_t { Completed, Stopped, Fault, DoorOpened };
 
 enum class FitVerdict : uint8_t { Good, Fair, Poor };
 

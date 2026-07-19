@@ -616,8 +616,6 @@ static void poll_screens() {
 static void on_run_state(lv_observer_t *, lv_subject_t *subject) {
   if (lv_subject_get_int(subject) != RUN_IDLE) {
     g_sleep.noteActivity(millis());
-    // TODO(§17): door-open wake once the controller reports door state (subj_door_open) — the
-    // link/telemetry decode that would drive it lands with the controller-link integration.
   }
 }
 
@@ -899,6 +897,20 @@ void loop() {
     const bool running = t.run_state == oven_RunState_RUN_STATE_RUNNING;
     const bool hot = lv_subject_get_int(&subj_chamber_temp) > kHomeHotThresholdC;
     lv_subject_set_int(&subj_run_state, HomeViewModel::runStateFrom(running, faulted, hot));
+    // §17 door-open wake — the TODO the controller-link integration was waiting on. Opening the
+    // door is someone walking up to the machine, so the screen should already be lit when they
+    // look at it; the controller sends telemetry immediately on the door edge (§9) rather than
+    // waiting out its 250 ms cadence, which is what makes this feel instant.
+    //
+    // An edge check here rather than a shared lv_subject_t: nothing in lib/ui_logic binds to the
+    // door (the Confirm gate and the Run screen both read the telemetry frame directly), so a
+    // subject would be a publish with exactly one subscriber three lines below — and on the 2.8"
+    // board it cost 8 bytes more .bss than that segment had left.
+    static bool door_prev = false;
+    if (t.door_open && !door_prev) {
+      g_sleep.noteActivity(now);
+    }
+    door_prev = t.door_open;
 
     // §22 origin 1 — the controller safed itself and said why. Read from telemetry's `fault_code`
     // rather than the dedicated `Fault` frame because CydLink forwards content to ONE app observer

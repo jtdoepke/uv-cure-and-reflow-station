@@ -75,6 +75,22 @@ inline constexpr size_t kLinkRxBuf = 2048;
 inline constexpr int kHeaterPin = 25;    // zero-cross SSR gate
 inline constexpr int kContactorPin = 26; // mains-isolation contactor coil driver
 
+// --- Inputs (§4, §6) ---
+// Door sense — the donor's DS3 dry contact (COM+NO, bottom latch), NOT the DS1 interlock in the
+// heater's line conductor and NOT the DS2 monitor switch. See lib/control_port/IDoorSensor.h for
+// why those two must never reach logic wiring. GPIO27 is a plain input-capable pin: not a strapping
+// pin (0/2/5/12/15), not input-only (34-39, which have no usable internal pull-up), and clear of
+// the link's UART2 pair (16/17) and both outputs above.
+//
+// INPUT_PULLUP with the contact to GND, so the wiring fails safe: door shut pulls low, and a cut or
+// unplugged sense line floats HIGH and reads OPEN. On the bench a jumper to GND stands in for DS3 —
+// pull it out and the run ends, which is the same latching state a real door is.
+inline constexpr int kDoorPin = 27;
+// A dry microswitch on a metre of wire beside a 12.5 A load; contact bounce is milliseconds and the
+// door is a human-speed event, so a generous window costs nothing and rejects both bounce and
+// induced noise.
+inline constexpr uint32_t kDoorDebounceMs = 50;
+
 // --- Watchdog (§9) ---
 // Comfortably longer than a worst-case controller loop (LVGL lives on the other MCU; ours is link
 // + control only), short enough that a hang is caught long before it could matter thermally. A4b
