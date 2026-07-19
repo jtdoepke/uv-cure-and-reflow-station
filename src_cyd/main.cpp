@@ -9,6 +9,7 @@
 #include <lvgl.h>
 #include "auto_brightness.h"        // ambient-light -> backlight logic (lib/app_logic, §18)
 #include "cyd_board.h"              // this board's pins, capabilities, orientation, buffers
+#include "confirm_run_screen.h"     // §19 run-confirmation screen (lib/ui_logic, C6b)
 #include "cyd_link.h"               // reliability facade (lib/protocol, §9)
 #include "device_info.h"            // board/panel identity for Settings > About (lib/ui_logic)
 #include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
@@ -113,6 +114,16 @@ static ProfileEditorScreen &profile_editor() {
     g_profile_editor = new ProfileEditorScreen();
   }
   return *g_profile_editor;
+}
+
+// §19 Confirm screen (C6b). Heap-allocated on first use like the setup/editor screens — it too owns
+// a 32-phase ProfileDraft that would overflow .bss. Drives the §9 start handshake on commit.
+static ConfirmRunScreen *g_confirm_screen = nullptr;
+static ConfirmRunScreen &confirm_screen() {
+  if (g_confirm_screen == nullptr) {
+    g_confirm_screen = new ConfirmRunScreen();
+  }
+  return *g_confirm_screen;
 }
 
 // The display + touch behind their ports (lib/display_port). LGFX itself is touched only here and
@@ -257,8 +268,15 @@ enum : int {
   SCREEN_SETUP = 4,
   SCREEN_PICKER =
       5, // the profile library in pick mode (Setup → Load), same g_profile_library object
+  SCREEN_CONFIRM = 6, // §19 run confirmation (C6b)
 };
 static ScreenRouter g_router;
+
+// The authored draft of the run being started, stashed on Confirm's commit for the Run screen
+// (C7/PR5) to adopt. The run session Confirm stamps into Start + heartbeats is generated per run in
+// the NAV_SETUP_START handler (§9: controller-unique, non-zero).
+static ProfileDraft g_run_draft{};
+static bool g_have_run = false;
 
 // Which mode's library the editor returns to (the editor edits one mode's profile; on exit we land
 // back on that mode's list, not the mode-blind chooser).
@@ -321,6 +339,22 @@ static void on_picker_exit(void *) {
   g_router.show(SCREEN_SETUP);
 }
 
+// Confirm Cancel/Back → return to Setup (the run draft is untouched, so it lands back on Loaded).
+static void on_confirm_exit(void *) {
+  lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  g_router.show(SCREEN_SETUP);
+}
+
+// Confirm commit → the run is enabled on the link (§9). Stash the authored draft for the Run screen
+// (C7/PR5) and hand off. Until the Run screen lands, return Home — it shows the live RUNNING
+// telemetry (§14), so the operator still sees the run they just started; PR5 redirects here to Run.
+static void on_confirm_commit(void *, const ProfileDraft &draft) {
+  g_run_draft = draft;
+  g_have_run = true;
+  lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  go_home(); // TODO(C7/PR5): g_router.show(SCREEN_RUN) with g_run_draft
+}
+
 // The profile-library NAV_PROFILE_* seam: seed the editor's working copy and route to it. NEW seeds
 // the mode's default template (name entry supplies the name on Save); EDIT loads the highlighted
 // profile (a stock one edits as Save-as, §23). The which-profile handoff the library reserved
@@ -376,6 +410,14 @@ static void open_setup_save_as() {
   g_router.show(SCREEN_EDITOR);
 }
 
+// Setup → Start: confirm the run over a fresh controller-unique session (§9). Confirm compiles the
+// draft, states the run, gates on the reflow TC, and runs the start handshake on commit.
+static void open_confirm() {
+  const uint32_t session = esp_random() | 1U; // non-zero: 0 means "no session"
+  confirm_screen().begin(setup_screen().draft(), session, g_cyd_link, g_mgmt_client);
+  g_router.show(SCREEN_CONFIRM);
+}
+
 static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
   switch (lv_subject_get_int(subject)) {
   case NAV_SETTINGS:
@@ -406,8 +448,7 @@ static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
     open_setup_save_as();
     break;
   case NAV_SETUP_START:
-    // → Confirm (§19, C6b). No destination yet — Setup publishes it and this observer ignores it
-    // until the Confirm screen lands, exactly as Setup itself was a no-op until now.
+    open_confirm();
     break;
   default:
     // NAV_CALIBRATE has no destination yet — Home publishes it and this observer ignores it until
@@ -445,6 +486,14 @@ static void build_profile_picker_cb(void *, lv_obj_t *scr) {
   g_profile_library.setExitHandler(on_picker_exit, nullptr);
   g_profile_library.setPickHandler(on_pick_selected, nullptr);
   g_profile_library.beginPick(scr, g_mgmt_client, g_setup_mode);
+}
+
+// Confirm (C6b): create-on-demand; open_confirm() calls begin() (draft + session + links) before
+// the router shows this screen, and render() builds the current page from that state.
+static void build_confirm_screen_cb(void *, lv_obj_t *scr) {
+  confirm_screen().setExitHandler(on_confirm_exit, nullptr);
+  confirm_screen().setCommitHandler(on_confirm_commit, nullptr);
+  confirm_screen().render(scr);
 }
 
 // Create-on-demand like Settings: the editor is stateful (which page / phase / field), so a cached
@@ -548,6 +597,12 @@ static void poll_screens() {
   g_profile_library.poll();
   if (g_profile_editor != nullptr) {
     g_profile_editor->poll();
+  }
+  // Confirm's poll drives the live TC gate + the start handshake against build-local widgets, so it
+  // must run ONLY while Confirm is the active screen (its widget pointers dangle once navigated
+  // away). The commit completes and hands off before that, so nothing is lost by gating it here.
+  if (g_confirm_screen != nullptr && g_router.current() == SCREEN_CONFIRM) {
+    g_confirm_screen->poll();
   }
 }
 
@@ -733,6 +788,7 @@ void setup() {
   g_router.define(SCREEN_EDITOR, build_profile_editor_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_SETUP, build_setup_screen_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_PICKER, build_profile_picker_cb, nullptr, /*cached=*/false);
+  g_router.define(SCREEN_CONFIRM, build_confirm_screen_cb, nullptr, /*cached=*/false);
   g_router.show(SCREEN_HOME);
   // Watch for the Home → Settings / Profiles navigation intents (persist across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);

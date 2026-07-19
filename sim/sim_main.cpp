@@ -5,7 +5,8 @@
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
 // Usage: program [--out PATH] [--screen
-// home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|editor] [ACTION...]
+// home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|confirm|editor]
+// [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
 // The temp/state/link actions drive the shared UI subjects so a screenshot can capture any
@@ -49,6 +50,8 @@
 #include "profile_editor_screen.h"
 #include "profile_facts.h"
 #include "profile_library.h" // control::ProfileStore (lib/control_logic — the store lives here now)
+#include "confirm_run_screen.h"
+#include "cyd_link.h"
 #include "profile_library_screen.h"
 #include "profile_templates.h"
 #include "selectable_list.h"
@@ -409,16 +412,16 @@ static bool parse_i32(const char *s, int32_t *out) {
 }
 
 static int usage(const char *argv0) {
-  std::fprintf(
-      stderr,
-      "Usage: %s [--out PATH] [--screen "
-      "home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|editor]\n"
-      "          [ACTION...]\n"
-      "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
-      "         frame PATH (unsettled capture - for photographing animation)\n"
-      "         temp N | state idle|hot|running|fault | link ok|none|schema\n"
-      "         sensor on|off (ambient-light sensor fitted; off = the 3.5\" board)\n",
-      argv0);
+  std::fprintf(stderr,
+               "Usage: %s [--out PATH] [--screen "
+               "home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|"
+               "confirm|editor]\n"
+               "          [ACTION...]\n"
+               "Actions: click X Y | press X Y | moveto X Y | release | wait MS | shot PATH\n"
+               "         frame PATH (unsettled capture - for photographing animation)\n"
+               "         temp N | state idle|hot|running|fault | link ok|none|schema\n"
+               "         sensor on|off (ambient-light sensor fitted; off = the 3.5\" board)\n",
+               argv0);
   return 1;
 }
 
@@ -485,6 +488,7 @@ int main(int argc, char **argv) {
   ProfileLibraryScreen profiles;
   ProfileEditorScreen editor;
   SetupScreen setup_scr;
+  ConfirmRunScreen confirm;
   if (screen == "settings") {
     // The full Settings hub over an in-memory store (defaults). Navigate with click actions.
     settings_store.load();
@@ -596,6 +600,27 @@ int main(int argc, char **argv) {
       setup_scr.setDraft(d);
     }
     setup_scr.render(lv_screen_active());
+  } else if (screen == "confirm" || screen == "confirm-cure") {
+    // The §19/C6b Confirm screen: the specific statement + safety precondition (reflow probe gate /
+    // cure UV caution) + Cancel + HOLD-to-start. `confirm` is reflow (a fed telemetry frame makes
+    // the probe read OK so HOLD enables); `confirm-cure` shows the UV caution.
+    const bool cure = screen == "confirm-cure";
+    static protocol::CydLink confirm_link(cyd_link, clk);
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    if (!cure) {
+      oven_Telemetry t = oven_Telemetry_init_zero;
+      t.work_temp = 24.0f; // probe reads like the cool chamber → gate passes
+      t.wall_temp_count = 4;
+      for (size_t i = 0; i < 4; ++i) {
+        t.wall_temp[i] = 25.0f;
+      }
+      confirm_link.onTelemetry(t);
+    }
+    ProfileDraft d =
+        profile_templates::defaultTemplate(cure ? RecipeMode::Cure : RecipeMode::Reflow);
+    std::strncpy(d.name, cure ? "Resin-A" : "LF-245", kProfileNameCap - 1);
+    confirm.begin(d, 0xABCD0001, confirm_link, client);
+    confirm.render(lv_screen_active());
   } else if (screen == "editor" || screen == "editor-cure") {
     // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
     // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile
