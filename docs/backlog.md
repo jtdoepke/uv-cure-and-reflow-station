@@ -538,13 +538,22 @@ existing `IClock`/`IHeaterSwitch` idiom:
   (Recipe → Ack → Start → Ack → enable heartbeat) with Starting/Failed pages, and gates the arm on
   §19's readiness set: hard-valid recipe, healthy link, the reflow workpiece-probe check
   (`tcAttached`), and — added with C8 PR3 — the **door closed**.*
-- [x] **C7** [C] — Run/Monitor (layout/telemetry/STOP; projected-vs-actual chart + live ETA).
-  deps: C3, B2. (§15) *PRs 1–2 of 3. `RunScreen` + `RunTracker` (`lib/app_logic`): live control
+- [x] **C7** [C] — Run/Monitor (3 PRs: layout/telemetry/STOP; projected-vs-actual chart + live ETA;
+  cure paused/resume overlay). deps: C3, B2, B6. (§15) *PRs 1–2 of 3. `RunScreen` + `RunTracker` (`lib/app_logic`): live control
   temp vs setpoint, phase + slipping ETA, output indicators, the §16 deviation cue, the
   projected-vs-actual `run_curve`, the §15 nav lock (no Back) and the immediate single-tap STOP.
-  **The 3rd PR — the cure paused/resume overlay — is NOT done**: it needs B6's remainder-profile
-  generator, and until then a door-open aborts in both modes, which is what §15 specifies for
-  reflow and the honest interim for cure. See the door work in C8 PR3.*
+  **PR3 (cure paused/resume) landed with B6.** A door-open during a CURE now goes to a Paused page
+  instead of aborting: the run so far as a chart (the only evidence for "is this part still worth
+  finishing"), an amber door cue, Abort as a plain tap and **HOLD to resume** as press-and-hold —
+  §19's rule, since Resume re-energizes UV. Gated on door-closed AND the remainder compiling (see
+  B6's third fuzz finding). Both §15 expiries implemented: lost heartbeat and a §10-placeholder
+  timeout. Resuming routes through Confirm's existing commit machine, so the §9 handshake and its
+  Nak/timeout page are reused rather than re-implemented. Reflow still aborts outright (§15).
+  **A real bug it exposed:** the door-abort telemetry frame carries `elapsed_ms = 0` (the controller
+  has reset its executor), which the tracker read as "back at t=0" — stamping the current
+  temperature onto the chart's first point, feeding a bogus residual into the §16 stats, and
+  skewing the phase model enough that the remainder re-ran an already-finished phase. Only RUNNING
+  frames reach the tracker now; the DONE/FAULT paths were equally affected.*
 - [ ] **Bench-found follow-ups** (C6/C7 validation on the two-devkit bench against the A10 sim,
   2026-07-19; a full cure ran ramp→hold→cool→"Run complete" end-to-end):
   - **Ramp overshoot mitigation (control loop, §5).** On a fast ASAP ramp into a hold the PID
@@ -630,7 +639,25 @@ existing `IClock`/`IHeaterSwitch` idiom:
   is a real input to §23's ISA-101 palette — flagged as an open in §6a/§10. And
   `PANEL_PX_PER_MM_X100=649` is nominal; measure the active area with calipers (654 would move
   `STEPPER_BTN` 111→112).*
-- [ ] **B6** [B] — remainder-profile generator for cure resume. deps: B1. (§15)
+- [x] **B6** [B] — remainder-profile generator for cure resume. deps: B1. (§15)
+  *New `lib/app_logic/remainder.h` (namespace `cure_resume` — `remainder()` is a C99 math function in
+  the global namespace, so `remainder::build` does not parse). Given the interrupted profile and how
+  far it got, emits §15's "RAMP_ASAP re-heat to the current target + the remaining hold/phases +
+  remaining UV dose". Scales BOTH the dose and the raw `holdSeconds`, because the cure hold falls
+  back to seconds when the turntable is off or the model is uncalibrated — which is the path this
+  project is on today. Refuses reflow outright (§15: no resume) and refuses an all-but-finished last
+  phase. `RunTracker::holdProgress01()` supplies the delivered fraction, read off the COMPILED
+  timeline (a phase lowers to ramp+hold) rather than wall-clock, so an ASAP ramp that ran long
+  cannot be mistaken for soak.*
+  ***Three fuzz findings, two of them harness bugs worth recording:*** *(1) `memcmp` on a `Phase` is
+  unsound — 35 bytes of members in a 36-byte struct, and copy-assignment never writes the pad, so
+  the check was reading uninitialised stack. (2) The harness compiled against a looser cap than the
+  controller enforces (`CURE_HARD_MAX_C` is the LOWER ceiling, §4) and immediately produced a
+  hard-valid compile the real validator NAKed. (3) The real one: **"original compiles ⇒ remainder
+  compiles" is FALSE** — a profile at the 32-segment wire ceiling can tip over when the head is
+  rewritten, because forcing `rampSeconds` to 0 switches that phase from a timed ramp to
+  `RAMP_ASAP` and B1 lowers the two differently. Unreachable at realistic phase counts, but the
+  reason **Resume is gated on the remainder compiling** rather than assumed. 19.7M runs clean.*
 - [ ] **B9** [B] — random-profile generator within safety bounds. deps: B1, B2. (§5, §20)
 - [ ] **C6** [C] — Setup + Confirm. deps: C4, C5 (loads a library profile as a
   template into the editor). *Do after C4/C5.* (§19)
