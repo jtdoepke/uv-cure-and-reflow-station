@@ -530,9 +530,21 @@ existing `IClock`/`IHeaterSwitch` idiom:
   knowing".]** Host-tested (`test_profile_store` name round-trip + untrusted NUL-term,
   `test_profile_templates` seeded names, `test_profile_editor` rename + Back-cancel seams at both
   geometries); verified in the sim and on the 3.5" hardware.*
-- [ ] **C7** [C] — Run/Monitor (3 PRs: layout/telemetry/STOP; projected-vs-actual
-  chart + live ETA; cure paused/resume overlay). deps: C3, B2; soft: B6 (resume
-  overlay, 3rd PR). (§15)
+- [x] **C6** [C] — Setup + Confirm. deps: C4, C5. (§19)
+  *Shipped as the collapsed run flow: Home → mode → profile **picker** (the C4 library reused in
+  pick mode, MRU-sorted) → **Confirm**, the one preview + press-and-hold arm page. There is no
+  separate Setup screen — §19's "start empty, then Load" became "pick first", which is the same
+  gate with one fewer hop. `ConfirmRunScreen` (`lib/ui_logic`) drives the §9 start handshake
+  (Recipe → Ack → Start → Ack → enable heartbeat) with Starting/Failed pages, and gates the arm on
+  §19's readiness set: hard-valid recipe, healthy link, the reflow workpiece-probe check
+  (`tcAttached`), and — added with C8 PR3 — the **door closed**.*
+- [x] **C7** [C] — Run/Monitor (layout/telemetry/STOP; projected-vs-actual chart + live ETA).
+  deps: C3, B2. (§15) *PRs 1–2 of 3. `RunScreen` + `RunTracker` (`lib/app_logic`): live control
+  temp vs setpoint, phase + slipping ETA, output indicators, the §16 deviation cue, the
+  projected-vs-actual `run_curve`, the §15 nav lock (no Back) and the immediate single-tap STOP.
+  **The 3rd PR — the cure paused/resume overlay — is NOT done**: it needs B6's remainder-profile
+  generator, and until then a door-open aborts in both modes, which is what §15 specifies for
+  reflow and the honest interim for cure. See the door work in C8 PR3.*
 - [ ] **Bench-found follow-ups** (C6/C7 validation on the two-devkit bench against the A10 sim,
   2026-07-19; a full cure ran ramp→hold→cool→"Run complete" end-to-end):
   - **Ramp overshoot mitigation (control loop, §5).** On a fast ASAP ramp into a hold the PID
@@ -543,21 +555,54 @@ existing `IClock`/`IHeaterSwitch` idiom:
     eases duty off *before* setpoint so the element isn't overcharged. A real oven with this
     element mass would do the same — a genuine control-quality item, not sim-only. (deps: D7 PID
     tuning.)
-  - **Door-open dismisses "Run complete" — but NOT a fault (§15/§16/§22).** Opening the oven door
-    on the terminal "Run complete" page should clear it to Home (the operator has opened the door
-    to retrieve the workpiece — the run is over and acknowledged by the act). A "Fault - run ended"
-    page must NOT be door-dismissable: a fault demands an explicit acknowledge (§22). Needs the
-    controller's `door_open` telemetry wired to the Run screen's Ended page. (goes with C8's fault
-    overlay + acknowledge path.)
-- [ ] **C8** [C] — Run Summary (§16) + Fault overlay (§22) + Settings hub + panels
-  (§24), one each. deps: B7, B5, C1, C2, C3. *All deps now landed. Settings hub + panels slice
-  already shipped with B5 (`settings_screen.*`); Run Summary + Fault overlay remain. B7 shipped
-  the logic both bind to: the Fault overlay renders `fault_table::faultInfo/formatTitle` and
-  drives `FaultController` (`state()`/`updatedAtMs` to diff into `lv_subject_t`, `acknowledge()`
-  → `AckRoute`, `active()` for the RGB-LED/buzzer, `overTempLatched()` → §14 HOT / §17 sleep);
-  Run Summary renders `RunFitResult` + `advisoryText()` as an inline amber banner (never the
-  modal, §22). Still C8's: the buzzer pattern/volume (TBD §10) and a review pass on B7's draft
-  advisory strings.*
+  - [x] ~~**Door-open dismisses "Run complete" — but NOT a fault (§15/§16/§22).**~~ *Done with
+    **C8 PR3**, which grew into §15's whole DECIDED door behaviour once it turned out `door_open`
+    had no producer at all. See C8 below.*
+- [x] **C8** [C] — Run Summary (§16) + Fault overlay (§22) + Settings hub + panels
+  (§24). deps: B7, B5, C1, C2, C3. *Settings shipped with B5; three PRs closed the rest.*
+  *PR1 (§16): the Run screen's Ended page becomes the real summary — outcome badge (+ fault cause),
+  the completed projected-vs-actual overlay, fit verdict + max/RMS + per-phase target hits, the
+  drift advisory as an **inline amber banner** (never the modal), Run again / Home. `RunTracker::
+  finish()` had returned a full `RunFitResult` since B7 with nothing rendering it. Kept as the Ended
+  *page*, not a new router screen: the fit is only computed there and the curve is that screen's, so
+  a separate screen would exist only to be handed both — and it gives §22's `AckRoute::RunSummary` a
+  target already on screen. Curve samples are now retained in `RunScreen` (the summary redraws after
+  `buildEnded()` frees the live chart); a mid-run rebuild gains its history for free.*
+  *PR2 (§22): `fault_overlay` on **`lv_layer_top`**, not the router — the router owns one screen and
+  deletes create-on-demand ones, so a modal parented to a screen would die with it. The layer takes
+  `LV_OBJ_FLAG_CLICKABLE` while up (LVGL's top layer passes touches through otherwise; a modal you
+  can tap past is not a modal). Renders `formatTitle`/`guidanceText`/`codeNameText` + the `+N`
+  supersede + the live reading, with a single-tap Acknowledge routing to summary-or-Home. **No
+  FaultViewModel**: §22 asks for `lv_subject_t` indirection "so no `lv_` calls happen off the UI
+  task", but the CYD services its link from `loop()` — the same task as `lv_timer_handler` — so the
+  subject would be a publish read synchronously by its only subscriber. Fed from `telemetry.
+  fault_code` (edge-triggered) because `CydLink` forwards content to ONE app observer and
+  `ManagementClient` holds it; A4b built that field as exactly this backup channel.*
+  *PR3 (§15 door): see the follow-up above. `IDoorSensor` + `Esp32DoorSensor` on the donor's **DS3**
+  dry contact (never DS1/DS2 — mains-referenced and sacrificial respectively), fail-safe-to-open
+  polarity, the plant modelling **DS1** (open door removes element power whatever duty is
+  commanded), `telemetry.door_open` + §9's send-on-change, the controller safing + ending the run to
+  IDLE **without faulting** (§22 excludes it), and CYD-side: `RunOutcome::DoorOpened`, the
+  summary's door dismiss (never on a Fault outcome), §19's Start gate in both modes, §17's door wake.*
+  ***The type fix PR2 forced:*** *`fault_table` + `FaultController` now take the **raw wire
+  `int32_t`** (`fault_table::FaultCodeWire`), not `oven_FaultCode`. nanopb stores a decoded varint
+  into the enum field verbatim, so an out-of-enum code is reachable and merely *holding* it as the
+  enum type is UB — `protocol::wireEnum` exists for this and was itself added after a fuzzer found
+  it on `recipe.mode`; nobody had applied it to fault codes. Sanitizing with `wireEnumOr` was the
+  alternative and is wrong here: §22 wants the real number shown, and schema skew is what produces
+  these codes. Also added total `guidanceText`/`codeNameText` beside `formatTitle` — `faultInfo()`
+  returns nullptr strings for an unknown code, and per-consumer fallbacks are how one eventually
+  forgets and passes nullptr to `lv_label_set_text` on the one screen that must never fail.*
+  *New `fuzz_fault_controller` (table totality over out-of-enum codes; `formatTitle` stays
+  NUL-terminated and valid UTF-8 for every code × buffer size; latch never-auto-dismiss /
+  never-downgrade / sticky-overTemp); `fuzz_run_tracker` extended to the whole `RunFitResult`;
+  door churn added to `fuzz_sim_run` and `fuzz_oven_plant`.*
+  ***Still open:*** *the buzzer pattern/volume + RGB-LED (TBD §10); §22's optional **Details** pane
+  (it wants the raw last-telemetry vector — belongs with B8·1's log record); and a human review pass
+  on B7's draft advisory strings, which are now also known to be **glyph-constrained** — the fonts
+  carry ASCII + `°` + `·` + Font Awesome only, so no em-dash and no literal `⚠` (U+26A0 is not
+  `LV_SYMBOL_WARNING`'s 0xF071). Both had shipped as missing-glyph boxes, including on the §22
+  modal; fixed in PR1.*
 - [x] **C10** [C] — second CYD board variant (3.5" ST7796S 320×480 portrait) + the board
   abstraction that makes a third cheap. deps: none (HMI-side only). *Motivated by §21, not by
   the extra pixels: the 3.5" board **survives WiFi bring-up** (1 boot, 0 brownouts, radio up,
