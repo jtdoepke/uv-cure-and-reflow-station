@@ -28,6 +28,7 @@
 #include "profile_editor_screen.h"  // §12 profile editor screen pair (lib/ui_logic, C5)
 #include "profile_library_screen.h" // §23 profile library screen pair (lib/ui_logic, C4)
 #include "profile_templates.h"      // per-mode default phase templates (lib/app_logic, §12/C5)
+#include "run_screen.h"             // §15 Run / Monitor screen (lib/ui_logic, C7a)
 #include "screen_router.h"          // hub-and-spoke screen manager + cache policy (lib/ui_logic)
 #include "settings_codec.h"         // Settings <-> oven_Settings at the wire boundary (Wave R3b)
 #include "settings_screen.h"        // Settings hub + panels (§24)
@@ -124,6 +125,17 @@ static ConfirmRunScreen &confirm_screen() {
     g_confirm_screen = new ConfirmRunScreen();
   }
   return *g_confirm_screen;
+}
+
+// §15 Run / Monitor screen (C7a). Heap-allocated on first run like the other draft-owning screens —
+// it holds both the authored ProfileDraft and a RunTracker (projected curve + fit), well past what
+// .bss can spare on this no-PSRAM board.
+static RunScreen *g_run_screen = nullptr;
+static RunScreen &run_screen() {
+  if (g_run_screen == nullptr) {
+    g_run_screen = new RunScreen();
+  }
+  return *g_run_screen;
 }
 
 // The display + touch behind their ports (lib/display_port). LGFX itself is touched only here and
@@ -269,14 +281,15 @@ enum : int {
   SCREEN_PICKER =
       5, // the profile library in pick mode (Setup → Load), same g_profile_library object
   SCREEN_CONFIRM = 6, // §19 run confirmation (C6b)
+  SCREEN_RUN = 7,     // §15 Run / Monitor (C7a)
 };
 static ScreenRouter g_router;
 
-// The authored draft of the run being started, stashed on Confirm's commit for the Run screen
-// (C7/PR5) to adopt. The run session Confirm stamps into Start + heartbeats is generated per run in
-// the NAV_SETUP_START handler (§9: controller-unique, non-zero).
-static ProfileDraft g_run_draft{};
-static bool g_have_run = false;
+// The session of the run being started, generated in the NAV_SETUP_START handler (§9: controller-
+// unique, non-zero) and handed to Confirm, then to the Run screen on commit. The authored draft
+// itself flows Confirm → commit callback → RunScreen::begin (which copies it), so it needs no
+// static.
+static uint32_t g_run_session = 0;
 
 // Which mode's library the editor returns to (the editor edits one mode's profile; on exit we land
 // back on that mode's list, not the mode-blind chooser).
@@ -345,14 +358,17 @@ static void on_confirm_exit(void *) {
   g_router.show(SCREEN_SETUP);
 }
 
-// Confirm commit → the run is enabled on the link (§9). Stash the authored draft for the Run screen
-// (C7/PR5) and hand off. Until the Run screen lands, return Home — it shows the live RUNNING
-// telemetry (§14), so the operator still sees the run they just started; PR5 redirects here to Run.
+// Confirm commit → the run is enabled on the link (§9). Hand the authored draft + session to the
+// Run screen (§15), which arms a RunTracker and monitors the live telemetry.
 static void on_confirm_commit(void *, const ProfileDraft &draft) {
-  g_run_draft = draft;
-  g_have_run = true;
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
-  go_home(); // TODO(C7/PR5): g_router.show(SCREEN_RUN) with g_run_draft
+  run_screen().begin(draft, g_run_session, g_cyd_link);
+  g_router.show(SCREEN_RUN);
+}
+
+// Run Ended → Done: back Home. C8 will insert the run summary here.
+static void on_run_exit(void *) {
+  go_home();
 }
 
 // The profile-library NAV_PROFILE_* seam: seed the editor's working copy and route to it. NEW seeds
@@ -413,8 +429,8 @@ static void open_setup_save_as() {
 // Setup → Start: confirm the run over a fresh controller-unique session (§9). Confirm compiles the
 // draft, states the run, gates on the reflow TC, and runs the start handshake on commit.
 static void open_confirm() {
-  const uint32_t session = esp_random() | 1U; // non-zero: 0 means "no session"
-  confirm_screen().begin(setup_screen().draft(), session, g_cyd_link, g_mgmt_client);
+  g_run_session = esp_random() | 1U; // non-zero: 0 means "no session"; reused by the Run screen
+  confirm_screen().begin(setup_screen().draft(), g_run_session, g_cyd_link, g_mgmt_client);
   g_router.show(SCREEN_CONFIRM);
 }
 
@@ -494,6 +510,13 @@ static void build_confirm_screen_cb(void *, lv_obj_t *scr) {
   confirm_screen().setExitHandler(on_confirm_exit, nullptr);
   confirm_screen().setCommitHandler(on_confirm_commit, nullptr);
   confirm_screen().render(scr);
+}
+
+// Run (C7a): create-on-demand; on_confirm_commit calls begin() (draft + session + link) before the
+// router shows this screen, and render() builds the current page from that state.
+static void build_run_screen_cb(void *, lv_obj_t *scr) {
+  run_screen().setExitHandler(on_run_exit, nullptr);
+  run_screen().render(scr);
 }
 
 // Create-on-demand like Settings: the editor is stateful (which page / phase / field), so a cached
@@ -603,6 +626,11 @@ static void poll_screens() {
   // away). The commit completes and hands off before that, so nothing is lost by gating it here.
   if (g_confirm_screen != nullptr && g_router.current() == SCREEN_CONFIRM) {
     g_confirm_screen->poll();
+  }
+  // The Run screen's poll feeds telemetry to its RunTracker + refreshes build-local widgets, so it
+  // too runs only while active (its widget pointers dangle once navigated away).
+  if (g_run_screen != nullptr && g_router.current() == SCREEN_RUN) {
+    g_run_screen->poll();
   }
 }
 
@@ -789,6 +817,7 @@ void setup() {
   g_router.define(SCREEN_SETUP, build_setup_screen_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_PICKER, build_profile_picker_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_CONFIRM, build_confirm_screen_cb, nullptr, /*cached=*/false);
+  g_router.define(SCREEN_RUN, build_run_screen_cb, nullptr, /*cached=*/false);
   g_router.show(SCREEN_HOME);
   // Watch for the Home → Settings / Profiles navigation intents (persist across screen rebuilds).
   lv_subject_add_observer(&subj_nav_request, on_nav_request, nullptr);
