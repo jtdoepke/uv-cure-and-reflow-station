@@ -295,11 +295,21 @@ private:
     return false;
   }
 
-  bool reached(float temp, float target) const {
-    const float d = temp - target;
-    const float mag = d < 0.0f ? -d : d;
-    return mag <= cfg_.targetBandC;
-  }
+  // ONE-SIDED, deliberately: at-or-above the target counts as reached.
+  //
+  // Both callers are UPWARD waits — RAMP_ASAP (the compiler only emits it when heating; a
+  // descending phase compiles time-based) and the reflow hold-entry gate (waiting for the workpiece
+  // to come UP to soak). "Hotter than you asked for" is overshoot, which the hold then manages; it
+  // is not a target you failed to reach.
+  //
+  // A symmetric band made being too hot indistinguishable from being too cold, and the executor
+  // would sit waiting to *heat* to a target it was already past — commanding zero duty, because the
+  // PID could see perfectly well it was over — until the rate-floor watchdog called the lack of a
+  // temperature rise a stall. Bench-found on the §15 cure resume: the first run overshot its 60 °C
+  // setpoint to 74.9 °C (the element-mass overshoot), the door was open only seconds, so the ASAP
+  // "re-heat" began at 68.9 °C and faulted TARGET_UNREACHABLE 29 s later. Nothing was wrong with
+  // the oven; it had already arrived.
+  bool reached(float temp, float target) const { return temp >= target - cfg_.targetBandC; }
 
   // Store the emitted setpoint, always finite and clamped to [0, recipe max target].
   // The ceiling floors at 0 (a heater setpoint below 0 is meaningless — command off),

@@ -118,6 +118,20 @@ struct SimRig {
     return false;
   }
 
+  // Re-Start a recipe on a rig that has already handshaken — the §15 resume shape, where the CYD
+  // Starts a generated remainder as an ordinary new run over a fresh session.
+  static void resumeInto(SimRig &r, const oven_Recipe &rec) {
+    r.cyd.sender().sendRecipe(rec);
+    r.exchange();
+    oven_Start st = oven_Start_init_default;
+    st.session = kSession + 1;
+    st.recipe_id = rec.id;
+    r.cyd.sender().sendStart(st);
+    r.exchange();
+    r.cyd.heartbeat().setSession(kSession + 1);
+    r.cyd.heartbeat().setEnable(true);
+  }
+
   // Handshake, then upload + Start the recipe with enabled heartbeats — the CYD's run stimulus.
   void startRun(const oven_Recipe &rec) {
     cyd.begin(kCydNonce);
@@ -169,6 +183,20 @@ oven_Recipe reflowRecipe() {
   r.segments[0] = seg(oven_Interp_INTERP_RAMP_OVER_TIME, 200.0f, 400000, true, false, false);
   r.segments[1] = seg(oven_Interp_INTERP_HOLD, 200.0f, 60000, true, false, false);
   r.segments[2] = seg(oven_Interp_INTERP_RAMP_OVER_TIME, 43.0f, 1800000, false, false, false);
+  return r;
+}
+
+// What B6 actually generates for a resume: an ASAP re-heat to the interrupted phase's target, then
+// the remaining hold. RAMP_ASAP is the point — it is a TARGET-GATED wait, which is the only kind
+// the rate-floor watchdog judges. Resuming with a timed ramp exercises none of this.
+oven_Recipe resumeRecipe() {
+  oven_Recipe r = oven_Recipe_init_default;
+  r.id = 33;
+  r.mode = oven_Mode_MODE_CURE;
+  r.segments_count = 3;
+  r.segments[0] = seg(oven_Interp_INTERP_RAMP_ASAP, 60.0f, 200000, true, true, true);
+  r.segments[1] = seg(oven_Interp_INTERP_HOLD, 60.0f, 30000, true, true, true);
+  r.segments[2] = seg(oven_Interp_INTERP_RAMP_OVER_TIME, 43.0f, 600000, false, false, false);
   return r;
 }
 
@@ -310,6 +338,43 @@ void test_closing_door_does_not_resume(void) {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, r.heater.duty());
 }
 
+// BENCH REGRESSION (§15 resume, 2026-07-19): an ASAP ramp that starts ALREADY ABOVE its target must
+// count as reached, not stall.
+//
+// The real sequence: a cure overshoots its 60 °C setpoint to ~75 °C (the element-mass overshoot),
+// the door is opened for a few seconds, and the resume's "ASAP re-heat to 60" therefore begins at
+// ~69 °C. With a symmetric reached() band the executor sat waiting to HEAT to a target it was
+// already 9 °C past, commanding zero duty because the PID could see it was over — until the
+// rate-floor watchdog called the absence of a temperature rise a stall and faulted
+// TARGET_UNREACHABLE. Nothing was wrong with the oven; it had already arrived.
+void test_asap_ramp_starting_above_target_is_already_reached(void) {
+  SimRig r;
+  r.startRun(cureRecipe());
+  // Let it settle at the 80 °C hold, so the chamber is genuinely hot.
+  TEST_ASSERT_TRUE(r.runUntil([&] { return r.plant.wallTempC() >= 78.0f; }, 400000));
+
+  // Open the door only BRIEFLY, as an operator actually does, and resume while the chamber is
+  // STILL ABOVE the resumed segment's target. The brevity is the whole point: coast to ambient
+  // instead and the resume starts below target, the ramp behaves normally, and the bug hides —
+  // which is exactly why three earlier attempts at this test passed against the broken code.
+  r.door.open = true;
+  TEST_ASSERT_TRUE(
+      r.runUntil([&] { return r.exec.state() != oven_RunState_RUN_STATE_RUNNING; }, 20000));
+  r.run(8000);
+  r.door.open = false;
+
+  const float atResume = r.plant.wallTempC();
+  TEST_ASSERT_TRUE(atResume > 62.0f); // above resumeRecipe()'s 60 °C target — the precondition
+
+  SimRig::resumeInto(r, resumeRecipe());
+  // It must advance off the ASAP segment (it has already arrived) and never fault. 90 s covers
+  // three rate-floor windows, so a stall verdict would certainly have landed by now.
+  const bool tripped = r.runUntil([&] { return r.safety.faulted(); }, 90000);
+  TEST_ASSERT_FALSE(tripped);
+  TEST_ASSERT_EQUAL(oven_FaultCode_FAULT_NONE, r.safety.faultCode());
+  TEST_ASSERT_TRUE(r.exec.output().segIdx > 0); // past the ramp, into the hold
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_cure_run_ramps_holds_and_finishes_touch_safe);
@@ -319,5 +384,6 @@ int main(int, char **) {
   RUN_TEST(test_door_open_ends_run_to_idle_without_faulting);
   RUN_TEST(test_door_open_kills_heat_even_with_duty_commanded);
   RUN_TEST(test_closing_door_does_not_resume);
+  RUN_TEST(test_asap_ramp_starting_above_target_is_already_reached);
   return UNITY_END();
 }

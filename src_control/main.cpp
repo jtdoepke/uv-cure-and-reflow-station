@@ -32,6 +32,7 @@
 #include "safety_supervisor.h"
 #include "schema.h"             // shared wire-contract identity (lib/protocol)
 #include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
+#include "codec.h"              // protocol::wireEnum — the interp field is an untrusted wire enum
 #include "esp32_door_sensor.h"  // IDoorSensor adapter — the donor's DS3 dry contact (§4/§15)
 #include "telemetry_sender.h"
 
@@ -421,6 +422,21 @@ void loop() {
 #if defined(CONTROL_SIM)
     // The simulated trajectory, so the bench operator can watch a run ramp/soak/peak/coast.
     // (Console stimulus is drained separately, every loop — see drainSimConsole().)
+    // Log the accepted recipe once per run, so a run that misbehaves can be traced to what was
+    // actually uploaded rather than to what the CYD believes it sent.
+    static uint32_t logged_recipe_id = 0xFFFFFFFFU;
+    if (g_ctrl.hasRecipe() && g_ctrl.acceptedRecipe().id != logged_recipe_id) {
+      logged_recipe_id = g_ctrl.acceptedRecipe().id;
+      const oven_Recipe &rc = g_ctrl.acceptedRecipe();
+      CONTROL_LOGF("[recipe] id=%u mode=%d segs=%u\n", (unsigned)rc.id, (int)rc.mode,
+                   (unsigned)rc.segments_count);
+      for (pb_size_t i = 0; i < rc.segments_count && i < 8; ++i) {
+        CONTROL_LOGF("[recipe]  s%u interp=%d heat=%.1f dur=%ums uv=%d fan=%d\n", (unsigned)i,
+                     (int)protocol::wireEnum(rc.segments[i].interp), rc.segments[i].heat_c,
+                     (unsigned)rc.segments[i].dur_ms, rc.segments[i].uv ? 1 : 0,
+                     rc.segments[i].conv_fan ? 1 : 0);
+      }
+    }
     const ProfileExecutor::Output &lo = g_runpath.output();
     // `door` is on this line because it is the one input the bench operator drives BY HAND (a
     // jumper on kDoorPin standing in for DS3), so it is the one they need to see echoed back to
