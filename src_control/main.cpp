@@ -225,7 +225,54 @@ void setup() {
   CONTROL_LOGF("[control] boot nonce=%08lx\n", (unsigned long)g_ctrl.handshake().bootNonce());
 }
 
+#if defined(CONTROL_SIM)
+// Bench stimulus over the sim console (UART0 — the link is on UART2 here, so this steals nothing).
+//
+// The plant can already fabricate a welded SSR or a dead thermocouple; what was missing was a way
+// to ASK it to, from outside the firmware, mid-run. Without that the §22 fault overlay could only
+// ever be reviewed in the simulator, never on glass — and "the screen that appears unbidden" is
+// precisely the one whose on-hardware behaviour a screenshot cannot vouch for.
+//
+// Sim-only by construction: production has no console at all (control_board.h — the link owns
+// Serial there and CONTROL_LOGF compiles to nothing), so this cannot exist outside CONTROL_SIM.
+// It fabricates sensor faults, so like the rest of the sim build it must never reach a real oven.
+void drainSimConsole() {
+  while (Serial.available() > 0) {
+    switch (Serial.read()) {
+    case 'w': // workpiece TC open → SENSOR_FAULT on a reflow run (§22 origin 1)
+      g_tc.workpieceFault = !g_tc.workpieceFault;
+      CONTROL_LOGF("[bench] workpiece TC fault=%d\n", g_tc.workpieceFault ? 1 : 0);
+      break;
+    case 'a': { // ALL wall channels open → the run-blind refusal (§4: never control blind)
+      const bool on = !g_tc.wallFault[0];
+      for (int i = 0; i < SimThermocouples::kMaxWalls; ++i) {
+        g_tc.wallFault[i] = on;
+      }
+      CONTROL_LOGF("[bench] wall TC fault=%d (all channels)\n", on ? 1 : 0);
+      break;
+    }
+    case 'c': // clear every injected fault AND the supervisor's latch, to re-arm the bench
+      g_tc.workpieceFault = false;
+      for (int i = 0; i < SimThermocouples::kMaxWalls; ++i) {
+        g_tc.wallFault[i] = false;
+      }
+      g_safety.clearFault();
+      CONTROL_LOGF("[bench] faults cleared\n");
+      break;
+    case '?':
+      CONTROL_LOGF("[bench] w=workpiece TC fault  a=all wall TC faults  c=clear  ?=help\n");
+      break;
+    default:
+      break; // ignore stray bytes (a terminal's newlines, mostly)
+    }
+  }
+}
+#endif
+
 void loop() {
+#if defined(CONTROL_SIM)
+  drainSimConsole();
+#endif
   const uint32_t now = g_clk.millis();
 
   // Neither ControllerLink::service() nor CydLink::service() pumps the FrameLink — each
@@ -373,6 +420,7 @@ void loop() {
                  (int)g_ctrl.authorized(), (int)g_safety.safe());
 #if defined(CONTROL_SIM)
     // The simulated trajectory, so the bench operator can watch a run ramp/soak/peak/coast.
+    // (Console stimulus is drained separately, every loop — see drainSimConsole().)
     const ProfileExecutor::Output &lo = g_runpath.output();
     // `door` is on this line because it is the one input the bench operator drives BY HAND (a
     // jumper on kDoorPin standing in for DS3), so it is the one they need to see echoed back to
