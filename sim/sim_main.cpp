@@ -37,6 +37,8 @@
 #include "frame_link.h"         // TinyFrame link (lib/protocol)
 #include "helpers/fake_clock.h" // IClock for the ManagementClient (test helper; -I test)
 #include "helpers/pipe_transport.h" // in-process LoopbackPipe joining the two link ends
+#include "fault_controller.h"
+#include "fault_overlay.h"
 #include "home_screen.h"
 #include "management_client.h"    // CYD-side remote client the screens drive (§9; Wave R3b)
 #include "management_responder.h" // controller-side responder answering over the pipe
@@ -710,6 +712,27 @@ int main(int argc, char **argv) {
     end.elapsed_ms = static_cast<uint32_t>(total * 1000.0f);
     sum_link.onTelemetry(end);
     run.poll();
+  } else if (screen == "fault" || screen == "fault-link" || screen == "fault-unknown") {
+    // The §22 fault modal, drawn over Home so the "unbidden, over any screen" behaviour is visible
+    // (and so the dim-through is reviewable against a real layout rather than a blank screen).
+    //   fault          an over-temp, superseded once → the +N count
+    //   fault-link     LINK_LOST, whose two-clause wording is deliberately about the invariant
+    //   fault-unknown  a code the table does not know → the generic wording, never blank
+    static FaultController fc;
+    static FaultOverlay fo;
+    lv_subject_set_int(&subj_chamber_temp, 268);
+    create_home_screen(lv_screen_active());
+    fo.begin(fc);
+    fc.setRunActive(true);
+    if (screen == "fault-link") {
+      fc.onControllerFault(1000, 1, oven_FaultCode_FAULT_LINK_LOST);
+    } else if (screen == "fault-unknown") {
+      fc.onControllerFault(1000, 1, static_cast<oven_FaultCode>(9999));
+    } else {
+      fc.onControllerFault(1000, 1, oven_FaultCode_FAULT_SENSOR_FAULT);
+      fc.onControllerFault(1100, 1, oven_FaultCode_FAULT_OVERTEMP_CHAMBER); // supersede → "+1 more"
+    }
+    fo.poll();
   } else if (screen == "editor" || screen == "editor-cure") {
     // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
     // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile

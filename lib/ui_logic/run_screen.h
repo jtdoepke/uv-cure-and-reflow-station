@@ -33,6 +33,7 @@
 #include "cyd_link.h"
 #include "oven_cal.h"
 #include "profile_draft.h"
+#include "fault_table.h"
 #include "run_curve.h"
 #include "run_tracker.h"
 
@@ -71,8 +72,9 @@ public:
   // The §16 fit, computed once at endRun(). `computed` is false for a non-Completed outcome —
   // "abort/fault skip it — data incomplete" — which is what gates the verdict + advisory below.
   const RunFitResult &fit() const { return fit_; }
-  // The cause behind a Fault outcome (FAULT_NONE otherwise), as rendered in the badge.
-  oven_FaultCode faultCode() const { return fault_code_; }
+  // The cause behind a Fault outcome (FAULT_NONE otherwise), as rendered in the badge. Raw wire
+  // int — see fault_table.h on why an untrusted code is never held as the enum type.
+  fault_table::FaultCodeWire faultCode() const { return fault_code_; }
   // The authored draft this run executed — what "Run again" re-confirms.
   const ProfileDraft &draft() const { return draft_; }
 
@@ -118,7 +120,7 @@ private:
   // The cause behind a Fault outcome, for §16's "outcome badge ... (+ cause)". Captured from the
   // terminal frame: the §22 overlay knows it too, but it is dismissable and the summary outlives
   // it.
-  oven_FaultCode fault_code_ = oven_FaultCode_FAULT_NONE;
+  fault_table::FaultCodeWire fault_code_ = oven_FaultCode_FAULT_NONE;
 
   // Retained curve data — survives the page swap so the summary can draw the COMPLETED overlay
   // (§16 "both curves complete"). The live widget's own buffers die with its widget tree.

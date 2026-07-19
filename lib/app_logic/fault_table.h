@@ -59,11 +59,28 @@ struct FaultInfo {
 // "Heater & UV are OFF · run aborted"). LINK_LOST deliberately does NOT use this — see below.
 inline constexpr const char *kSafedGuidance = "Heater & UV are OFF \xC2\xB7 run aborted";
 
+// Codes are handled as the RAW WIRE INTEGER (`int32_t`), not as `oven_FaultCode`.
+//
+// This is a lookup on untrusted data and the type should say so. nanopb stores a decoded varint
+// into the C enum field verbatim, so a peer running a skewed schema — or a corrupt-but-CRC-valid
+// frame — leaves `Telemetry.fault_code` holding a value outside the enumerators, and in C++ merely
+// *loading* that as its enum type is undefined behaviour (see `protocol::wireEnum`, which exists
+// for exactly this and was itself added after a fuzzer found it on `recipe.mode`). Taking the enum
+// here would have pushed that UB onto every caller; a fuzzer found it again on this path.
+//
+// Sanitizing on the way in with `wireEnumOr` was the other option and is wrong HERE: it would map
+// an unrecognized code onto some in-range fallback, and §22 specifically wants the real number
+// shown ("Fault <code> — oven safed to a safe state"). Schema skew is the scenario that produces
+// these codes, and the number is the single most useful thing to quote when diagnosing it.
+//
+// Callers read the field with `protocol::wireEnum(t.fault_code)`.
+using FaultCodeWire = int32_t;
+
 // Total: defined for every value, including codes this build has never heard of.
 //
 // FAULT_NONE is deliberately !known — it is the enum's zero value, not a fault. A `Fault` frame
 // carrying it is malformed, and FaultController drops it rather than latching a blank overlay.
-inline FaultInfo faultInfo(oven_FaultCode code) {
+inline FaultInfo faultInfo(FaultCodeWire code) {
   switch (code) {
   case oven_FaultCode_FAULT_OVERTEMP_CHAMBER:
     return {"Chamber over-temperature", kSafedGuidance,
@@ -133,7 +150,7 @@ inline FaultInfo faultInfo(oven_FaultCode code) {
 // generic "Fault <code> — oven safed to a safe state" — informative rather than blank, which §22
 // requires as defence-in-depth even though the §9 matched-pair invariant should prevent it.
 // Caller owns the buffer (no heap, no lv_); 64 bytes is ample. Always NUL-terminates.
-inline void formatTitle(oven_FaultCode code, char *out, size_t n) {
+inline void formatTitle(FaultCodeWire code, char *out, size_t n) {
   if (out == nullptr || n == 0) {
     return;
   }
@@ -147,9 +164,27 @@ inline void formatTitle(oven_FaultCode code, char *out, size_t n) {
   snprintf(out, n, "Fault %d - oven safed to a safe state", static_cast<int>(code));
 }
 
+// TOTAL accessors for the other two strings, matching formatTitle's contract: never null, for ANY
+// code. faultInfo() deliberately reports an unrecognized code as {known=false, nullptr, ...} so a
+// caller can tell the difference — but a VIEW never wants the null, it wants something to draw, and
+// every consumer hand-rolling its own fallback is how one of them eventually forgets and passes
+// nullptr to lv_label_set_text on the one screen that must never fail. (§22's "unknown code → still
+// informative" is a requirement about the whole table, not just the title.)
+inline const char *guidanceText(FaultCodeWire code) {
+  const char *g = faultInfo(code).guidance;
+  return g != nullptr ? g : kSafedGuidance;
+}
+
+// The short symbolic name for logs/support. An unrecognized code has none, and the number is the
+// thing worth quoting in that case — so the caller gets "" and should print the integer instead.
+inline const char *codeNameText(FaultCodeWire code) {
+  const char *n = faultInfo(code).codeName;
+  return n != nullptr ? n : "";
+}
+
 // Strict: an equal-severity fault does NOT outrank the incumbent, so the first cause of a given
 // severity keeps the overlay (§22 shows one cause + a count, so ties need a deterministic winner).
-inline bool outranks(oven_FaultCode candidate, oven_FaultCode incumbent) {
+inline bool outranks(FaultCodeWire candidate, FaultCodeWire incumbent) {
   return static_cast<uint8_t>(faultInfo(candidate).severity) >
          static_cast<uint8_t>(faultInfo(incumbent).severity);
 }

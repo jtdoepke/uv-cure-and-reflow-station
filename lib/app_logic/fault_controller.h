@@ -38,10 +38,10 @@ enum class AckRoute : uint8_t {
 
 // An immutable snapshot for C8's gateway to diff into lv_subject_t (§22's MVVM note). POD, no lv_.
 struct FaultState {
-  bool active;         // latched and unacknowledged
-  oven_FaultCode code; // the current (highest-severity-so-far) cause
-  uint32_t session;    // session of the frame that set `code`; for Details + the log
-  uint32_t count;      // faults latched this episode; the view shows "+N" for count-1
+  bool active;                     // latched and unacknowledged
+  fault_table::FaultCodeWire code; // current (highest-severity-so-far) cause, RAW WIRE int
+  uint32_t session;                // session of the frame that set `code`; for Details + the log
+  uint32_t count;                  // faults latched this episode; the view shows "+N" for count-1
   fault_table::Severity severity;
   bool overTemp;        // sticky OR over the episode → HOT persists (§14/§17)
   uint32_t raisedAtMs;  // when this episode began
@@ -72,7 +72,7 @@ public:
   // mirroring the controller's own session_gate.h. Every call counts toward `+N`, including a
   // repeat of the same code: A2's seq/dedup should prevent a storm, and if one happens the
   // count is a real signal that the gateway is misbehaving rather than something to hide here.
-  void onControllerFault(uint32_t nowMs, uint32_t session, oven_FaultCode code) {
+  void onControllerFault(uint32_t nowMs, uint32_t session, fault_table::FaultCodeWire code) {
     if (code == oven_FaultCode_FAULT_NONE) {
       return; // the enum's zero value is "no fault"; a frame carrying it is malformed.
     }
@@ -126,7 +126,7 @@ public:
   uint32_t linkTimeoutMs() const { return cfg_.linkTimeoutMs; }
 
 private:
-  void raise(uint32_t nowMs, uint32_t session, oven_FaultCode code) {
+  void raise(uint32_t nowMs, uint32_t session, fault_table::FaultCodeWire code) {
     const fault_table::FaultInfo info = fault_table::faultInfo(code);
     overTemp_ = overTemp_ || info.overTemp; // sticky across a later lower-priority update
     updatedAtMs_ = nowMs;
@@ -158,7 +158,7 @@ private:
   bool runActiveAtRaise_ = false;
   bool linkLostRaised_ = false;
   bool overTemp_ = false;
-  oven_FaultCode code_ = oven_FaultCode_FAULT_NONE;
+  fault_table::FaultCodeWire code_ = oven_FaultCode_FAULT_NONE;
   uint32_t session_ = 0;
   uint32_t count_ = 0;
   fault_table::Severity severity_ = fault_table::Severity::RunIntegrity;

@@ -15,6 +15,8 @@
 #include "esp32_ambient_light.h"    // LDR IAmbientLight adapter (firmware glue)
 #include "esp32_clock.h"            // IClock adapter for the link's cadences (firmware glue)
 #include "esp32_serial_transport.h" // ISerialTransport adapter over the link UART (firmware glue)
+#include "fault_controller.h"       // §22 fault latch + ack routing (lib/app_logic, B7)
+#include "fault_overlay.h"          // §22 fault modal on lv_layer_top (lib/ui_logic, C8)
 #include "frame_link.h"             // TinyFrame framing (lib/protocol)
 #include "home_screen.h"            // UI construction lives in lib/ui_logic (host-testable)
 #include "home_viewmodel.h"         // handshake -> LinkState mapper (lib/ui_logic)
@@ -154,6 +156,37 @@ static NullAmbientLight g_ambient;
 // pixel. Its default lives with the other settings defaults, where the user can move it.
 static AutoBrightness g_auto_brightness(g_ambient, g_display);
 static SleepController g_sleep;
+
+// §22 fault annunciation. The latch (B7) is fed from two origins in loop(): the controller's
+// `Fault` frame, and our own edge-triggered link-loss during a run. The overlay lives on
+// lv_layer_top, so it is deliberately NOT a router screen and needs no entry here beyond its poll.
+//
+// The latch is static (it is ticked every loop and must survive from boot); the OVERLAY is
+// heap-allocated on first use, the same idiom as the screens above. Making it a static overflowed
+// `dram0_0_seg` on the 2.8" board by 40 bytes — that panel's .bss is the binding constraint on this
+// project (see the DRAM-budget note in design.md), and a view that only exists once a fault has
+// been latched has no business occupying .bss for the entire uptime of a machine that never faults.
+static void on_fault_ack(void *user_data, AckRoute route); // defined with the other nav handlers
+
+// Both are heap singletons rather than statics. The LATCH is allocated at first use, which is the
+// first loop iteration (it has to tick from boot to detect a link loss); the OVERLAY only when a
+// fault is actually latched, so an oven that never faults never builds a view it never shows.
+static FaultController *g_fault_ptr = nullptr;
+static FaultController &fault_latch() {
+  if (g_fault_ptr == nullptr) {
+    g_fault_ptr = new FaultController();
+  }
+  return *g_fault_ptr;
+}
+static FaultOverlay *g_fault_overlay_ptr = nullptr;
+static FaultOverlay &fault_overlay() {
+  if (g_fault_overlay_ptr == nullptr) {
+    g_fault_overlay_ptr = new FaultOverlay();
+    g_fault_overlay_ptr->begin(fault_latch());
+    g_fault_overlay_ptr->setAckHandler(on_fault_ack, nullptr);
+  }
+  return *g_fault_overlay_ptr;
+}
 
 // CYD <-> controller link (§9). The UART, its pins and its buffer sizing live in cyd_board.h —
 // §2 put the link clear of the CYD's own UART0/USB, so the serial monitor and flashing stay free
@@ -336,6 +369,18 @@ static void on_confirm_commit(void *, const ProfileDraft &draft) {
 // Run summary (§16) → Home.
 static void on_run_exit(void *) {
   go_home();
+}
+
+// §22 Acknowledge → where the latch says the operator belongs. RunSummary re-shows the Run screen,
+// which is already sitting on its Ended page (the terminal telemetry that carried the fault put it
+// there), so the aborted run keeps its §16 record instead of vanishing with the alarm.
+static void on_fault_ack(void *, AckRoute route) {
+  if (route == AckRoute::RunSummary) {
+    lv_subject_set_int(&subj_nav_request, NAV_NONE);
+    g_router.show(SCREEN_RUN);
+  } else if (route == AckRoute::Home) {
+    go_home();
+  }
 }
 
 // Run summary → "Run again": re-confirm the SAME draft over a fresh session. Deliberately routed
@@ -846,11 +891,49 @@ void loop() {
       }
       lv_subject_set_int(&subj_chamber_temp, static_cast<int>(lroundf(hottest)));
     }
+    // Raw wire read (protocol::wireEnum): an enum-typed load of a value the peer left outside the
+    // enumerators is UB, and a skewed schema is exactly how that happens (fault_table.h).
+    const fault_table::FaultCodeWire fault_wire = protocol::wireEnum(t.fault_code);
     const bool faulted =
-        t.fault_code != oven_FaultCode_FAULT_NONE || t.run_state == oven_RunState_RUN_STATE_FAULT;
+        fault_wire != oven_FaultCode_FAULT_NONE || t.run_state == oven_RunState_RUN_STATE_FAULT;
     const bool running = t.run_state == oven_RunState_RUN_STATE_RUNNING;
     const bool hot = lv_subject_get_int(&subj_chamber_temp) > kHomeHotThresholdC;
     lv_subject_set_int(&subj_run_state, HomeViewModel::runStateFrom(running, faulted, hot));
+
+    // §22 origin 1 — the controller safed itself and said why. Read from telemetry's `fault_code`
+    // rather than the dedicated `Fault` frame because CydLink forwards content to ONE app observer
+    // and the ManagementClient holds it (request/reply correlation). A4b built `fault_code` to ride
+    // continuously for exactly this reason — a backup channel that cannot be missed — and the
+    // ≤250 ms it costs is nothing against a human reading a modal. If the dedicated frame is ever
+    // needed here, chaining the observer is the change.
+    //
+    // EDGE-triggered: FaultController counts every call toward its `+N`, and this runs every loop,
+    // so a level-triggered feed would show "+40000 more" within a second of a single fault.
+    fault_latch().setRunActive(
+        running); // before the raise — the latch captures it to pick the ack route
+    static fault_table::FaultCodeWire last_fault_code = oven_FaultCode_FAULT_NONE;
+    if (fault_wire != last_fault_code) {
+      last_fault_code = fault_wire;
+      if (fault_wire != oven_FaultCode_FAULT_NONE) {
+        fault_latch().onControllerFault(now, t.session, fault_wire);
+        g_sleep.noteActivity(now); // §22: never hide a fault behind a dark backlight
+      }
+    }
+  }
+
+  // §22 origin 2 — our own heartbeat went silent mid-run, so no `Fault` can reach us. Ticked
+  // unconditionally (outside the telemetry block above): a dead link is precisely the case where
+  // that block stops running, so gating this on it would disable the one detector that covers it.
+  fault_latch().tick(now, g_cyd_link.linkAlive());
+  // Only touch the overlay once there is something to show (or once it has been built), so an oven
+  // that never faults never allocates it. After the first fault it stays around — rebuilding a view
+  // on every alarm would be the wrong trade.
+  if (fault_latch().active() || g_fault_overlay_ptr != nullptr) {
+    const bool fault_was_visible = fault_overlay().visible();
+    fault_overlay().poll();
+    if (fault_overlay().visible() && !fault_was_visible) {
+      g_sleep.noteActivity(now); // a self-raised LINK_LOST wakes the screen too
+    }
   }
 
   lv_tick_inc(now - last_tick);
@@ -869,8 +952,17 @@ void loop() {
   // "Fault - run ended" page (§15/§16): the operator must see the outcome until they dismiss it,
   // and a completed run whose chamber has cooled to touch-safe would otherwise read as at-rest and
   // time out to a dark screen. Leaving SCREEN_RUN (Done -> Home) restores the normal idle timeout.
+  // Also never while a fault is unacknowledged, and not while an over-temp stays latched past the
+  // acknowledge (§22: "the HOT state persists on Home and keeps suppressing sleep until the chamber
+  // cools"). The over-temp latch is cleared once the chamber reads touch-safe again — the same
+  // threshold the idle dot uses, so the two cannot drift.
+  if (fault_latch().overTempLatched() &&
+      lv_subject_get_int(&subj_chamber_temp) < static_cast<int>(oven_domain::kTouchSafeC)) {
+    fault_latch().clearOverTemp();
+  }
   bool sleep_allowed = HomeViewModel::atRest(lv_subject_get_int(&subj_run_state)) &&
-                       g_router.current() != SCREEN_RUN;
+                       g_router.current() != SCREEN_RUN && !fault_latch().active() &&
+                       !fault_latch().overTempLatched();
   g_sleep.setIdleTimeoutMs(static_cast<uint32_t>(g_settings.idleTimeoutMin()) * 60000U);
   g_sleep.tick(now, sleep_allowed);
   g_auto_brightness.setAwake(g_sleep.awake());

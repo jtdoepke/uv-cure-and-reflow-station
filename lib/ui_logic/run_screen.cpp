@@ -2,6 +2,7 @@
 
 #include <cstdio>
 
+#include "codec.h"       // protocol::wireEnum — reading an untrusted enum field without UB
 #include "fault_table.h" // §16's outcome "(+ cause)" — the same table the §22 overlay reads
 #include "link_banner.h"
 #include "profile_facts.h" // formatDuration / formatPeak
@@ -177,8 +178,11 @@ void RunScreen::poll() {
   if (t.run_state == oven_RunState_RUN_STATE_RUNNING) {
     saw_running_ = true;
   }
-  if (t.fault_code != oven_FaultCode_FAULT_NONE || t.run_state == oven_RunState_RUN_STATE_FAULT) {
-    fault_code_ = t.fault_code; // may be FAULT_NONE if only run_state said so — the table copes
+  // Read the untrusted enum field as its raw wire integer: nanopb stores the decoded varint
+  // verbatim, and an enum-typed load of an out-of-enum value is UB (protocol::wireEnum).
+  const fault_table::FaultCodeWire fault_wire = protocol::wireEnum(t.fault_code);
+  if (fault_wire != oven_FaultCode_FAULT_NONE || t.run_state == oven_RunState_RUN_STATE_FAULT) {
+    fault_code_ = fault_wire; // may be FAULT_NONE if only run_state said so — formatTitle copes
     endRun(RunOutcome::Fault);
   } else if (t.run_state == oven_RunState_RUN_STATE_DONE && saw_running_) {
     // Guard on saw_running_: the very first frames can still carry a prior run's DONE until the
