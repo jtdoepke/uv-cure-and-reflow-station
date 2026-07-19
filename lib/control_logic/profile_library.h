@@ -43,6 +43,10 @@ public:
 
   oven_Mode mode() const { return mode_; }
 
+  // Row ordering for list() (design.md §23). Alpha is the base; Mru is newest-first by the recency
+  // counter (Setup → Load picker). The controller sorts because it owns use_seq and the DRAM.
+  enum class SortMode { Alpha, Mru };
+
   // Upper bound on how many profiles list() enumerates (design.md §23; == ProfileStore::kMaxListed
   // on the CYD and oven.ProfileList.profiles max_count). A larger set is truncated.
   static constexpr size_t kMaxListed = 32;
@@ -53,11 +57,12 @@ public:
   static_assert(sizeof(oven_Profile::phases) == kMaxPhases * sizeof(oven_Phase),
                 "kMaxPhases must match oven.options oven.Profile.phases max_count");
 
-  // The list row: name (key), stock flag, and the derived facts.
+  // The list row: name (key), stock flag, the derived facts, and the recency rank (§23 MRU sort).
   struct Summary {
     char name[kProfileNameCap] = {};
     bool stock = false;
     ProfileFacts facts;
+    uint32_t use_seq = 0; // controller-stamped recency counter; the CYD's MRU sort key
   };
 
   // Load + validate a named profile into `out`. False when absent, malformed, or belonging to
@@ -92,7 +97,21 @@ public:
     }
     oven_Profile stamped = p;
     stamped.mode = mode_; // authoritative: the store's dir decides the mode, not the caller
+    stamped.use_seq = nextUseSeq(); // controller owns recency; any wire-supplied use_seq is ignored
     return writeBlob(stamped);
+  }
+
+  // Mark a profile "used" (run-start, §23): bump its recency counter so the CYD's MRU sort floats
+  // it to the top. Unlike save(), this is allowed on STOCK profiles — running a stock profile is a
+  // use — so it goes straight to writeBlob (which does not enforce the read-only rule). Returns
+  // false only if the profile is absent/malformed.
+  bool touch(const char *name) {
+    oven_Profile p = oven_Profile_init_zero;
+    if (!loadBlob(name, p)) {
+      return false;
+    }
+    p.use_seq = nextUseSeq();
+    return writeBlob(p);
   }
 
   // Delete a named profile. Refuses stock (§23); a corrupt/foreign blob may still be removed
@@ -145,9 +164,10 @@ public:
     return storage_.remove(src);
   }
 
-  // Enumerate this mode's profiles into `out` (at most `cap`), alphabetical by name, skipping any
-  // blob that fails validation or belongs to the other mode. Returns the number written.
-  size_t list(Summary *out, size_t cap) const {
+  // Enumerate this mode's profiles into `out` (at most `cap`), ordered per `sort` (alphabetical, or
+  // most-recently-used newest-first), skipping any blob that fails validation or belongs to the
+  // other mode. Returns the number written.
+  size_t list(Summary *out, size_t cap, SortMode sort = SortMode::Alpha) const {
     ProfileEntry names[kMaxListed];
     size_t total = storage_.list(names, kMaxListed);
     if (total > kMaxListed) {
@@ -164,9 +184,10 @@ public:
       tmp[m].name[kProfileNameCap - 1] = '\0';
       tmp[m].stock = p.stock;
       tmp[m].facts = facts(p);
+      tmp[m].use_seq = p.use_seq;
       ++m;
     }
-    sortByName(tmp, m);
+    sortRows(tmp, m, sort);
     const size_t n = m < cap ? m : cap;
     for (size_t i = 0; i < n; ++i) {
       out[i] = tmp[i];
@@ -281,6 +302,28 @@ private:
     return true;
   }
 
+  // The next recency stamp: one past the highest use_seq currently stored in this mode's library
+  // (1 for an empty library). Because recency is relative, deriving it from the stored max — rather
+  // than a separately persisted counter — keeps the whole feature self-contained in the store: the
+  // order among surviving profiles is preserved, and there is no extra persistent state to corrupt.
+  // O(n) over n <= kMaxListed blobs, only on a save/touch (rare, user-driven). Wraps at 2^32, which
+  // is astronomically far off; the comparator tolerates equal/rolled values.
+  uint32_t nextUseSeq() const {
+    ProfileEntry names[kMaxListed];
+    size_t total = storage_.list(names, kMaxListed);
+    if (total > kMaxListed) {
+      total = kMaxListed;
+    }
+    uint32_t mx = 0;
+    for (size_t i = 0; i < total; ++i) {
+      oven_Profile p = oven_Profile_init_zero;
+      if (loadBlob(names[i].name, p) && p.use_seq > mx) {
+        mx = p.use_seq;
+      }
+    }
+    return mx + 1U;
+  }
+
   bool writeBlob(const oven_Profile &p) {
     uint8_t buf[kBlobCap];
     size_t len = 0;
@@ -295,18 +338,28 @@ private:
     p.name[sizeof(p.name) - 1] = '\0';
   }
 
-  // In-place insertion sort by name (§23 alphabetical base; recently-used needs a usage clock the
-  // store doesn't own, so the CYD re-sorts). Small n (<= kMaxListed), no heap.
-  static void sortByName(Summary *a, size_t n) {
+  // In-place insertion sort of the rows for `sort` (§23). Alpha orders by name; Mru orders by the
+  // recency counter newest-first, tie-broken by name so equal/unset (0) seqs stay deterministic (a
+  // fresh all-stock library falls back to alphabetical). use_seq is a plain uint32: higher ==
+  // newer; a value that wrapped past 2^32 reads as oldest. Small n (<= kMaxListed), no heap.
+  static void sortRows(Summary *a, size_t n, SortMode sort) {
     for (size_t i = 1; i < n; ++i) {
       Summary key = a[i];
       size_t j = i;
-      while (j > 0 && std::strcmp(a[j - 1].name, key.name) > 0) {
+      while (j > 0 && rowAfter(a[j - 1], key, sort)) {
         a[j] = a[j - 1];
         --j;
       }
       a[j] = key;
     }
+  }
+
+  // Does row `x` sort AFTER row `y` (so `y` should come first) under `sort`?
+  static bool rowAfter(const Summary &x, const Summary &y, SortMode sort) {
+    if (sort == SortMode::Mru && x.use_seq != y.use_seq) {
+      return x.use_seq < y.use_seq; // newer (higher) first
+    }
+    return std::strcmp(x.name, y.name) > 0; // name asc (Alpha, and the MRU tie-break)
   }
 
   IProfileStorage &storage_;

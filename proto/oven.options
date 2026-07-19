@@ -17,4 +17,5 @@ oven.ProfileDup.src          max_size:32
 oven.ProfileDup.dst          max_size:32
 oven.ProfileRename.old_name  max_size:32
 oven.ProfileRename.new_name  max_size:32
+oven.ProfileTouch.name       max_size:32
 oven.ProfileList.profiles    max_count:32

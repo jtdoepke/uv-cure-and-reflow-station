@@ -226,10 +226,17 @@ message Profile {
   string name = 2; // <= kProfileNameCap; the store's filesystem key
   bool stock = 3;  // read-only factory reference (§23)
   repeated Phase phases = 4;
+  // Recency rank for the CYD's most-recently-used sort (§23). CONTROLLER-authoritative: the
+  // store stamps it (a monotonic max-existing+1) on save and on ProfileTouch; a wire value the
+  // CYD sets is ignored. There is no persistent RTC on the controller (millis() resets each
+  // boot), so recency is this sequence counter, not a wall-clock time.
+  uint32 use_seq = 5;
 }
 
 // A lightweight list row (design.md §23): enough to render the library without loading
-// every Phase[]. peak_c / total_s are the derived facts ("peak 245° · ~6:10").
+// every Phase[]. peak_c / total_s are the derived facts ("peak 245° · ~6:10"). Rows arrive already
+// ordered per the request's ProfileSort — the controller owns the ordering (it holds use_seq and
+// has the DRAM to sort), so the CYD renders the list as received and never carries a recency key.
 message ProfileSummary {
   string name = 1;
   bool stock = 2;
@@ -249,11 +256,20 @@ message Settings {
   int32 reflow_max_cap = 8;
 }
 
+// How the controller orders a ProfileList reply (design.md §23). ALPHA is the manage-library base;
+// MRU (most-recently-used, newest first) is the Setup → Load picker's default. The controller sorts
+// because it owns the recency counter (Profile.use_seq) and has the DRAM the CYD lacks (§2/§6a).
+enum ProfileSort {
+  PROFILE_SORT_ALPHA = 0;
+  PROFILE_SORT_MRU = 1;
+}
+
 // --- Requests (CYD -> controller). Each carries seq for correlation + dedup. ---
 
 message ProfileListReq {
   uint32 seq = 1;
   Mode mode = 2;
+  ProfileSort sort = 3;
 }
 message ProfileGetReq {
   uint32 seq = 1;
@@ -280,6 +296,15 @@ message ProfileRename {
   Mode mode = 2;
   string old_name = 3;
   string new_name = 4;
+}
+// Mark a profile "used" so it floats to the top of the CYD's most-recently-used order (§23).
+// Sent at run-start; the controller bumps the profile's stamped recency counter. Rides the
+// request/reply path like the other mutations (seq-correlated, deduped) — but a lost touch is
+// merely cosmetic (the profile just doesn't rise), so the CYD fires it and ignores the verdict.
+message ProfileTouch {
+  uint32 seq = 1;
+  Mode mode = 2;
+  string name = 3;
 }
 message SettingsGetReq {
   uint32 seq = 1;

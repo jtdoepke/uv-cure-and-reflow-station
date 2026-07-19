@@ -118,6 +118,11 @@ public:
       mgmt_->onProfileRename(m);
     }
   }
+  void onProfileTouch(const oven_ProfileTouch &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileTouch(m);
+    }
+  }
   void onSettingsGetReq(const oven_SettingsGetReq &m) override {
     if (mgmt_ != nullptr) {
       mgmt_->onSettingsGetReq(m);

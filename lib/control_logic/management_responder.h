@@ -48,7 +48,11 @@ public:
     r = oven_ProfileList_init_zero;
     r.seq = m.seq;
     if (control::ProfileStore *s = storeFor(m.mode)) {
-      size_t n = s->list(rows_, control::ProfileStore::kMaxListed);
+      const control::ProfileStore::SortMode sort =
+          protocol::wireEnum(m.sort) == oven_ProfileSort_PROFILE_SORT_MRU
+              ? control::ProfileStore::SortMode::Mru
+              : control::ProfileStore::SortMode::Alpha;
+      size_t n = s->list(rows_, control::ProfileStore::kMaxListed, sort);
       const size_t cap = sizeof(r.profiles) / sizeof(r.profiles[0]);
       if (n > cap) {
         n = cap;
@@ -157,6 +161,20 @@ public:
       return;
     }
     replyResult(m.seq, s->rename(m.old_name, m.new_name), oven_NakReason_NAK_OUT_OF_RANGE);
+  }
+
+  void onProfileTouch(const oven_ProfileTouch &m) override {
+    if (!rr_.isNew(m.seq)) {
+      return;
+    }
+    control::ProfileStore *s = storeFor(m.mode);
+    if (s == nullptr) {
+      replyResult(m.seq, false, oven_NakReason_NAK_MODE_CONTENT_MISMATCH);
+      return;
+    }
+    // touch() bumps recency (allowed on stock — running a stock profile is a use); false only if
+    // the profile is absent. The CYD ignores this verdict — a lost touch just doesn't reorder.
+    replyResult(m.seq, s->touch(m.name), oven_NakReason_NAK_NOT_FOUND);
   }
 
   void onSettingsGetReq(const oven_SettingsGetReq &m) override {

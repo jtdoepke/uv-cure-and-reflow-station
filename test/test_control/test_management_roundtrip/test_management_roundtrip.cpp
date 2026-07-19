@@ -169,6 +169,52 @@ void test_settings_roundtrip(void) {
   TEST_ASSERT_EQUAL_INT(240, r.settings_store.get().reflow_max_cap);
 }
 
+// A ProfileTouch round-trips and bumps the profile's recency; a subsequent MRU-sorted list reflects
+// it (§23). The controller sorts, so the picker's order is observed through requestList(..., MRU).
+void test_touch_roundtrip_reorders_mru(void) {
+  Rig r;
+  r.client.requestPut(authoredReflow("A"));
+  r.exchange();
+  r.client.clear();
+  r.client.requestPut(authoredReflow("B")); // saved later -> more recent than A
+  r.exchange();
+  r.client.clear();
+
+  // Before the touch: MRU order is B, A (B saved most recently).
+  TEST_ASSERT_TRUE(r.client.requestList(oven_Mode_MODE_REFLOW, oven_ProfileSort_PROFILE_SORT_MRU));
+  r.exchange();
+  TEST_ASSERT_TRUE(r.client.ready());
+  TEST_ASSERT_EQUAL_UINT32(2, r.client.list().profiles_count);
+  TEST_ASSERT_EQUAL_STRING("B", r.client.list().profiles[0].name);
+  TEST_ASSERT_EQUAL_STRING("A", r.client.list().profiles[1].name);
+  r.client.clear();
+
+  TEST_ASSERT_TRUE(r.client.requestTouch(oven_Mode_MODE_REFLOW, "A"));
+  r.exchange();
+  TEST_ASSERT_TRUE(r.client.ready()); // MgmtResult ok (the CYD ignores it, but it must succeed)
+  r.client.clear();
+
+  // After touching A: MRU order flips to A, B. Alpha order is unaffected (A, B).
+  TEST_ASSERT_TRUE(r.client.requestList(oven_Mode_MODE_REFLOW, oven_ProfileSort_PROFILE_SORT_MRU));
+  r.exchange();
+  TEST_ASSERT_EQUAL_STRING("A", r.client.list().profiles[0].name);
+  TEST_ASSERT_EQUAL_STRING("B", r.client.list().profiles[1].name);
+  r.client.clear();
+  TEST_ASSERT_TRUE(
+      r.client.requestList(oven_Mode_MODE_REFLOW, oven_ProfileSort_PROFILE_SORT_ALPHA));
+  r.exchange();
+  TEST_ASSERT_EQUAL_STRING("A", r.client.list().profiles[0].name);
+  TEST_ASSERT_EQUAL_STRING("B", r.client.list().profiles[1].name);
+}
+
+// A touch of an absent profile fails (NOT_FOUND) — the client would see Failed, and ignores it.
+void test_touch_absent_fails(void) {
+  Rig r;
+  TEST_ASSERT_TRUE(r.client.requestTouch(oven_Mode_MODE_REFLOW, "ghost"));
+  r.exchange();
+  TEST_ASSERT_TRUE(r.client.failed());
+}
+
 // One outstanding request at a time (single-outstanding, like the setup path).
 void test_single_outstanding(void) {
   Rig r;
@@ -184,6 +230,8 @@ int main(int, char **) {
   RUN_TEST(test_delete_stock_fails);
   RUN_TEST(test_duplicate);
   RUN_TEST(test_settings_roundtrip);
+  RUN_TEST(test_touch_roundtrip_reorders_mru);
+  RUN_TEST(test_touch_absent_fails);
   RUN_TEST(test_single_outstanding);
   return UNITY_END();
 }

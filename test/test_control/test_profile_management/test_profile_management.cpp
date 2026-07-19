@@ -144,6 +144,107 @@ void test_store_untrusted_blob_rejected(void) {
   TEST_ASSERT_EQUAL_UINT32(0, store.list(rows, ProfileStore::kMaxListed));
 }
 
+// Find a list row by name; returns its use_seq (0 if absent). Small helper for the MRU tests.
+static uint32_t seqOf(const ProfileStore::Summary *rows, size_t n, const char *name) {
+  for (size_t i = 0; i < n; ++i) {
+    if (std::strcmp(rows[i].name, name) == 0) {
+      return rows[i].use_seq;
+    }
+  }
+  return 0;
+}
+
+// save() stamps a controller-owned recency counter that strictly increases per write, so a
+// later-saved profile always outranks an earlier one (§23 MRU). A wire-supplied use_seq is ignored.
+void test_store_use_seq_stamped_monotonic(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  oven_Profile a = makeProfile(oven_Mode_MODE_REFLOW, "A", 200.0F, 10);
+  a.use_seq = 999; // the store must NOT trust this
+  TEST_ASSERT_TRUE(store.save(a));
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "B", 200.0F, 10)));
+
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  size_t n = store.list(rows, ProfileStore::kMaxListed);
+  TEST_ASSERT_EQUAL_UINT32(2, n);
+  const uint32_t sa = seqOf(rows, n, "A");
+  const uint32_t sb = seqOf(rows, n, "B");
+  TEST_ASSERT_NOT_EQUAL(999, sa);          // wire value discarded
+  TEST_ASSERT_GREATER_THAN_UINT32(0, sa);  // stamped
+  TEST_ASSERT_GREATER_THAN_UINT32(sa, sb); // B saved later -> higher rank
+}
+
+// touch() bumps a profile's recency above every other — the run-start "mark used" (§23). It is
+// allowed on stock (running a stock profile is a use) and fails only for an absent name.
+void test_store_touch_bumps_recency(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_CURE);
+  oven_Profile stock = makeProfile(oven_Mode_MODE_CURE, "Resin-A", 80.0F, 300);
+  stock.stock = true;
+  TEST_ASSERT_TRUE(store.save(stock));
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_CURE, "Resin-B", 80.0F, 300)));
+
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  size_t n = store.list(rows, ProfileStore::kMaxListed);
+  TEST_ASSERT_GREATER_THAN_UINT32(seqOf(rows, n, "Resin-A"), seqOf(rows, n, "Resin-B"));
+
+  // Touch the older, stock profile: it now outranks B, and stays stock + unchanged in content.
+  TEST_ASSERT_TRUE(store.touch("Resin-A"));
+  n = store.list(rows, ProfileStore::kMaxListed);
+  TEST_ASSERT_GREATER_THAN_UINT32(seqOf(rows, n, "Resin-B"), seqOf(rows, n, "Resin-A"));
+  oven_Profile got = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(store.load("Resin-A", got));
+  TEST_ASSERT_TRUE(got.stock);
+  TEST_ASSERT_EQUAL_FLOAT(80.0F, got.phases[1].target_c);
+
+  TEST_ASSERT_FALSE(store.touch("nope")); // absent
+}
+
+// list(Mru) orders newest-first by the recency counter; list(Alpha) stays by name. The controller
+// owns the ordering (§23) — the CYD just renders what it asked for.
+void test_store_list_mru_order(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "Aaa", 200.0F, 10)));
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "Bbb", 200.0F, 10)));
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "Ccc", 200.0F, 10)));
+  TEST_ASSERT_TRUE(store.touch("Aaa")); // Aaa is now the most-recently-used
+
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  // Alpha: by name.
+  size_t n = store.list(rows, ProfileStore::kMaxListed, ProfileStore::SortMode::Alpha);
+  TEST_ASSERT_EQUAL_UINT32(3, n);
+  TEST_ASSERT_EQUAL_STRING("Aaa", rows[0].name);
+  TEST_ASSERT_EQUAL_STRING("Bbb", rows[1].name);
+  TEST_ASSERT_EQUAL_STRING("Ccc", rows[2].name);
+  // Mru: Aaa (just touched) first, then Ccc, Bbb (saved newest-first).
+  n = store.list(rows, ProfileStore::kMaxListed, ProfileStore::SortMode::Mru);
+  TEST_ASSERT_EQUAL_STRING("Aaa", rows[0].name);
+  TEST_ASSERT_EQUAL_STRING("Ccc", rows[1].name);
+  TEST_ASSERT_EQUAL_STRING("Bbb", rows[2].name);
+}
+
+// Under Mru, profiles with equal/unset use_seq fall back to name ascending (deterministic).
+void test_store_list_mru_ties_by_name(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_CURE);
+  // Seed three stock profiles directly (encodeBlob bypasses save()'s stamping, so use_seq stays 0).
+  for (const char *nm : {"Resin-C", "Resin-A", "Resin-B"}) {
+    oven_Profile p = makeProfile(oven_Mode_MODE_CURE, nm, 80.0F, 60);
+    p.stock = true;
+    uint8_t buf[ProfileStore::kBlobCap];
+    size_t len = 0;
+    TEST_ASSERT_TRUE(ProfileStore::encodeBlob(p, buf, sizeof(buf), len));
+    fs.put(nm, std::vector<uint8_t>(buf, buf + len));
+  }
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  size_t n = store.list(rows, ProfileStore::kMaxListed, ProfileStore::SortMode::Mru);
+  TEST_ASSERT_EQUAL_UINT32(3, n);
+  TEST_ASSERT_EQUAL_STRING("Resin-A", rows[0].name);
+  TEST_ASSERT_EQUAL_STRING("Resin-B", rows[1].name);
+  TEST_ASSERT_EQUAL_STRING("Resin-C", rows[2].name);
+}
+
 // ---- (2) management round-trip (real ManagementResponder <-> real RequestClient) --------------
 
 struct CydObserver : protocol::IMessageObserver {
@@ -343,6 +444,10 @@ int main(int, char **) {
   RUN_TEST(test_store_list_sorted_facts);
   RUN_TEST(test_store_invalid_name_refused);
   RUN_TEST(test_store_untrusted_blob_rejected);
+  RUN_TEST(test_store_use_seq_stamped_monotonic);
+  RUN_TEST(test_store_touch_bumps_recency);
+  RUN_TEST(test_store_list_mru_order);
+  RUN_TEST(test_store_list_mru_ties_by_name);
   RUN_TEST(test_mgmt_put_then_list);
   RUN_TEST(test_mgmt_get);
   RUN_TEST(test_mgmt_get_not_found);

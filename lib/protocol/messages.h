@@ -43,5 +43,6 @@ inline constexpr uint8_t kTfTypeProfileList = 0x21;
 inline constexpr uint8_t kTfTypeProfileData = 0x22;
 inline constexpr uint8_t kTfTypeSettingsData = 0x23;
 inline constexpr uint8_t kTfTypeMgmtResult = 0x24;
+inline constexpr uint8_t kTfTypeProfileTouch = 0x25;
 
 } // namespace protocol

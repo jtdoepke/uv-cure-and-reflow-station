@@ -93,6 +93,10 @@ void MessageRouter::onFrame(uint8_t type, const uint8_t *payload, size_t len) {
     ok = route(oven_ProfileRename_fields, oven_ProfileRename{}, payload, len,
                [&](const oven_ProfileRename &m) { obs.onProfileRename(m); });
     break;
+  case kTfTypeProfileTouch:
+    ok = route(oven_ProfileTouch_fields, oven_ProfileTouch{}, payload, len,
+               [&](const oven_ProfileTouch &m) { obs.onProfileTouch(m); });
+    break;
   case kTfTypeSettingsGetReq:
     ok = route(oven_SettingsGetReq_fields, oven_SettingsGetReq{}, payload, len,
                [&](const oven_SettingsGetReq &m) { obs.onSettingsGetReq(m); });

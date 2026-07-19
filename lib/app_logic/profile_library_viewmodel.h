@@ -43,6 +43,7 @@ public:
     mode_ = mode;
     model_ = &model;
     fahrenheit_ = false;
+    mru_sort_ = false;
     count_ = 0;
     detail_count_ = 0;
     have_detail_ = false;
@@ -54,11 +55,28 @@ public:
   void setFahrenheit(bool f) { fahrenheit_ = f; }
   bool fahrenheit() const { return fahrenheit_; }
 
+  // Row ordering (§23): false = alphabetical (manage-library base), true = most-recently-used
+  // (Setup → Load picker default). The CONTROLLER sorts — it owns the recency counter and the DRAM
+  // (§2/§6a) — so changing this only sets which order the NEXT requestList() asks for; the screen
+  // must re-list to see it (the picker does on toggle). No CYD-side re-sort, no recency key stored.
+  void setMruSort(bool on) { mru_sort_ = on; }
+  bool mruSort() const { return mru_sort_; }
+  // Flip the order for the picker's sort button; the caller then re-lists. Returns the new value.
+  bool toggleSort() {
+    mru_sort_ = !mru_sort_;
+    return mru_sort_;
+  }
+
   // --- List: request + adopt ---
 
-  // Ask the controller for this mode's library. Returns false if the client is busy. The screen
-  // shows a loading state, polls the client, and calls adoptList() when it is Ready.
-  bool requestList() { return client_ != nullptr && client_->requestList(mode_); }
+  // Ask the controller for this mode's library, in the current sort order (§23). Returns false if
+  // the client is busy. The screen shows a loading state, polls the client, and calls adoptList()
+  // when it is Ready.
+  bool requestList() {
+    return client_ != nullptr &&
+           client_->requestList(mode_, mru_sort_ ? oven_ProfileSort_PROFILE_SORT_MRU
+                                                 : oven_ProfileSort_PROFILE_SORT_ALPHA);
+  }
 
   // Adopt a ProfileList reply into the row cache (call from the screen's poll on Ready).
   void adoptList(const oven_ProfileList &list) {
@@ -74,6 +92,8 @@ public:
       total_s_[i] = list.profiles[i].total_s;
       buildValue(i);
     }
+    // Rows arrive already ordered per the request's sort (the controller sorts); render as
+    // received.
   }
 
   size_t count() const { return count_; }
@@ -238,8 +258,9 @@ private:
   oven_Mode mode_ = oven_Mode_MODE_REFLOW;
   const OvenModel *model_ = nullptr;
   bool fahrenheit_ = false;
+  bool mru_sort_ = false; // which order the next requestList() asks the controller for (§23)
 
-  // List cache (from ProfileList).
+  // List cache (from ProfileList), rendered in the order the controller returned.
   size_t count_ = 0;
   char name_buf_[kMaxRows][kProfileNameCap] = {};
   char value_buf_[kMaxRows][kValueCap] = {};

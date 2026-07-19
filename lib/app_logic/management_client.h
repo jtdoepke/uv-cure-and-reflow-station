@@ -28,7 +28,18 @@
 
 class ManagementClient : public protocol::IMessageObserver {
 public:
-  enum class Op : uint8_t { None, List, Get, Put, Delete, Dup, Rename, SettingsGet, SettingsPut };
+  enum class Op : uint8_t {
+    None,
+    List,
+    Get,
+    Put,
+    Delete,
+    Dup,
+    Rename,
+    Touch,
+    SettingsGet,
+    SettingsPut
+  };
   enum class State : uint8_t { Idle, Busy, Ready, Failed };
 
   ManagementClient(protocol::FrameLink &link, IClock &clock) : rc_(link, clock) {}
@@ -47,9 +58,10 @@ public:
   }
 
   // --- Operations (return false if one is already outstanding) ---
-  bool requestList(oven_Mode mode) {
+  bool requestList(oven_Mode mode, oven_ProfileSort sort = oven_ProfileSort_PROFILE_SORT_ALPHA) {
     oven_ProfileListReq m = oven_ProfileListReq_init_zero;
     m.mode = mode;
+    m.sort = sort;
     return begin(Op::List, protocol::kTfTypeProfileListReq, oven_ProfileListReq_fields, &m);
   }
   bool requestGet(oven_Mode mode, const char *name) {
@@ -83,6 +95,14 @@ public:
     copyName(m.old_name, sizeof(m.old_name), oldName);
     copyName(m.new_name, sizeof(m.new_name), newName);
     return begin(Op::Rename, protocol::kTfTypeProfileRename, oven_ProfileRename_fields, &m);
+  }
+  // Mark a profile "used" for the MRU sort (§23). Fired at run-start; the caller ignores the
+  // MgmtResult verdict (a lost touch is merely cosmetic), so it just needs the request slot free.
+  bool requestTouch(oven_Mode mode, const char *name) {
+    oven_ProfileTouch m = oven_ProfileTouch_init_zero;
+    m.mode = mode;
+    copyName(m.name, sizeof(m.name), name);
+    return begin(Op::Touch, protocol::kTfTypeProfileTouch, oven_ProfileTouch_fields, &m);
   }
   bool requestSettingsGet() {
     oven_SettingsGetReq m = oven_SettingsGetReq_init_zero;
