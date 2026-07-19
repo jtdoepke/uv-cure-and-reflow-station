@@ -105,3 +105,24 @@ void run_curve_push_actual(RunCurve &rc, float frac01, float valueC, bool deviat
   lv_chart_set_cursor_point(rc.chart, rc.now, rc.actual, static_cast<uint32_t>(idx));
   lv_chart_refresh(rc.chart);
 }
+
+void run_curve_set_actual(RunCurve &rc, const float *actual, int32_t lastIdx, bool deviating) {
+  if (rc.chart == nullptr || rc.actual_y == nullptr || actual == nullptr || rc.points < 2) {
+    return;
+  }
+  if (lastIdx >= static_cast<int32_t>(rc.points)) {
+    lastIdx = rc.points - 1;
+  }
+  for (int32_t i = 0; i <= lastIdx; ++i) {
+    rc.actual_y[i] = iround(actual[i]);
+  }
+  rc.last_idx = lastIdx;
+
+  lv_chart_set_series_color(rc.chart, rc.actual,
+                            theme::col(deviating ? theme::WARN : theme::ACCENT));
+  rc.deviating = deviating;
+  if (lastIdx >= 0) {
+    lv_chart_set_cursor_point(rc.chart, rc.now, rc.actual, static_cast<uint32_t>(lastIdx));
+  }
+  lv_chart_refresh(rc.chart);
+}

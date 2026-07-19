@@ -333,9 +333,20 @@ static void on_confirm_commit(void *, const ProfileDraft &draft) {
   g_router.show(SCREEN_RUN);
 }
 
-// Run Ended → Done: back Home. C8 will insert the run summary here.
+// Run summary (§16) → Home.
 static void on_run_exit(void *) {
   go_home();
+}
+
+// Run summary → "Run again": re-confirm the SAME draft over a fresh session. Deliberately routed
+// back through Confirm rather than restarting here — §19 reserves starting heat/UV for the
+// press-and-hold arm, and a summary button is a plain tap.
+static void on_run_again(void *) {
+  const ProfileDraft draft = run_screen().draft(); // by value: Confirm's begin() outlives the copy
+  g_run_session = esp_random() | 1U;
+  lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  confirm_screen().begin(draft, g_run_session, g_cyd_link, g_mgmt_client);
+  g_router.show(SCREEN_CONFIRM);
 }
 
 // The profile-library NAV_PROFILE_* seam: seed the editor's working copy and route to it. NEW seeds
@@ -435,6 +446,7 @@ static void build_confirm_screen_cb(void *, lv_obj_t *scr) {
 // router shows this screen, and render() builds the current page from that state.
 static void build_run_screen_cb(void *, lv_obj_t *scr) {
   run_screen().setExitHandler(on_run_exit, nullptr);
+  run_screen().setRunAgainHandler(on_run_again, nullptr);
   run_screen().render(scr);
 }
 

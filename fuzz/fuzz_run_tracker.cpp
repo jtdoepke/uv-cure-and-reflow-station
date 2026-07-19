@@ -135,5 +135,53 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   const RunFitResult r = rt.finish(RunOutcome::Completed, 2001);
   FUZZ_ASSERT(fin(r.runQuality.maxAbsC) && fin(r.runQuality.rmsC) && fin(r.runQuality.meanC));
   FUZZ_ASSERT(fin(r.estimatorQuality.maxAbsC) && fin(r.estimatorQuality.rmsC));
+
+  // --- The whole RunFitResult must be RENDERABLE (C8's §16 summary is now a real consumer) ---
+  //
+  // Every field below is printed or switched on by run_screen's Ended page, so a value outside its
+  // domain is a garbage readout or a null text pointer on the screen that reports the run.
+  FUZZ_ASSERT(r.computed); // Completed always computes — the gate the summary branches on
+  FUZZ_ASSERT(r.verdict == FitVerdict::Good || r.verdict == FitVerdict::Fair ||
+              r.verdict == FitVerdict::Poor);
+  FUZZ_ASSERT(r.cause == DriftCause::None || r.cause == DriftCause::Oven ||
+              r.cause == DriftCause::ProjectionModel);
+  FUZZ_ASSERT(r.phaseCount <= RunFitAccumulator::MAX_PHASES);
+  // The summary prints "<phaseCount - phasesMissedTarget>/<phaseCount> on target". If a miss count
+  // could exceed the phase count that reads as a negative numerator.
+  FUZZ_ASSERT(r.phasesMissedTarget <= r.phaseCount);
+  FUZZ_ASSERT(r.phasesShortHold <= r.phaseCount);
+  // advisoryText() reaches lv_label_set_text: never null, for any cause the fit can produce.
+  FUZZ_ASSERT(advisoryText(r.cause) != nullptr);
+  FUZZ_ASSERT(advisoryText(DriftCause::None) != nullptr);
+  FUZZ_ASSERT(advisoryText(DriftCause::Oven) != nullptr);
+  FUZZ_ASSERT(advisoryText(DriftCause::ProjectionModel) != nullptr);
+  // The banner is only drawn when `advisory` is set, so an advisory with no cause would draw an
+  // empty amber box.
+  FUZZ_ASSERT(!r.advisory || r.cause != DriftCause::None);
+
+  // --- §16's "abort/fault skip it — data incomplete", over the SAME run ---
+  //
+  // Re-walk an identical run and end it non-Completed: no fit, and no advisory. Without this the
+  // summary could render drift numbers derived from a run that never finished. The outcome is
+  // chosen from the input so the corpus explores both non-terminal endings.
+  RunTracker rt2;
+  rt2.begin(draft, model, caps, ambient, 0);
+  for (uint32_t k = 0; k < 8; ++k) {
+    const size_t base = static_cast<size_t>(k) * 13;
+    oven_Telemetry t = oven_Telemetry_init_zero;
+    t.seg_idx = wrapU32(data, size, base);
+    t.elapsed_ms = wrapU32(data, size, base + 4);
+    t.work_temp = wrapF32(data, size, base + 8);
+    t.board_est = wrapF32(data, size, base + 12);
+    t.wall_temp_count = 4;
+    for (size_t i = 0; i < 4; ++i) {
+      t.wall_temp[i] = wrapF32(data, size, base + 16 + i * 4);
+    }
+    rt2.update(t, k * 250);
+  }
+  const RunOutcome aborted = (data[0] & 1U) != 0U ? RunOutcome::Stopped : RunOutcome::Fault;
+  const RunFitResult r2 = rt2.finish(aborted, 2001);
+  FUZZ_ASSERT(!r2.computed);
+  FUZZ_ASSERT(!r2.advisory);
   return 0;
 }

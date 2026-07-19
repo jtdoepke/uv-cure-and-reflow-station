@@ -42,3 +42,10 @@ RunCurve create_run_curve(lv_obj_t *parent, const float *projected, uint16_t n, 
 // actual line grows continuously up to that point (any indices skipped by a fast advance are
 // filled), the now-marker moves there, and the trace turns amber while `deviating`.
 void run_curve_push_actual(RunCurve &rc, float frac01, float valueC, bool deviating);
+
+// Replay a retained per-index sample buffer onto a freshly built chart: `actual[0..lastIdx]` are
+// the measured temperatures already binned to chart indices. Used by the §16 summary, which
+// redraws the COMPLETED run after the live page's widget tree (and its value buffer) is gone —
+// and by a mid-run rebuild, so a re-shown Running page comes back with its history intact.
+// `lastIdx < 0` leaves the series empty.
+void run_curve_set_actual(RunCurve &rc, const float *actual, int32_t lastIdx, bool deviating);

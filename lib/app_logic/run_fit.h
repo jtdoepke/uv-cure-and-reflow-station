@@ -219,16 +219,22 @@ private:
 // this board's thermal mass differs from the calibration board"), then says the design now
 // discriminates and "the advisory picks its wording accordingly" — without giving the two split
 // texts. These are drafts of that split and want a human review pass before C8 renders them.
+// GLYPH CONTRACT (learned the hard way — these strings rendered as missing-glyph boxes the first
+// time C8 drew them): the fonts carry ASCII + `°` + `·` and a handful of Font Awesome symbols,
+// nothing else (lib/ui_logic/fonts/README.md). So no em-dash, and NO leading warning sign: the
+// literal `⚠` is U+26A0, while the only warning glyph that exists here is Font Awesome's 0xF071
+// behind LV_SYMBOL_WARNING — a different codepoint, and an `lv_` name this LVGL-free header
+// cannot reference anyway. The glyph is therefore the VIEW's to prepend, which is also what
+// theme.h's alert helpers already require ("the redundant cue ... is the caller's job").
 inline const char *advisoryText(DriftCause cause) {
   switch (cause) {
   case DriftCause::Oven:
-    return "\xE2\x9A\xA0 Actual temperature differed from the prediction, but the "
-           "board-temperature "
-           "estimate tracked correctly. This may mean the oven needs recalibration \xE2\x80\x94 a "
+    return "Actual temperature differed from the prediction, but the board-temperature "
+           "estimate tracked correctly. This may mean the oven needs recalibration - a "
            "tiring element or a worn door seal.";
   case DriftCause::ProjectionModel:
-    return "\xE2\x9A\xA0 The board-temperature estimate drifted from the measured workpiece. This "
-           "may mean this board's thermal mass differs from the calibration board \xE2\x80\x94 or "
+    return "The board-temperature estimate drifted from the measured workpiece. This "
+           "may mean this board's thermal mass differs from the calibration board - or "
            "that the estimator needs recalibration. Future time estimates may be optimistic.";
   case DriftCause::None:
   default:

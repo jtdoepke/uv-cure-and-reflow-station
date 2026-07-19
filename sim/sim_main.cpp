@@ -650,6 +650,66 @@ int main(int argc, char **argv) {
       run_link.onTelemetry(t);
       run.poll();
     }
+  } else if (screen == "summary" || screen == "summary-fault") {
+    // The §16 Run Summary (C8) — the Ended page. A whole run is fed so both curves are complete,
+    // then a terminal frame lands the summary:
+    //   summary        a completed run → verdict + deviation numbers + the amber drift advisory
+    //   summary-fault  an over-temp abort → badge + cause, no fit ("data incomplete", §16)
+    //
+    // This fixture is for LAYOUT, and its numbers are not a claim about the control loop: seg_idx
+    // marches here on a fixed schedule rather than following the projection's phase boundaries, so
+    // phases open and close before the temperature arrives and the per-phase target checks read as
+    // misses. A real run's phase timing comes from the controller. Deliberately NOT tuned into a
+    // flattering "Good / no advisory" shot — a fixture that has to lie to look clean is worse than
+    // one that shows the busiest layout the screen can produce.
+    const bool fault = screen == "summary-fault";
+    static protocol::CydLink sum_link(cyd_link, clk);
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    const uint32_t sess = 0x5100BEEF;
+    ProfileDraft d = profile_templates::defaultTemplate(RecipeMode::Reflow);
+    std::strncpy(d.name, "LF-245", kProfileNameCap - 1);
+    run.begin(d, sess, sum_link);
+    run.render(lv_screen_active());
+
+    const float total = run.tracker().totalSeconds();
+    const int frames = 40;
+    uint32_t seq = 0;
+    for (int i = 0; i <= frames; ++i) {
+      const float ts = total * (static_cast<float>(i) / static_cast<float>(frames));
+      const float proj = run.tracker().projectedAt(ts);
+      // Lag the projection by a sustained margin — the §16 run-quality residual — while the board
+      // estimate keeps tracking the measurement, which is what points the blame at the oven
+      // (DriftCause::Oven) rather than at the projection model.
+      const float meas = proj - 6.0f;
+      oven_Telemetry t = oven_Telemetry_init_zero;
+      t.session = sess;
+      t.seq = ++seq;
+      t.run_state = oven_RunState_RUN_STATE_RUNNING;
+      t.setpoint = proj;
+      t.work_temp = meas;
+      t.board_est = meas; // clean estimator channel
+      t.wall_temp_count = 4;
+      for (size_t k = 0; k < 4; ++k) {
+        t.wall_temp[k] = 40.0f;
+      }
+      t.elapsed_ms = static_cast<uint32_t>(ts * 1000.0f);
+      t.seg_idx = static_cast<uint32_t>(i * 8 / (frames + 1));
+      sum_link.onTelemetry(t);
+      run.poll();
+      // Advance LVGL's tick between frames: the §16 residuals are dt-WEIGHTED, so replaying a whole
+      // run inside one tick would collapse every span to zero and report rms 0.0° next to a
+      // non-zero max — a summary that contradicts itself.
+      lv_tick_inc(static_cast<uint32_t>(total * 1000.0f) / static_cast<uint32_t>(frames + 1));
+    }
+    oven_Telemetry end = oven_Telemetry_init_zero;
+    end.session = sess;
+    end.seq = ++seq;
+    end.run_state = fault ? oven_RunState_RUN_STATE_FAULT : oven_RunState_RUN_STATE_DONE;
+    end.fault_code = fault ? oven_FaultCode_FAULT_OVERTEMP_CHAMBER : oven_FaultCode_FAULT_NONE;
+    end.work_temp = fault ? 268.0f : 43.0f;
+    end.elapsed_ms = static_cast<uint32_t>(total * 1000.0f);
+    sum_link.onTelemetry(end);
+    run.poll();
   } else if (screen == "editor" || screen == "editor-cure") {
     // The §12 profile editor on a fresh template. Overview first (curve + phase rows + Save); click
     // a phase row's Edit to drill into its field list. `--screen editor-cure` seeds a cure profile

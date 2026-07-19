@@ -104,7 +104,7 @@ inline FaultInfo faultInfo(oven_FaultCode code) {
     // live readback, because a silent link is exactly the case where we cannot confirm state.
     return {"Lost communication",
             "Lost communication with the controller. If a run was active, the heater is off "
-            "\xE2\x80\x94 "
+            "- "
             "the controller safes on heartbeat timeout, and its outputs default OFF on any reset.",
             "LINK_LOST",
             Severity::LinkIntegrity,
@@ -142,7 +142,9 @@ inline void formatTitle(oven_FaultCode code, char *out, size_t n) {
     snprintf(out, n, "%s", info.title);
     return;
   }
-  snprintf(out, n, "Fault %d \xE2\x80\x94 oven safed to a safe state", static_cast<int>(code));
+  // ASCII hyphen, not an em-dash: the UI fonts carry ASCII + `°` + `·` only, so a `—` here would
+  // draw as a missing-glyph box on the one screen that must never fail (fonts/README.md).
+  snprintf(out, n, "Fault %d - oven safed to a safe state", static_cast<int>(code));
 }
 
 // Strict: an equal-severity fault does NOT outrank the incumbent, so the first cause of a given

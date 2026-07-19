@@ -35,6 +35,11 @@ static void on_exit(void *) {
   g_exited = true;
 }
 
+static bool g_again;
+static void on_again(void *) {
+  g_again = true;
+}
+
 static uint32_t g_seq;
 
 void setUp(void) {
@@ -45,7 +50,9 @@ void setUp(void) {
   cyd_router.setObserver(cydlink);
   cydlink.heartbeat().setEnable(false); // clear leaked authorization from a prior test
   screen.setExitHandler(on_exit, nullptr);
+  screen.setRunAgainHandler(on_again, nullptr);
   g_exited = false;
+  g_again = false;
   g_seq = 0;
 }
 void tearDown(void) {
@@ -151,13 +158,87 @@ void test_stop_aborts_and_ends(void) {
   TEST_ASSERT_EQUAL_INT((int)RunOutcome::Stopped, (int)screen.outcome());
 }
 
-// The Ended page's Done exits to the caller (Home).
+// The summary's Home exits to the caller.
 void test_dismiss_exits(void) {
   screen.begin(reflowDraft(), kSession, cydlink);
   screen.render(lv_screen_active());
   screen.stop(); // → Ended
   screen.dismiss();
   TEST_ASSERT_TRUE(g_exited);
+}
+
+// --- §16 Run Summary (C8) ---
+
+// A completed run computes the fit the summary renders, over the phases actually walked.
+void test_summary_completed_computes_fit(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  for (uint32_t i = 0; i < 4; ++i) {
+    feed(kSession, oven_RunState_RUN_STATE_RUNNING, 150.0f + static_cast<float>(i) * 20.0f, i,
+         10000 * (i + 1));
+    screen.poll();
+  }
+  feed(kSession, oven_RunState_RUN_STATE_DONE, 43.0f, 4, 600000);
+  screen.poll();
+
+  TEST_ASSERT_EQUAL_INT((int)Page::Ended, (int)screen.page());
+  TEST_ASSERT_TRUE(screen.fit().computed);
+  // The fit counts the phases actually ENTERED, not the recipe's total — a phase compiles to a
+  // ramp + a hold, so walking 4 segments enters fewer than 4 phases. The summary prints
+  // "<reached>/<phaseCount> on target" off this, so it must never exceed the authored count.
+  TEST_ASSERT_GREATER_THAN_UINT32(0, screen.fit().phaseCount);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(profile_templates::kReflowPhases, screen.fit().phaseCount);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(screen.fit().phaseCount, screen.fit().phasesMissedTarget);
+  // The numbers the summary prints must be finite — they reach an lv_label either way.
+  TEST_ASSERT_TRUE(screen.fit().runQuality.maxAbsC == screen.fit().runQuality.maxAbsC);
+  TEST_ASSERT_TRUE(screen.fit().runQuality.rmsC == screen.fit().runQuality.rmsC);
+}
+
+// §16: "abort/fault skip it — data incomplete". A stopped run has no verdict and no advisory, so
+// the summary shows the no-fit line instead of numbers derived from a partial run.
+void test_summary_stopped_skips_fit(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 180.0f, 2, 20000);
+  screen.poll();
+  screen.stop();
+
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::Stopped, (int)screen.outcome());
+  TEST_ASSERT_FALSE(screen.fit().computed);
+  TEST_ASSERT_FALSE(screen.fit().advisory);
+}
+
+// A fault likewise skips the fit, but the summary keeps the CAUSE — §16's "(+ cause)". The §22
+// modal is dismissable; this page is the run's record and outlives it.
+void test_summary_fault_keeps_cause(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 210.0f, 2, 40000);
+  screen.poll();
+
+  oven_Telemetry t = oven_Telemetry_init_zero;
+  t.session = kSession;
+  t.seq = ++g_seq;
+  t.run_state = oven_RunState_RUN_STATE_FAULT;
+  t.fault_code = oven_FaultCode_FAULT_OVERTEMP_CHAMBER;
+  t.work_temp = 268.0f;
+  cydlink.onTelemetry(t);
+  screen.poll();
+
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::Fault, (int)screen.outcome());
+  TEST_ASSERT_FALSE(screen.fit().computed);
+  TEST_ASSERT_EQUAL_INT((int)oven_FaultCode_FAULT_OVERTEMP_CHAMBER, (int)screen.faultCode());
+}
+
+// "Run again" is its own seam, separate from Home: §19 forbids a one-tap re-energize, so the
+// composition root routes it back through Confirm rather than restarting here.
+void test_summary_run_again_routes(void) {
+  screen.begin(reflowDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  screen.stop(); // → Ended
+  screen.runAgain();
+  TEST_ASSERT_TRUE(g_again);
+  TEST_ASSERT_FALSE(g_exited); // Run again is NOT the Home hop
 }
 
 int main(int, char **) {
@@ -169,5 +250,9 @@ int main(int, char **) {
   RUN_TEST(test_fault_ends_fault);
   RUN_TEST(test_stop_aborts_and_ends);
   RUN_TEST(test_dismiss_exits);
+  RUN_TEST(test_summary_completed_computes_fit);
+  RUN_TEST(test_summary_stopped_skips_fit);
+  RUN_TEST(test_summary_fault_keeps_cause);
+  RUN_TEST(test_summary_run_again_routes);
   return UNITY_END();
 }

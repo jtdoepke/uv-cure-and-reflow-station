@@ -49,7 +49,7 @@ void test_unknown_code_formats_the_generic_title(void) {
   TEST_ASSERT_FALSE(faultInfo(unknown).known);
   char buf[64];
   formatTitle(unknown, buf, sizeof(buf));
-  TEST_ASSERT_EQUAL_STRING("Fault 99 \xE2\x80\x94 oven safed to a safe state", buf);
+  TEST_ASSERT_EQUAL_STRING("Fault 99 - oven safed to a safe state", buf);
 }
 
 // FAULT_NONE is the zero value, not a fault — it must not masquerade as a known one.
@@ -69,7 +69,7 @@ void test_known_code_formats_its_table_title(void) {
 void test_link_lost_guidance_is_the_verbatim_section_22_text(void) {
   const fault_table::FaultInfo info = faultInfo(oven_FaultCode_FAULT_LINK_LOST);
   TEST_ASSERT_EQUAL_STRING(
-      "Lost communication with the controller. If a run was active, the heater is off \xE2\x80\x94 "
+      "Lost communication with the controller. If a run was active, the heater is off - "
       "the controller safes on heartbeat timeout, and its outputs default OFF on any reset.",
       info.guidance);
 }
