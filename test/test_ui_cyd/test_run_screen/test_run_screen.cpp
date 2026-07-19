@@ -40,6 +40,13 @@ static void on_again(void *) {
   g_again = true;
 }
 
+static bool g_resumed;
+static ProfileDraft g_resume_draft;
+static void on_resume(void *, const ProfileDraft &d) {
+  g_resumed = true;
+  g_resume_draft = d;
+}
+
 static uint32_t g_seq;
 
 void setUp(void) {
@@ -51,12 +58,21 @@ void setUp(void) {
   cydlink.heartbeat().setEnable(false); // clear leaked authorization from a prior test
   screen.setExitHandler(on_exit, nullptr);
   screen.setRunAgainHandler(on_again, nullptr);
+  screen.setResumeHandler(on_resume, nullptr);
   g_exited = false;
   g_again = false;
+  g_resumed = false;
+  g_resume_draft = ProfileDraft{};
   g_seq = 0;
 }
 void tearDown(void) {
   lv_deinit();
+}
+
+static ProfileDraft cureDraft() {
+  ProfileDraft d = profile_templates::defaultTemplate(RecipeMode::Cure);
+  std::strncpy(d.name, "Resin-A", kProfileNameCap - 1);
+  return d;
 }
 
 static ProfileDraft reflowDraft() {
@@ -314,6 +330,94 @@ void test_door_open_does_not_dismiss_fault_summary(void) {
   TEST_ASSERT_FALSE(g_exited); // still demanding the explicit tap
 }
 
+// --- §15 cure Paused / Resume (C7 PR3 over B6) ---
+
+// A cure interrupted mid-run pauses instead of aborting: the operator can shut the door and finish
+// it. Reflow, by contrast, aborts outright (covered above) — §15's explicit mode split.
+void test_cure_door_open_pauses(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  cydlink.heartbeat().setEnable(true);
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 55.0f, 1, 30000);
+  screen.poll();
+
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 31000, /*doorOpen=*/true);
+  screen.poll();
+
+  TEST_ASSERT_EQUAL_INT((int)Page::Paused, (int)screen.page());
+  TEST_ASSERT_GREATER_THAN_UINT32(0, screen.remainder().phaseCount);
+  TEST_ASSERT_EQUAL_INT((int)RecipeMode::Cure, (int)screen.remainder().mode);
+}
+
+// §15: Resume is "enabled only when the door is closed" — no auto-resume, eye safety. The gate is
+// live, so shutting the door on the Paused page enables it without leaving the page.
+void test_resume_gated_on_door_closed(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 55.0f, 1, 30000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 31000, /*doorOpen=*/true);
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)Page::Paused, (int)screen.page());
+  TEST_ASSERT_FALSE(screen.canResume());
+
+  screen.resume(); // guarded: the gesture must do nothing while the door is open
+  TEST_ASSERT_FALSE(g_resumed);
+
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 48.0f, 1, 32000, /*doorOpen=*/false);
+  screen.poll();
+  TEST_ASSERT_TRUE(screen.canResume());
+}
+
+// Resuming hands the composition root the REMAINDER, not the original — that is the whole point:
+// the controller sees an ordinary new profile and needs no pause state of its own.
+void test_resume_starts_the_remainder(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 55.0f, 1, 30000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 31000, /*doorOpen=*/true);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 48.0f, 1, 32000, /*doorOpen=*/false);
+  screen.poll();
+
+  screen.resume();
+  TEST_ASSERT_TRUE(g_resumed);
+  TEST_ASSERT_GREATER_THAN_UINT32(0, g_resume_draft.phaseCount);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(cureDraft().phaseCount, g_resume_draft.phaseCount);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g_resume_draft.phases[0].rampSeconds); // §15's ASAP re-heat
+}
+
+// Abort from the Paused page gives up on the cure and lands on the summary.
+void test_paused_abort_ends_run(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 55.0f, 1, 30000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 31000, /*doorOpen=*/true);
+  screen.poll();
+
+  screen.abandon();
+  TEST_ASSERT_EQUAL_INT((int)Page::Ended, (int)screen.page());
+  TEST_ASSERT_EQUAL_INT((int)RunOutcome::DoorOpened, (int)screen.outcome());
+}
+
+// §15: "a lost heartbeat also ends it (the controller is already idle)". A pause we cannot confirm
+// the machine's state through is not a pause worth keeping.
+void test_paused_ends_on_lost_link(void) {
+  screen.begin(cureDraft(), kSession, cydlink);
+  screen.render(lv_screen_active());
+  feed(kSession, oven_RunState_RUN_STATE_RUNNING, 55.0f, 1, 30000);
+  screen.poll();
+  feed(kSession, oven_RunState_RUN_STATE_IDLE, 50.0f, 1, 31000, /*doorOpen=*/true);
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)Page::Paused, (int)screen.page());
+
+  clk.advance(protocol::kLinkTimeoutMs + 1); // telemetry stops arriving
+  screen.poll();
+  TEST_ASSERT_EQUAL_INT((int)Page::Ended, (int)screen.page());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_running_follows_telemetry);
@@ -331,5 +435,10 @@ int main(int, char **) {
   RUN_TEST(test_door_that_ended_run_does_not_dismiss_summary);
   RUN_TEST(test_door_open_dismisses_completed_summary);
   RUN_TEST(test_door_open_does_not_dismiss_fault_summary);
+  RUN_TEST(test_cure_door_open_pauses);
+  RUN_TEST(test_resume_gated_on_door_closed);
+  RUN_TEST(test_resume_starts_the_remainder);
+  RUN_TEST(test_paused_abort_ends_run);
+  RUN_TEST(test_paused_ends_on_lost_link);
   return UNITY_END();
 }

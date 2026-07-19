@@ -366,6 +366,28 @@ static void on_confirm_commit(void *, const ProfileDraft &draft) {
   g_router.show(SCREEN_RUN);
 }
 
+// §15 cure Resume: Start B6's remainder as a FRESH run over a new session. It goes straight to the
+// Run screen rather than back through Confirm — unlike "Run again", the deliberate-commit gesture
+// has already happened here (the press-and-hold Resume on the Paused page), and §19's rule is about
+// requiring that friction once, not about which screen hosts it.
+static void on_run_resume(void *, const ProfileDraft &remainder) {
+  const ProfileDraft draft =
+      remainder; // by value: begin() re-seats the screen that owns the source
+  g_run_session = esp_random() | 1U;
+  lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  confirm_screen().begin(draft, g_run_session, g_cyd_link, g_mgmt_client);
+  // show() BEFORE commit(): the router's build callback is what hands the screen its parent object,
+  // and commit() immediately builds the "Starting" page. Committing first would build into a null
+  // parent.
+  g_router.show(SCREEN_CONFIRM);
+  // The deliberate gesture already happened (the press-and-hold Resume), so drive the §9
+  // Recipe+Start handshake straight away and reuse Confirm's whole commit machine — including its
+  // Nak/timeout Failed page. commit() is itself gated on ready(), so if the door reopened in the
+  // interim this simply leaves the operator on Confirm with a HOLD button, which is the right
+  // place to be.
+  confirm_screen().commit();
+}
+
 // Run summary (§16) → Home.
 static void on_run_exit(void *) {
   go_home();
@@ -492,6 +514,7 @@ static void build_confirm_screen_cb(void *, lv_obj_t *scr) {
 static void build_run_screen_cb(void *, lv_obj_t *scr) {
   run_screen().setExitHandler(on_run_exit, nullptr);
   run_screen().setRunAgainHandler(on_run_again, nullptr);
+  run_screen().setResumeHandler(on_run_resume, nullptr);
   run_screen().render(scr);
 }
 

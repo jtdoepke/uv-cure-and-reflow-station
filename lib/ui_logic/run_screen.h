@@ -39,7 +39,10 @@
 
 class RunScreen {
 public:
-  enum class Page { Running, Ended };
+  // Paused is a CYD-SIDE concept only (§9: "no PAUSED" on the wire — the controller has already
+  // ended the run to idle and retains nothing). It exists so a cure can be finished after the door
+  // was opened, via B6's remainder profile.
+  enum class Page { Running, Paused, Ended };
 
   // Arm the run over `draft` (the committed authored profile) with the run's `session` (§9: only
   // telemetry carrying it is this run's). `link` supplies telemetry + the STOP abort. All
@@ -59,11 +62,24 @@ public:
   // Fired when the summary's "Run again" is tapped. §19 forbids a one-tap re-energize, so the
   // caller routes this back through Confirm — never straight to heat.
   void setRunAgainHandler(void (*cb)(void *user_data), void *user_data);
+  // Fired when a paused cure is resumed: the composition root Starts `remainder` as a fresh run
+  // over a new session (§15 — to the controller it is just a new profile).
+  void setResumeHandler(void (*cb)(void *user_data, const ProfileDraft &remainder),
+                        void *user_data);
 
   // Gesture targets (also directly callable by tests).
   void stop();     // STOP → sendAbort + Ended(Stopped) — immediate, no confirm
   void dismiss();  // summary Home → exit handler
   void runAgain(); // summary Run again → run-again handler (→ Confirm)
+  void resume();   // Paused HOLD-Resume → Start the remainder as a fresh run (§15)
+  void abandon();  // Paused Abort → give up on the cure; Ended(DoorOpened)
+
+  // Can the paused cure be resumed right now? §19-shaped gate: the door must be CLOSED, and the
+  // generated remainder must actually compile — a resume that would NAK on upload is worse than a
+  // disabled button (fuzz_remainder found that a remainder is not guaranteed compilable).
+  bool canResume() const;
+  // The remainder built at pause, for tests and for the resume Start. Empty if none could be built.
+  const ProfileDraft &remainder() const { return remainder_; }
 
   Page page() const { return page_; }
   RunOutcome outcome() const { return outcome_; }
@@ -81,13 +97,25 @@ public:
   // Chart resolution across the run — the retained sample buffers are sized to it.
   static constexpr uint16_t kCurvePoints = 48;
 
+  // §15's "paused-state timeout: the CYD discards the paused state (and the remainder) after a
+  // timeout (constant, §10)". PLACEHOLDER — §10 owns the real number. Ten minutes is long enough to
+  // fetch a tool and short enough that resin left cooling overnight cannot be silently resumed into
+  // a bad part.
+  static constexpr uint32_t kPausedTimeoutMs = 10U * 60U * 1000U;
+  // The Resume dwell. Deliberately the same order as Confirm's arm: §15 says resuming re-energizes
+  // UV and so carries "the same friction as any UV/heat start".
+  static constexpr uint32_t kResumeHoldMs = 1500;
+
 private:
   void buildRunning();
+  void buildPaused();
   void buildEnded();
+  void enterPaused();
   void configParent();
   void clearParent();
   void refresh(const oven_Telemetry &t, bool ours); // update the live fields from a telemetry frame
-  void pollEnded(); // summary page: the §15 door-open dismiss (never on a Fault outcome)
+  void pollPaused(); // paused page: live Resume gate + §15's two pause-expiry rules
+  void pollEnded();  // summary page: the §15 door-open dismiss (never on a Fault outcome)
   void endRun(RunOutcome outcome);
 
   // Sample the projected trajectory into proj_ and derive the chart's y-range. Once per run.
@@ -133,6 +161,14 @@ private:
   bool deviated_ = false;      // last-applied cue colour, replayed onto a rebuilt chart
   bool door_was_open_ = false; // edge detector for the summary's door dismiss
 
+  // §15 pause state — all CYD-side. `remainder_` is generated ONCE at pause, from the progress the
+  // tracker had at that instant, because the tracker stops advancing the moment the run ends.
+  ProfileDraft remainder_{};
+  bool remainder_ok_ = false;
+  uint32_t paused_at_ms_ = 0;
+  lv_obj_t *resume_btn_ = nullptr;
+  lv_obj_t *paused_cue_ = nullptr;
+
   // Live widgets refreshed in place by refresh() (no rebuild per frame). Owned by the widget tree.
   lv_obj_t *temp_lbl_ = nullptr;
   lv_obj_t *setpoint_lbl_ = nullptr;
@@ -151,6 +187,8 @@ private:
   void *exit_ud_ = nullptr;
   void (*on_again_)(void *) = nullptr;
   void *again_ud_ = nullptr;
+  void (*on_resume_)(void *user_data, const ProfileDraft &remainder) = nullptr;
+  void *resume_ud_ = nullptr;
 
   friend struct RunThunks;
 };

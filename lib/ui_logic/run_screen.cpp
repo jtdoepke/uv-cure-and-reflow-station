@@ -4,7 +4,9 @@
 
 #include "codec.h"       // protocol::wireEnum — reading an untrusted enum field without UB
 #include "fault_table.h" // §16's outcome "(+ cause)" — the same table the §22 overlay reads
+#include "hold_button.h" // §19 press-and-hold — Resume re-energizes UV, so it gets the same friction
 #include "link_banner.h"
+#include "remainder.h"     // B6's cure resume generator (§15)
 #include "profile_facts.h" // formatDuration / formatPeak
 #include "recipe_compiler.h"
 #include "subjects.h"
@@ -19,6 +21,12 @@ struct RunThunks {
   }
   static void again_evt(lv_event_t *e) {
     static_cast<RunScreen *>(lv_event_get_user_data(e))->runAgain();
+  }
+  static void abandon_evt(lv_event_t *e) {
+    static_cast<RunScreen *>(lv_event_get_user_data(e))->abandon();
+  }
+  static void resumed(void *user_data) { // hold_button's commit callback (not an lv_event)
+    static_cast<RunScreen *>(user_data)->resume();
   }
 };
 
@@ -62,7 +70,11 @@ void RunScreen::prepareCurve() {
     const float ts =
         total > 0.0f ? static_cast<float>(i) / static_cast<float>(kCurvePoints - 1) * total : 0.0f;
     proj_[i] = tracker_.projectedAt(ts);
-    actual_[i] = 0.0f;
+    // Seed the measured buffer with the PROJECTION, not 0. Only indices up to actual_last_ are ever
+    // drawn, but a 0 here reads as 0 °C if one ever leaks through — and it did: the paused page's
+    // chart drew the trace plunging to the axis floor at its left edge. Seeding on-plan makes the
+    // worst case invisible rather than alarming.
+    actual_[i] = proj_[i];
     if (proj_[i] < lo) {
       lo = proj_[i];
     }
@@ -117,6 +129,8 @@ void RunScreen::render(lv_obj_t *parent) {
   parent_ = parent;
   if (page_ == Page::Running) {
     buildRunning();
+  } else if (page_ == Page::Paused) {
+    buildPaused();
   } else {
     buildEnded();
   }
@@ -130,6 +144,11 @@ void RunScreen::setExitHandler(void (*cb)(void *), void *user_data) {
 void RunScreen::setRunAgainHandler(void (*cb)(void *), void *user_data) {
   on_again_ = cb;
   again_ud_ = user_data;
+}
+
+void RunScreen::setResumeHandler(void (*cb)(void *, const ProfileDraft &), void *user_data) {
+  on_resume_ = cb;
+  resume_ud_ = user_data;
 }
 
 float RunScreen::controlTempC(const oven_Telemetry &t) const {
@@ -156,6 +175,10 @@ void RunScreen::poll() {
     pollEnded();
     return;
   }
+  if (page_ == Page::Paused) {
+    pollPaused();
+    return;
+  }
   const bool alive = link_->linkAlive() && link_->hasTelemetry();
   if (!alive) {
     return; // the link banner (subject-bound) already shows the drop; hold the last view
@@ -163,7 +186,14 @@ void RunScreen::poll() {
   const oven_Telemetry &t = link_->lastTelemetry();
   const bool ours = (t.session == session_); // §9: ignore a stale frame from a previous run
 
-  if (ours && (!have_seq_ || t.seq != last_seq_)) {
+  // Only a RUNNING frame describes a point on this run's trajectory. A terminal one must not reach
+  // the tracker, because the controller has already reset its executor by then and reports
+  // elapsed_ms = 0 — which the tracker would read as "we are back at t=0", stamping the current
+  // temperature onto the chart's FIRST point and feeding a huge bogus residual into the §16
+  // deviation stats. Found via the paused page's chart drawing a vertical spike at its left edge;
+  // it applies equally to the DONE and FAULT paths, which land on the summary that renders both.
+  const bool live = t.run_state == oven_RunState_RUN_STATE_RUNNING;
+  if (ours && live && (!have_seq_ || t.seq != last_seq_)) {
     last_seq_ = t.seq;
     have_seq_ = true;
     tracker_.update(t, lv_tick_get());
@@ -189,10 +219,21 @@ void RunScreen::poll() {
   // actually did. (Cure resume — §15's Paused overlay + remainder profile — is C7 PR3/B6; this
   // lands the reflow half, "aborted", which §15 specifies for both modes until then.)
   if (t.door_open && saw_running_ && t.run_state != oven_RunState_RUN_STATE_RUNNING) {
-    endRun(RunOutcome::DoorOpened);
     if (link_ != nullptr) {
       link_->sendAbort(); // de-authorize: the run is over, so stop authorizing one (§4/§9)
     }
+    // §15 splits by mode here. Reflow is aborted outright ("can't survive the thermal excursion —
+    // decided"); a cure goes to the Paused page, where the operator can shut the door and hold
+    // Resume to finish it from a generated remainder. A cure with nothing left to resume — the
+    // door opened during its cool tail — falls through to the same abort as reflow, since there is
+    // no work to offer.
+    if (draft_.mode == RecipeMode::Cure) {
+      enterPaused();
+      if (page_ == Page::Paused) {
+        return;
+      }
+    }
+    endRun(RunOutcome::DoorOpened);
     return;
   }
   // Read the untrusted enum field as its raw wire integer: nanopb stores the decoded varint
@@ -205,6 +246,40 @@ void RunScreen::poll() {
     // Guard on saw_running_: the very first frames can still carry a prior run's DONE until the
     // controller adopts our session's RUNNING.
     endRun(RunOutcome::Completed);
+  }
+}
+
+// The Paused page's poll: keep Resume's gate live, and honour §15's two ways a pause expires.
+void RunScreen::pollPaused() {
+  // "A lost heartbeat also ends it (the controller is already idle)." Nothing is being kept warm,
+  // so a pause we cannot confirm the machine's state through is a pause worth abandoning.
+  if (!link_->linkAlive()) {
+    endRun(RunOutcome::DoorOpened);
+    return;
+  }
+  // "The CYD discards the paused state (and the remainder) after a timeout." Resin sitting in a
+  // cooling chamber does not stay resumable forever, and a Paused page left up overnight would
+  // otherwise offer a Resume that silently produces a bad part.
+  if (static_cast<uint32_t>(lv_tick_get() - paused_at_ms_) >= kPausedTimeoutMs) {
+    endRun(RunOutcome::DoorOpened);
+    return;
+  }
+
+  // Live gate + cue: the door can be shut (and re-opened) while this page is up.
+  const bool ok = canResume();
+  if (resume_btn_ != nullptr) {
+    if (ok) {
+      lv_obj_add_flag(resume_btn_, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_remove_state(resume_btn_, LV_STATE_DISABLED);
+    } else {
+      lv_obj_remove_flag(resume_btn_, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_state(resume_btn_, LV_STATE_DISABLED);
+    }
+  }
+  if (paused_cue_ != nullptr) {
+    lv_label_set_text(paused_cue_, ok ? "Door closed - hold Resume to finish"
+                                      : LV_SYMBOL_WARNING " Door open \xC2\xB7 UV OFF");
+    lv_obj_set_style_text_color(paused_cue_, theme::col(ok ? theme::IDLE : theme::WARN), 0);
   }
 }
 
@@ -294,6 +369,58 @@ void RunScreen::refresh(const oven_Telemetry &t, bool ours) {
     lv_obj_set_style_text_color(motor_pill_, theme::col(t.motor ? theme::ACCENT : theme::TEXT_DIM),
                                 0);
   }
+}
+
+// --- §15 Paused (cure only) ---
+
+// Generate the remainder ONCE, here, from the progress the tracker holds at this instant — the
+// tracker stops advancing the moment the run ends, and re-deriving it later (say, when Resume is
+// pressed) would read the same numbers anyway while adding a way for them to drift.
+void RunScreen::enterPaused() {
+  remainder_ok_ = cure_resume::build(draft_, tracker_.currentPhaseIndex(),
+                                     tracker_.holdProgress01(), remainder_);
+  if (!remainder_ok_) {
+    return; // nothing left to finish — the caller falls through to an ordinary abort
+  }
+  // A remainder that will not COMPILE is no better than none: Start would NAK and strand the
+  // operator with the door already open. fuzz_remainder proved this is reachable rather than
+  // theoretical, so the check is here and not an assumption. Same caps the run was armed with.
+  const int32_t cap = lv_subject_get_int(&subj_uv_cap);
+  const Caps caps{0.0f, static_cast<float>(cap)};
+  const CompileResult cr = compileRecipe(remainder_.phases, remainder_.phaseCount, remainder_.mode,
+                                         *model_, caps, profile_facts::kDefaultAmbientC, 0, 0);
+  if (!cr.hardValid) {
+    remainder_ok_ = false;
+    return;
+  }
+  page_ = Page::Paused;
+  paused_at_ms_ = lv_tick_get();
+  buildPaused();
+}
+
+bool RunScreen::canResume() const {
+  if (!remainder_ok_ || link_ == nullptr) {
+    return false;
+  }
+  // §15: "enabled only when the door is closed" — no auto-resume, eye safety. Unknown door (no
+  // telemetry) blocks, matching the sensor's own fail-safe-to-open wiring.
+  if (!link_->linkAlive() || !link_->hasTelemetry()) {
+    return false;
+  }
+  return !link_->lastTelemetry().door_open;
+}
+
+void RunScreen::resume() {
+  if (!canResume()) {
+    return; // guarded: the gesture target is callable directly by tests
+  }
+  if (on_resume_ != nullptr) {
+    on_resume_(resume_ud_, remainder_);
+  }
+}
+
+void RunScreen::abandon() {
+  endRun(RunOutcome::DoorOpened);
 }
 
 void RunScreen::endRun(RunOutcome outcome) {
@@ -435,6 +562,85 @@ void RunScreen::buildRunning() {
   lv_label_set_text(stop_lbl, "STOP");
   lv_obj_center(stop_lbl);
   lv_obj_add_event_cb(stop, RunThunks::stop_evt, LV_EVENT_CLICKED, this);
+}
+
+// --- Paused page (§15, cure only) ---
+//
+// The layout §15 sketches: what happened, what to do about it, and two ways out. Amber, not red —
+// an operator opening the door is expected, and §22 reserves the red modal for hazards.
+
+void RunScreen::buildPaused() {
+  clearParent();
+  configParent();
+  temp_lbl_ = nullptr;
+  setpoint_lbl_ = nullptr;
+  phase_lbl_ = nullptr;
+  cue_lbl_ = nullptr;
+  uv_pill_ = nullptr;
+  fan_pill_ = nullptr;
+  motor_pill_ = nullptr;
+  run_curve_ = RunCurve{};
+  resume_btn_ = nullptr;
+  paused_cue_ = nullptr;
+
+  lv_obj_t *header = lv_obj_create(parent_);
+  theme::apply_panel(header);
+  lv_obj_set_width(header, lv_pct(100));
+  lv_obj_set_height(header, LV_SIZE_CONTENT);
+  lv_obj_set_style_min_height(header, theme::HEADER_H, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_gap(header, theme::PAD_M, 0);
+  lv_obj_t *h = lv_label_create(header);
+  lv_label_set_text(h, "PAUSED");
+  lv_obj_set_style_text_color(h, theme::col(theme::WARN), 0);
+  lv_obj_t *sub = lv_label_create(header);
+  lv_label_set_text(sub, draft_.name);
+  lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+  theme::apply_caption(sub);
+
+  // The state line, refreshed live by pollPaused() as the door opens and shuts.
+  paused_cue_ = lv_label_create(parent_);
+  lv_label_set_text(paused_cue_, LV_SYMBOL_WARNING " Door open \xC2\xB7 UV OFF");
+  lv_obj_set_width(paused_cue_, lv_pct(100));
+  lv_label_set_long_mode(paused_cue_, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(paused_cue_, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(paused_cue_, theme::col(theme::WARN), 0);
+
+  // What resuming will actually do. The operator is about to re-energize UV on a part that has been
+  // sitting in the open — saying how much cure is left is what makes that an informed decision
+  // rather than a hopeful one.
+  lv_obj_t *what = lv_label_create(parent_);
+  lv_label_set_text_fmt(what, "%u phase%s left, starting with %s",
+                        static_cast<unsigned>(remainder_.phaseCount),
+                        remainder_.phaseCount == 1 ? "" : "s",
+                        remainder_.phaseCount > 0 ? remainder_.phases[0].name : "");
+  lv_obj_set_width(what, lv_pct(100));
+  lv_label_set_long_mode(what, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(what, LV_TEXT_ALIGN_CENTER, 0);
+  theme::apply_caption(what);
+
+  // The run so far, from the retained samples. Deciding whether to resume is a judgement about a
+  // part that has been sitting open, and "how far did it get before I opened the door" is the one
+  // piece of evidence the operator has — better use of the space than a blank spacer.
+  buildCurve();
+  lv_obj_set_style_min_height(run_curve_.root, panel::H / 5, 0);
+
+  // Abort is a plain tap (giving up is safe); Resume is press-and-hold, because it re-energizes UV
+  // and heat — §19's rule, and §15 calls for exactly the same friction as any other start.
+  lv_obj_t *abort = lv_button_create(parent_);
+  theme::apply_secondary(abort);
+  lv_obj_set_width(abort, lv_pct(100));
+  lv_obj_set_height(abort, theme::SECONDARY_H);
+  lv_obj_t *abort_lbl = lv_label_create(abort);
+  lv_label_set_text(abort_lbl, "Abort the run");
+  lv_obj_center(abort_lbl);
+  lv_obj_add_event_cb(abort, RunThunks::abandon_evt, LV_EVENT_CLICKED, this);
+
+  const HoldButton hold =
+      create_hold_button(parent_, "HOLD to resume", kResumeHoldMs, RunThunks::resumed, this);
+  resume_btn_ = hold.root;
+  pollPaused(); // set the initial gate/cue rather than duplicating the logic here
 }
 
 // --- Ended page = the §16 Run Summary ---

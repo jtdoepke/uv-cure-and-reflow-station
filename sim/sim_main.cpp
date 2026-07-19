@@ -652,6 +652,57 @@ int main(int argc, char **argv) {
       run_link.onTelemetry(t);
       run.poll();
     }
+  } else if (screen == "paused" || screen == "paused-ready") {
+    // The §15 cure Paused page (C7 PR3): a cure interrupted by the door, offering B6's remainder.
+    // Rendered with the door still OPEN, which is the state the operator actually meets — Resume
+    // disabled, the amber "Door open · UV OFF" cue up.
+    static protocol::CydLink pause_link(cyd_link, clk);
+    lv_subject_set_int(&subj_link_state, LINK_OK);
+    const uint32_t sess = 0x5100BEEF;
+    ProfileDraft d = profile_templates::defaultTemplate(RecipeMode::Cure);
+    std::strncpy(d.name, "Resin-A", kProfileNameCap - 1);
+    run.begin(d, sess, pause_link);
+    run.render(lv_screen_active());
+    uint32_t seq = 0;
+    const float total = run.tracker().totalSeconds();
+    for (int i = 0; i <= 12; ++i) {
+      const float ts = total * 0.35f * (static_cast<float>(i) / 12.0f);
+      oven_Telemetry t = oven_Telemetry_init_zero;
+      t.session = sess;
+      t.seq = ++seq;
+      t.run_state = oven_RunState_RUN_STATE_RUNNING;
+      t.setpoint = run.tracker().projectedAt(ts);
+      t.wall_temp_count = 4;
+      for (size_t k = 0; k < 4; ++k) {
+        t.wall_temp[k] = run.tracker().projectedAt(ts);
+      }
+      t.elapsed_ms = static_cast<uint32_t>(ts * 1000.0f);
+      t.seg_idx = 1;
+      t.uv_duty = 1.0f;
+      t.motor = true;
+      pause_link.onTelemetry(t);
+      run.poll();
+      lv_tick_inc(static_cast<uint32_t>(total * 350.0f) / 13U);
+    }
+    oven_Telemetry stop = oven_Telemetry_init_zero;
+    stop.session = sess;
+    stop.seq = ++seq;
+    stop.run_state = oven_RunState_RUN_STATE_IDLE;
+    stop.door_open = true;
+    stop.wall_temp_count = 4;
+    for (size_t k = 0; k < 4; ++k) {
+      stop.wall_temp[k] = 48.0f;
+    }
+    pause_link.onTelemetry(stop);
+    run.poll();
+    if (screen == "paused-ready") {
+      // Door shut again: Resume becomes live. This is the state the operator acts on, so it is
+      // worth a fixture of its own — a disabled control tells you nothing about the enabled one.
+      stop.seq = ++seq;
+      stop.door_open = false;
+      pause_link.onTelemetry(stop);
+      run.poll();
+    }
   } else if (screen == "summary" || screen == "summary-fault" || screen == "summary-door") {
     // The §16 Run Summary (C8) — the Ended page. A whole run is fed so both curves are complete,
     // then a terminal frame lands the summary:
