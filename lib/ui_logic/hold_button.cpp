@@ -2,27 +2,38 @@
 
 #include "theme.h"
 
-// Per-widget state: the timing model + the arm callback + the fill ring + the poll timer. Owned by
-// the button via user_data, freed on the button's LV_EVENT_DELETE (which also deletes the timer —
-// the one safe place, since the arm callback may itself delete the whole widget tree).
+// Per-widget state: the timing model + the arm callback + the fill overlay + the poll timer. Owned
+// by the button via user_data, freed on the button's LV_EVENT_DELETE (which also deletes the timer
+// — the one safe place, since the arm callback may itself delete the whole widget tree).
 namespace {
 struct HoldCtx {
   HoldButtonModel model;
   void (*on_arm)(void *) = nullptr;
   void *ud = nullptr;
-  lv_obj_t *arc = nullptr;
+  lv_obj_t *fill = nullptr;
   lv_timer_t *timer = nullptr;
 };
 
-// ~30 ms poll: repaint the ring from progress(), and fire once at the arm edge. LVGL tolerates a
+// The fill sweeps left-to-right by widening from 0 to full as progress() goes 0→1.
+void set_fill(lv_obj_t *fill, float progress01) {
+  int32_t pct = static_cast<int32_t>(progress01 * 100.0f);
+  if (pct < 0) {
+    pct = 0;
+  } else if (pct > 100) {
+    pct = 100;
+  }
+  lv_obj_set_width(fill, lv_pct(pct));
+}
+
+// ~30 ms poll: resize the fill from progress(), and fire once at the arm edge. LVGL tolerates a
 // timer being deleted from within its own callback, so on_arm() deleting the widget (navigation) is
 // safe — ctx is simply not touched after the call.
 void tick_cb(lv_timer_t *timer) {
   auto *ctx = static_cast<HoldCtx *>(lv_timer_get_user_data(timer));
   const uint32_t now = lv_tick_get();
-  lv_arc_set_value(ctx->arc, static_cast<int32_t>(ctx->model.progress(now) * 100.0f));
+  set_fill(ctx->fill, ctx->model.progress(now));
   if (ctx->model.poll(now)) {
-    lv_arc_set_value(ctx->arc, 100);
+    set_fill(ctx->fill, 1.0f);
     if (ctx->on_arm != nullptr) {
       ctx->on_arm(ctx->ud); // may delete this widget → timer + ctx freed via the DELETE handler
     }
@@ -49,13 +60,13 @@ void on_pressed(lv_event_t *e) {
   ensure_timer(ctx);
 }
 
-// Finger up or slid off the button: cancel the hold and reset the ring (armed latches, so a
+// Finger up or slid off the button: cancel the hold and reset the fill (armed latches, so a
 // completed hold that already fired is unaffected).
 void on_release(lv_event_t *e) {
   auto *ctx = static_cast<HoldCtx *>(lv_event_get_user_data(e));
   ctx->model.release();
   stop_timer(ctx);
-  lv_arc_set_value(ctx->arc, 0);
+  set_fill(ctx->fill, 0.0f);
 }
 
 void on_delete(lv_event_t *e) {
@@ -76,32 +87,30 @@ HoldButton create_hold_button(lv_obj_t *parent, const char *label, uint32_t hold
   theme::apply_mode_tile(btn); // the big primary commit action
   lv_obj_set_width(btn, lv_pct(100));
   lv_obj_set_height(btn, theme::SECONDARY_H);
+  lv_obj_set_style_pad_all(btn, 0, 0);        // let the fill reach the edges
+  lv_obj_set_style_clip_corner(btn, true, 0); // clip the fill to the button's rounded corners
 
-  // The fill ring, centred and non-interactive (presses pass through to the button). It grows
-  // 0→360° as the hold completes — the visible "keep holding" feedback the §19 gesture needs.
-  lv_obj_t *arc = lv_arc_create(btn);
-  const int32_t d = theme::SECONDARY_H - theme::PAD_S;
-  lv_obj_set_size(arc, d, d);
-  lv_obj_align(arc, LV_ALIGN_LEFT_MID, theme::PAD_S / 2, 0);
-  lv_arc_set_rotation(arc, 270);
-  lv_arc_set_bg_angles(arc, 0, 360);
-  lv_arc_set_range(arc, 0, 100);
-  lv_arc_set_value(arc, 0);
-  lv_arc_set_mode(arc, LV_ARC_MODE_NORMAL);
-  lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_remove_style(arc, nullptr, LV_PART_KNOB); // decorative — no drag knob
-  lv_obj_set_style_arc_color(arc, theme::col(theme::ACCENT), LV_PART_INDICATOR);
-  lv_obj_set_style_arc_opa(arc, LV_OPA_30, LV_PART_MAIN);
+  // The progress fill: a translucent-white overlay pinned to the left edge, full height, its width
+  // growing 0→100% as the hold completes. Non-interactive (presses pass to the button), and behind
+  // the label (created after it, so the label draws on top).
+  lv_obj_t *fill = lv_obj_create(btn);
+  lv_obj_remove_style_all(fill);
+  lv_obj_set_height(fill, lv_pct(100));
+  lv_obj_set_width(fill, lv_pct(0));
+  lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_color(fill, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(fill, LV_OPA_30, 0);
+  lv_obj_remove_flag(fill, LV_OBJ_FLAG_CLICKABLE);
 
   lv_obj_t *lbl = lv_label_create(btn);
   lv_label_set_text(lbl, label);
   lv_obj_center(lbl);
 
-  ctx->arc = arc;
+  ctx->fill = fill;
   lv_obj_add_event_cb(btn, on_pressed, LV_EVENT_PRESSED, ctx);
   lv_obj_add_event_cb(btn, on_release, LV_EVENT_RELEASED, ctx);
   lv_obj_add_event_cb(btn, on_release, LV_EVENT_PRESS_LOST, ctx);
   lv_obj_add_event_cb(btn, on_delete, LV_EVENT_DELETE, ctx);
 
-  return HoldButton{btn, arc, lbl};
+  return HoldButton{btn, fill, lbl};
 }

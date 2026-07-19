@@ -42,14 +42,6 @@ enum NavRequest {
   // Reflow → Setup, §19), which is where LOAD lives (NAV_SETUP_* below).
   NAV_PROFILE_NEW,
   NAV_PROFILE_EDIT,
-  // Setup-screen (§19/C6) actions, resolved in main.cpp off the Setup screen's own run-draft state.
-  // PICK opens the profile library in pick mode (Load a profile); EDIT opens the editor on the run
-  // draft as a working copy (tweaks apply to THIS run only, no library write); SAVE_AS opens the
-  // editor to persist the run draft as a named profile; START advances to Confirm (§19, C6b).
-  NAV_SETUP_PICK,
-  NAV_SETUP_EDIT,
-  NAV_SETUP_SAVE_AS,
-  NAV_SETUP_START,
 };
 
 extern lv_subject_t subj_chamber_temp; // int, °C

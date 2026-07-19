@@ -5,7 +5,7 @@
 // PNG screenshots. No display server, no hardware. See the ui-development skill.
 //
 // Usage: program [--out PATH] [--screen
-// home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|setup|confirm|run|editor]
+// home|stepper|keypad|list|settings|alerts|curve|profile-library|picker|confirm|run|editor]
 // [ACTION...]
 //   click X Y | press X Y | moveto X Y | release | wait MS | shot PATH | frame PATH
 //   temp N | state idle|hot|running|fault | link ok|none|schema | sensor on|off
@@ -56,7 +56,6 @@
 #include "profile_templates.h"
 #include "run_screen.h"
 #include "selectable_list.h"
-#include "setup_screen.h"
 #include "settings_screen.h"
 #include "subjects.h"
 #include "theme.h"
@@ -488,7 +487,6 @@ int main(int argc, char **argv) {
 
   ProfileLibraryScreen profiles;
   ProfileEditorScreen editor;
-  SetupScreen setup_scr;
   ConfirmRunScreen confirm;
   RunScreen run;
   if (screen == "settings") {
@@ -590,18 +588,6 @@ int main(int argc, char **argv) {
     g_link_ctrl = &ctrl_link;
     g_client = &client;
     g_profiles_screen = &profiles;
-  } else if (screen == "setup" || screen == "setup-empty") {
-    // The §19/C6 Setup screen. `setup-empty` shows the "Load a profile" call to action; `setup`
-    // shows the loaded state (provenance + feasibility preview + Load/Edit/Save-as + readiness +
-    // Start) over a representative reflow run draft.
-    lv_subject_set_int(&subj_link_state, LINK_OK);
-    setup_scr.enterMode(RecipeMode::Reflow);
-    if (screen == "setup") {
-      ProfileDraft d = profile_templates::defaultTemplate(RecipeMode::Reflow);
-      std::strncpy(d.name, "LF-245", kProfileNameCap - 1);
-      setup_scr.setDraft(d);
-    }
-    setup_scr.render(lv_screen_active());
   } else if (screen == "confirm" || screen == "confirm-cure") {
     // The §19/C6b Confirm screen: the specific statement + safety precondition (reflow probe gate /
     // cure UV caution) + Cancel + HOLD-to-start. `confirm` is reflow (a fed telemetry frame makes

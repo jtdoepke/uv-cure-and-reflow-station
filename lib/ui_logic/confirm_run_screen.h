@@ -7,7 +7,8 @@
 //   - REFLOW: the workpiece thermocouple must be attached and reading plausibly (tcAttached over
 //     live telemetry) before HOLD-to-start enables — a run driven off a dangling probe is the
 //     classic reflow ruin (§5/§19);
-//   - CURE: a UV-eye caution (keep the lid shut; do not look at the array) — no TC gate.
+//   - CURE: no precondition line — the UV array is filtered at the door window and the door latches
+//     cut the light when it opens, so no eye-hazard caution is needed.
 //
 // On commit it runs the §9 start handshake against the CydLink: sendRecipe → (Ack) → sendStart →
 // (Ack) → setSession + setEnable(true), then a best-effort ProfileTouch so the run's source floats

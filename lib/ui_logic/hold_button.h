@@ -1,11 +1,11 @@
 // hold_button — a press-and-hold "arm" control (design.md §19; backlog C6b). A deliberate,
 // hard-to-trip-by-accident commit gesture for the one irreversible action on the panel: starting a
-// run (and, later, resuming a paused cure). You press and HOLD; a ring fills over ~hold_ms; only at
-// full does it fire. Lifting early cancels with nothing done — the §19 "easy to cancel, deliberate
-// to commit" rule, the inverse of a tap.
+// run (and, later, resuming a paused cure). You press and HOLD; a translucent-white fill sweeps the
+// button left-to-right over ~hold_ms; only at full does it fire. Lifting early cancels with nothing
+// done — the §19 "easy to cancel, deliberate to commit" rule, the inverse of a tap.
 //
 // The timing is a pure model (HoldButtonModel) so it is host-tested without LVGL: the widget just
-// feeds it lv_tick_get() and paints the ring from progress(). LVGL-only widget half; the model is
+// feeds it lv_tick_get() and sizes the fill from progress(). LVGL-only widget half; the model is
 // plain C++. Compiles for firmware and the native_ui_cyd / native_sim host targets.
 #pragma once
 
@@ -69,7 +69,7 @@ struct HoldButtonModel {
 // Handles into the built widget so callers/tests can inspect or gate it.
 struct HoldButton {
   lv_obj_t *root; // the pressable button (gate it via LV_STATE_DISABLED / the CLICKABLE flag)
-  lv_obj_t *arc;  // the fill ring (0..100)
+  lv_obj_t *fill; // the left-to-right translucent progress fill, grown as the hold completes
   lv_obj_t *label;
 };
 

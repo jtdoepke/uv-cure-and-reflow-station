@@ -54,9 +54,6 @@ struct ProfileThunks {
     static_cast<ProfileLibraryScreen *>(ud)->onDeleteConfirmed();
   }
   static void cancel_delete(void *ud) { static_cast<ProfileLibraryScreen *>(ud)->back(); }
-  static void pick_use(lv_event_t *e) {
-    static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->onPickUse();
-  }
   static void sort_toggle(lv_event_t *e) {
     static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->toggleSortAndReload();
   }
@@ -206,8 +203,14 @@ void ProfileLibraryScreen::poll() {
     current_->adoptDetail(client_->profile());
     client_->clear();
     pending_ = Pending::None;
-    page_ = Page::Detail;
-    buildDetail();
+    if (pick_) {
+      // Pick mode (Setup → Load, §19/C6): the fetch was only to assemble the run draft — hand it
+      // straight to the caller (→ Confirm, which shows the one preview graph). No detail page.
+      onPickUse();
+    } else {
+      page_ = Page::Detail;
+      buildDetail();
+    }
     break;
   case Pending::Action:
     // A mutation (dup/rename/delete) succeeded — re-list to reflect it.
@@ -525,19 +528,7 @@ void ProfileLibraryScreen::buildDetail() {
   lv_label_set_text(facts_label, facts);
   theme::apply_caption(facts_label);
 
-  // Pick mode (§19/C6): this detail is the Load preview, so the only action is committing the
-  // choice. One full-width primary button hands the run draft back; Back returns to the list.
-  if (pick_) {
-    lv_obj_t *use = lv_button_create(parent_);
-    theme::apply_mode_tile(use); // the big primary action for this page
-    lv_obj_set_width(use, lv_pct(100));
-    lv_obj_set_height(use, theme::SECONDARY_H);
-    lv_obj_t *use_lbl = lv_label_create(use);
-    lv_label_set_text(use_lbl, "Use this profile");
-    lv_obj_center(use_lbl);
-    lv_obj_add_event_cb(use, ProfileThunks::pick_use, LV_EVENT_CLICKED, this);
-    return;
-  }
+  // (Pick mode never reaches buildDetail — poll() hands the run draft straight to Confirm, §19/C6.)
 
   // Action row (managing profiles only — running one is a separate path, Home → UV Cure / Reflow →
   // Setup, §19, so there is no Load here). A STOCK profile is read-only: it shows just Delete

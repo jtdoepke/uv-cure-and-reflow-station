@@ -32,7 +32,6 @@
 #include "screen_router.h"          // hub-and-spoke screen manager + cache policy (lib/ui_logic)
 #include "settings_codec.h"         // Settings <-> oven_Settings at the wire boundary (Wave R3b)
 #include "settings_screen.h"        // Settings hub + panels (§24)
-#include "setup_screen.h"           // §19 run-setup screen (lib/ui_logic, C6a)
 #include "settings_store.h"         // typed device settings (lib/app_logic)
 #include "sleep_controller.h"       // idle sleep/wake policy (lib/app_logic, §17)
 #include "subjects.h"
@@ -86,23 +85,11 @@ static SettingsScreen g_settings_screen;
 // below, after the link stack). Separate cure/reflow scoping lives on the controller (§7).
 static ProfileLibraryScreen g_profile_library;
 
-// §19 run-setup (C6a). Owns the run's working-copy ProfileDraft; Home → UV Cure / Reflow lands
-// here. The library is reused in pick mode for its "Load a profile" (one object, no second 32-row
-// cache on this no-PSRAM board — see the SCREEN_PROFILES definition, now create-on-demand so the
-// shared object only ever backs one live widget tree).
-//
-// Heap-allocated on first use like the editor: its ProfileDraft member (a full 32-phase working
-// copy, ~1.3 KB) would not fit alongside the library caches in the static DRAM segment on this
-// no-PSRAM board; deferring it out of .bss until Setup is first opened is what keeps the firmware
-// linking.
-static SetupScreen *g_setup_screen = nullptr;
-static SetupScreen &setup_screen() {
-  if (g_setup_screen == nullptr) {
-    g_setup_screen = new SetupScreen();
-  }
-  return *g_setup_screen;
-}
-static RecipeMode g_setup_mode = RecipeMode::Reflow;
+// The mode chosen on Home (UV Cure / Reflow, §19/C6) scopes the profile picker that opens next. The
+// run flow is picker → Confirm (the one preview + HOLD-to-start page) → Run — there is no separate
+// Setup screen; the library is reused in pick mode for the "Load a profile" list (one object, no
+// second 32-row cache on this no-PSRAM board — see the SCREEN_PROFILES definition).
+static RecipeMode g_run_mode = RecipeMode::Reflow;
 
 // §12 editor (C5). Heap-allocated on first edit rather than a static: the library's two view-models
 // already fill the static DRAM segment (32-row caches each), and the editor is just as large; since
@@ -277,29 +264,22 @@ enum : int {
   SCREEN_SETTINGS = 1,
   SCREEN_PROFILES = 2,
   SCREEN_EDITOR = 3,
-  SCREEN_SETUP = 4,
   SCREEN_PICKER =
-      5, // the profile library in pick mode (Setup → Load), same g_profile_library object
-  SCREEN_CONFIRM = 6, // §19 run confirmation (C6b)
-  SCREEN_RUN = 7,     // §15 Run / Monitor (C7a)
+      4, // the profile library in pick mode (Home → mode → pick), same g_profile_library
+  SCREEN_CONFIRM = 5, // §19 preview + HOLD-to-start (C6b)
+  SCREEN_RUN = 6,     // §15 Run / Monitor (C7a)
 };
 static ScreenRouter g_router;
 
-// The session of the run being started, generated in the NAV_SETUP_START handler (§9: controller-
-// unique, non-zero) and handed to Confirm, then to the Run screen on commit. The authored draft
-// itself flows Confirm → commit callback → RunScreen::begin (which copies it), so it needs no
+// The session of the run being started, generated when a profile is picked (on_pick_selected; §9:
+// controller-unique, non-zero) and handed to Confirm, then to the Run screen on commit. The
+// authored draft flows picker → Confirm → commit callback → RunScreen::begin (which copies it), no
 // static.
 static uint32_t g_run_session = 0;
 
 // Which mode's library the editor returns to (the editor edits one mode's profile; on exit we land
 // back on that mode's list, not the mode-blind chooser).
 static RecipeMode g_editor_mode = RecipeMode::Reflow;
-
-// Where the editor returns when it leaves: the Profiles library (managing a profile, C5) or the
-// Setup screen (tweaking / saving-as a run's working copy, C6). Set before routing to
-// SCREEN_EDITOR.
-enum class EditorReturn { Library, Setup };
-static EditorReturn g_editor_return = EditorReturn::Library;
 
 static void go_home() {
   lv_subject_set_int(&subj_nav_request, NAV_NONE); // reset so re-tapping a hub tile re-triggers
@@ -316,46 +296,33 @@ static void on_profiles_exit(void *) {
   go_home();
 }
 
-static void on_setup_exit(void *) {
-  go_home();
-}
-
-// Editor Back / completed Save → return to whoever opened the editor (reset the nav intent first so
-// re-tapping the same action re-triggers the observer, go_home's idiom). From the Setup screen
-// (C6), the editor edits the run's working copy: adopt the tweaks only if the operator committed
-// them (savedOk — "Use", or a persisted Save-as); a Back discards them, leaving the prior run
-// draft. From the library (C5), land back on the edited mode's list where the just-saved profile
-// shows.
+// Editor Back / completed Save → return to the edited mode's library list (reset the nav intent
+// first so re-tapping the same action re-triggers the observer, go_home's idiom). The editor is
+// reached only from the Profiles branch (C5) now, so it always returns there.
 static void on_editor_exit(void *) {
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
-  if (g_editor_return == EditorReturn::Setup) {
-    if (profile_editor().savedOk()) {
-      setup_screen().setDraft(profile_editor().working());
-    }
-    g_router.show(SCREEN_SETUP);
-    return;
-  }
   g_router.show(SCREEN_PROFILES);
   g_profile_library.openMode(g_editor_mode);
 }
 
-// The Setup picker (SCREEN_PICKER, pick mode over the shared g_profile_library): a chosen profile's
-// run draft comes back here → adopt it and return to Setup. Back without choosing just returns.
+// A profile picked (Home → mode → picker) → confirm the run over a fresh controller-unique session
+// (§9). Confirm is the one preview + HOLD-to-start page; there is no intermediate Setup screen.
 static void on_pick_selected(void *, const ProfileDraft &draft) {
-  setup_screen().setDraft(draft);
+  g_run_session = esp_random() | 1U; // non-zero: 0 means "no session"; reused by the Run screen
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
-  g_router.show(SCREEN_SETUP);
+  confirm_screen().begin(draft, g_run_session, g_cyd_link, g_mgmt_client);
+  g_router.show(SCREEN_CONFIRM);
 }
 
+// Picker Back (nothing chosen) → Home.
 static void on_picker_exit(void *) {
-  lv_subject_set_int(&subj_nav_request, NAV_NONE);
-  g_router.show(SCREEN_SETUP);
+  go_home();
 }
 
-// Confirm Cancel/Back → return to Setup (the run draft is untouched, so it lands back on Loaded).
+// Confirm Back → the picker, to choose a different profile.
 static void on_confirm_exit(void *) {
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
-  g_router.show(SCREEN_SETUP);
+  g_router.show(SCREEN_PICKER);
 }
 
 // Confirm commit → the run is enabled on the link (§9). Hand the authored draft + session to the
@@ -376,7 +343,6 @@ static void on_run_exit(void *) {
 // profile (a stock one edits as Save-as, §23). The which-profile handoff the library reserved
 // (subjects.h) is resolved here, in the composition root, off the library's own selection state.
 static void open_editor_new() {
-  g_editor_return = EditorReturn::Library;
   g_editor_mode = g_profile_library.mode();
   // NEW seeds the mode's default template locally (synchronous); name entry supplies the name on
   // Save, which pushes to the controller (§9).
@@ -386,7 +352,6 @@ static void open_editor_new() {
 }
 
 static void open_editor_edit() {
-  g_editor_return = EditorReturn::Library;
   g_editor_mode = g_profile_library.mode();
   const int sel = g_profile_library.selected();
   if (sel < 0) {
@@ -401,37 +366,11 @@ static void open_editor_edit() {
   g_router.show(SCREEN_EDITOR);
 }
 
-// Home → UV Cure / Reflow: start a fresh Setup session for that mode (§19/C6). enterMode clears the
-// run draft; the router build cb renders the Empty page.
-static void open_setup(RecipeMode mode) {
-  g_setup_mode = mode;
-  setup_screen().enterMode(mode);
-  g_router.show(SCREEN_SETUP);
-}
-
-// Setup → Edit: open the editor on the run draft as a WORKING COPY (tweaks apply to THIS run only,
-// no library write — beginWorkingCopy). Setup → Save-as: open the editor to persist the draft as a
-// named profile (beginNew + Save-as name entry). Both return to Setup (g_editor_return::Setup).
-static void open_setup_edit() {
-  g_editor_return = EditorReturn::Setup;
-  g_editor_mode = setup_screen().mode();
-  profile_editor().beginWorkingCopy(setup_screen().draft());
-  g_router.show(SCREEN_EDITOR);
-}
-
-static void open_setup_save_as() {
-  g_editor_return = EditorReturn::Setup;
-  g_editor_mode = setup_screen().mode();
-  profile_editor().beginNew(setup_screen().draft(), g_mgmt_client, /*saveAs=*/true);
-  g_router.show(SCREEN_EDITOR);
-}
-
-// Setup → Start: confirm the run over a fresh controller-unique session (§9). Confirm compiles the
-// draft, states the run, gates on the reflow TC, and runs the start handshake on commit.
-static void open_confirm() {
-  g_run_session = esp_random() | 1U; // non-zero: 0 means "no session"; reused by the Run screen
-  confirm_screen().begin(setup_screen().draft(), g_run_session, g_cyd_link, g_mgmt_client);
-  g_router.show(SCREEN_CONFIRM);
+// Home → UV Cure / Reflow: pick a profile for that mode straight away (§19/C6). The picker hands
+// the chosen profile to Confirm (on_pick_selected); there is no separate Setup page.
+static void open_run_picker(RecipeMode mode) {
+  g_run_mode = mode;
+  g_router.show(SCREEN_PICKER);
 }
 
 static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
@@ -449,22 +388,10 @@ static void on_nav_request(lv_observer_t *, lv_subject_t *subject) {
     open_editor_edit();
     break;
   case NAV_CURE_SETUP:
-    open_setup(RecipeMode::Cure);
+    open_run_picker(RecipeMode::Cure);
     break;
   case NAV_REFLOW_SETUP:
-    open_setup(RecipeMode::Reflow);
-    break;
-  case NAV_SETUP_PICK:
-    g_router.show(SCREEN_PICKER); // the library in pick mode; on_pick_selected returns to Setup
-    break;
-  case NAV_SETUP_EDIT:
-    open_setup_edit();
-    break;
-  case NAV_SETUP_SAVE_AS:
-    open_setup_save_as();
-    break;
-  case NAV_SETUP_START:
-    open_confirm();
+    open_run_picker(RecipeMode::Reflow);
     break;
   default:
     // NAV_CALIBRATE has no destination yet — Home publishes it and this observer ignores it until
@@ -487,21 +414,13 @@ static void build_profile_library_cb(void *, lv_obj_t *scr) {
   g_profile_library.begin(scr, g_mgmt_client);
 }
 
-// Setup (C6a): create-on-demand like the editor — its SESSION state (the run draft) is a member
-// that outlives the rebuild, so render() rebuilds the current page from it (enterMode/setDraft set
-// it).
-static void build_setup_screen_cb(void *, lv_obj_t *scr) {
-  setup_screen().setExitHandler(on_setup_exit, nullptr);
-  setup_screen().render(scr);
-}
-
-// The Setup picker (C6a): the SAME g_profile_library object, entered in pick mode over
-// g_setup_mode. Reusing the object (not a second 32-row-cache instance) is why SCREEN_PROFILES is
-// now create-on- demand — the shared object must only ever back one live widget tree at a time.
+// The run picker (C6): the SAME g_profile_library object, entered in pick mode over g_run_mode.
+// Reusing the object (not a second 32-row-cache instance) is why SCREEN_PROFILES is now create-on-
+// demand — the shared object must only ever back one live widget tree at a time.
 static void build_profile_picker_cb(void *, lv_obj_t *scr) {
   g_profile_library.setExitHandler(on_picker_exit, nullptr);
   g_profile_library.setPickHandler(on_pick_selected, nullptr);
-  g_profile_library.beginPick(scr, g_mgmt_client, g_setup_mode);
+  g_profile_library.beginPick(scr, g_mgmt_client, g_run_mode);
 }
 
 // Confirm (C6b): create-on-demand; open_confirm() calls begin() (draft + session + links) before
@@ -814,7 +733,6 @@ void setup() {
   // rarely-revisited screen (Home, the always-returned hub, stays cached).
   g_router.define(SCREEN_PROFILES, build_profile_library_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_EDITOR, build_profile_editor_cb, nullptr, /*cached=*/false);
-  g_router.define(SCREEN_SETUP, build_setup_screen_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_PICKER, build_profile_picker_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_CONFIRM, build_confirm_screen_cb, nullptr, /*cached=*/false);
   g_router.define(SCREEN_RUN, build_run_screen_cb, nullptr, /*cached=*/false);

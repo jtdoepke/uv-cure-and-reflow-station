@@ -5,6 +5,7 @@
 #include "hold_button.h"
 #include "link_banner.h"
 #include "phase_codec.h" // modeToWire (RecipeMode → oven_Mode) for the recency touch
+#include "profile_curve.h"
 #include "profile_facts.h"
 #include "subjects.h"
 #include "theme.h"
@@ -24,9 +25,6 @@ constexpr float kWallSlackC = 30.0f;     // a real probe can't run this far abov
 struct ConfirmThunks {
   static void back_evt(lv_event_t *e) {
     static_cast<ConfirmRunScreen *>(lv_event_get_user_data(e))->back();
-  }
-  static void cancel_evt(lv_event_t *e) {
-    static_cast<ConfirmRunScreen *>(lv_event_get_user_data(e))->cancel();
   }
   static void armed(void *ud) { static_cast<ConfirmRunScreen *>(ud)->commit(); }
 };
@@ -283,82 +281,107 @@ void ConfirmRunScreen::buildHeader(const char *title) {
   create_link_banner(parent_);
 }
 
-// --- Review page: the specific statement + safety precondition + Cancel/HOLD ---
+// --- Review page: the feasibility graph + safety precondition + HOLD-to-start ---
+//
+// This is the ONE page between picking a profile and running it (§19): the picker hands the run
+// draft straight here, so the preview graph lives here (not duplicated in a picker detail + a setup
+// page). The only forward control is the deliberate HOLD-to-start; the header Back cancels.
 
 void ConfirmRunScreen::buildReview() {
   clearParent();
   configParent();
-  // The statement + preconditions + two action rows can exceed the short 2.8" landscape, so scroll
-  // (apply_screen cleared the flag); a no-op on the tall portrait.
+  // The graph + precondition + HOLD can exceed the short 2.8" landscape, so scroll (apply_screen
+  // cleared the flag); a no-op on the tall portrait, where the graph flex-grows to fill instead.
   lv_obj_add_flag(parent_, LV_OBJ_FLAG_SCROLLABLE);
-  buildHeader("Confirm");
+  buildHeader(draft_.name); // the profile being started is the title
 
   const bool fahrenheit = lv_subject_get_int(&subj_units) != 0;
+  const float amb = profile_facts::kDefaultAmbientC;
 
-  // The specific statement — exactly what pressing HOLD will do (§19: "state what happens").
-  char stmt[kProfileNameCap + 16];
-  std::snprintf(stmt, sizeof(stmt), "Start %s?", draft_.name);
-  lv_obj_t *stmt_lbl = lv_label_create(parent_);
-  lv_label_set_text(stmt_lbl, stmt);
-  lv_obj_set_width(stmt_lbl, lv_pct(100));
-  lv_label_set_long_mode(stmt_lbl, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_font(stmt_lbl, &theme::big_font(), 0);
+  // The feasibility preview (requested vs achievable) over the run draft — the same block the
+  // library detail draws, now the single graph for the whole run flow.
+  profile_facts::CurvePoint req[profile_facts::kMaxCurvePoints];
+  profile_facts::CurvePoint over[profile_facts::kMaxCurvePoints];
+  float bounds[profile_facts::kMaxCurvePhases];
+  profile_facts::TimeSpan uv[kMaxPhases];
+  const size_t nr =
+      profile_facts::sampleCurve(draft_.phases, draft_.phaseCount, draft_.mode, *model_,
+                                 /*achievable=*/false, amb, req, profile_facts::kMaxCurvePoints);
+  const size_t no =
+      profile_facts::sampleOvershoot(draft_.phases, draft_.phaseCount, draft_.mode, *model_, amb,
+                                     over, profile_facts::kMaxCurvePoints);
+  const size_t nb =
+      profile_facts::samplePhaseBoundaries(draft_.phases, draft_.phaseCount, draft_.mode, *model_,
+                                           amb, bounds, profile_facts::kMaxCurvePhases);
+  const size_t nuv = profile_facts::sampleUvSpans(draft_.phases, draft_.phaseCount, draft_.mode,
+                                                  *model_, amb, uv, kMaxPhases);
+  char namebuf[profile_facts::kMaxCurvePhases][kPhaseNameCap];
+  const char *names[profile_facts::kMaxCurvePhases];
+  const size_t authored = draft_.phaseCount < profile_facts::kMaxCurvePhases
+                              ? draft_.phaseCount
+                              : profile_facts::kMaxCurvePhases;
+  for (size_t i = 0; i < authored; ++i) {
+    std::strncpy(namebuf[i], draft_.phases[i].name, kPhaseNameCap - 1);
+    namebuf[i][kPhaseNameCap - 1] = '\0';
+    names[i] = namebuf[i];
+  }
+  ProfileCurveData cd;
+  cd.requested = req;
+  cd.n_requested = nr;
+  cd.overshoot = over;
+  cd.n_overshoot = no;
+  cd.boundaries = bounds;
+  cd.n_boundaries = nb;
+  cd.uv_spans = uv;
+  cd.n_uv_spans = nuv;
+  cd.phase_names = names;
+  cd.n_phase_names = authored;
+  cd.cool_start = (nb > authored && authored >= 1) ? bounds[authored - 1] : -1.0f;
+  cd.uncalibrated = false;
+  // Keep the curve at its intrinsic height (panel::H/4 + legend) — flex-growing it to fill the tall
+  // portrait stretches the fixed-aspect instrument vertically. A spacer below pins HOLD to the
+  // bottom instead.
+  create_profile_curve(parent_, cd);
 
-  const profile_facts::ProfileFacts f = profile_facts::computeFacts(
-      draft_.phases, draft_.phaseCount, draft_.mode, *model_, profile_facts::kDefaultAmbientC);
+  // Key facts (peak · duration · phases) as a caption under the graph.
+  const profile_facts::ProfileFacts f =
+      profile_facts::computeFacts(draft_.phases, draft_.phaseCount, draft_.mode, *model_, amb);
   char peak[16];
   char dur[16];
-  char facts[48];
+  char facts[40];
   profile_facts::formatPeak(f.peakC, fahrenheit, peak, sizeof(peak));
   profile_facts::formatDuration(f.totalSeconds, dur, sizeof(dur));
-  std::snprintf(facts, sizeof(facts), "%s \xC2\xB7 %s \xC2\xB7 %u phases", peak, dur,
-                static_cast<unsigned>(f.phaseCount));
+  // Peak · duration only — the graph shows the phases, and a "N phases" tail wraps on portrait.
+  std::snprintf(facts, sizeof(facts), "%s \xC2\xB7 %s", peak, dur);
   lv_obj_t *facts_lbl = lv_label_create(parent_);
   lv_label_set_text(facts_lbl, facts);
+  lv_obj_set_width(facts_lbl, lv_pct(100));
+  lv_obj_set_style_text_align(facts_lbl, LV_TEXT_ALIGN_CENTER, 0);
   theme::apply_caption(facts_lbl);
 
+  // Safety precondition.
   if (isReflow()) {
     // The reflow precondition: the workpiece TC must be attached and reading plausibly. gate_lbl_
-    // is refreshed live by refreshGate(); its initial text is set here.
-    lv_obj_t *instr = lv_label_create(parent_);
-    lv_label_set_text(instr, "Clip the workpiece thermocouple to the board before starting.");
-    lv_obj_set_width(instr, lv_pct(100));
-    lv_label_set_long_mode(instr, LV_LABEL_LONG_WRAP);
-    theme::apply_caption(instr);
-
+    // is refreshed live by refreshGate(); its initial text is set by applyReady() below.
     gate_lbl_ = lv_label_create(parent_);
     lv_obj_set_width(gate_lbl_, lv_pct(100));
+    lv_obj_set_style_text_align(gate_lbl_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(gate_lbl_, LV_LABEL_LONG_WRAP);
   } else {
+    // Cure has no precondition line: the UV array is filtered at the door window and the door
+    // latches cut the light when it opens, so no eye-hazard caution is needed.
     gate_lbl_ = nullptr;
-    // The cure precondition is a caution, not a gate: UV is an eye hazard.
-    lv_obj_t *caution = lv_obj_create(parent_);
-    theme::apply_alert(caution, theme::WARN);
-    lv_obj_set_width(caution, lv_pct(100));
-    lv_obj_set_height(caution, LV_SIZE_CONTENT);
-    lv_obj_t *ct = lv_label_create(caution);
-    lv_label_set_text(ct, LV_SYMBOL_WARNING " UV light - keep the lid closed; do not look at the "
-                                            "array.");
-    lv_obj_set_width(ct, lv_pct(100));
-    lv_label_set_long_mode(ct, LV_LABEL_LONG_WRAP);
   }
 
+  // A flex-grow spacer takes the slack so the graph keeps its natural aspect and HOLD sits at the
+  // bottom (thumb reach). On the short 2.8" landscape it collapses to nothing and the page scrolls.
   lv_obj_t *spacer = lv_obj_create(parent_);
   lv_obj_remove_style_all(spacer);
   lv_obj_set_width(spacer, lv_pct(100));
   lv_obj_set_flex_grow(spacer, 1);
   lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
 
-  // Cancel is a plain tap (easy to back out); HOLD-to-start is the deliberate commit (§19).
-  lv_obj_t *cancel = lv_button_create(parent_);
-  theme::apply_secondary(cancel);
-  lv_obj_set_width(cancel, lv_pct(100));
-  lv_obj_set_height(cancel, theme::SECONDARY_H);
-  lv_obj_t *cancel_lbl = lv_label_create(cancel);
-  lv_label_set_text(cancel_lbl, "Cancel");
-  lv_obj_center(cancel_lbl);
-  lv_obj_add_event_cb(cancel, ConfirmThunks::cancel_evt, LV_EVENT_CLICKED, this);
-
+  // The single forward control: HOLD to start (the header Back cancels — no separate button).
   HoldButton hold =
       create_hold_button(parent_, "HOLD to start", kArmHoldMs, ConfirmThunks::armed, this);
   hold_btn_ = hold.root;

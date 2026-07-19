@@ -375,21 +375,20 @@ void test_pick_sort_toggle_reloads(void) {
   TEST_ASSERT_EQUAL_UINT(1, screen.vm().count());
 }
 
-// Selecting a profile's "Use this profile" hands the assembled run draft (name + mode + phases)
-// back to the pick handler — the editor is never opened.
+// Selecting a profile fetches it and hands the assembled run draft (name + mode + phases) straight
+// to the pick handler — no detail-preview page, and the editor is never opened (§19/C6: the picker
+// goes directly to Confirm, which shows the one preview graph).
 void test_pick_use_hands_back_draft(void) {
   seed(reflow_store, "LF-245", false, 245.0f, 3);
   screen.setPickHandler(on_pick, nullptr);
   screen.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
   settle();
 
-  screen.listModel().select(indexOf("LF-245"));
-  screen.listModel().onOpen(); // pick mode opens the detail preview
-  settle();
-  TEST_ASSERT_EQUAL_INT((int)Page::Detail, (int)screen.page());
-
   TEST_ASSERT_FALSE(g_picked);
-  screen.onPickUse();
+  screen.listModel().select(indexOf("LF-245"));
+  screen.listModel().onOpen(); // tap a profile → fetch → hand off (no detail page shown)
+  settle();
+
   TEST_ASSERT_TRUE(g_picked);
   TEST_ASSERT_EQUAL_STRING("LF-245", g_pick_draft.name);
   TEST_ASSERT_EQUAL_INT((int)RecipeMode::Reflow, (int)g_pick_draft.mode);
