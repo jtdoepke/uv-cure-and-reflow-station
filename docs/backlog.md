@@ -48,6 +48,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
   `lib/control_port/IWatchdog.h` (`kick()` + `ResetCause lastResetCause()`) plus `FakeWatchdog`
   (`test/helpers`) and the `Esp32Watchdog` adapter. **A4b** landed the `ResetCause`→`Fault{WATCHDOG}`
   mapping (`SafetySupervisor::noteResetCause`).*
+- ~~**`IDoorSensor`** (door sense; §4/§6/§15)~~ *Landed with C8 PR3: `lib/control_port/IDoorSensor.h`
+  (`isOpen()`) plus `FakeDoorSensor` (`test/helpers`) and the `Esp32DoorSensor` adapter
+  (`src_control/`). Reads the donor's **DS3** dry contact — never DS1 (mains-referenced, carries the
+  heater feed) nor DS2 (a sacrificial short that blows the fuse if DS1 welds). `INPUT_PULLUP` with
+  the contact to GND, so a cut sense line reads OPEN and refuses to start. Consumed by
+  `ControllerRunPath` (§15's safe-and-end-to-idle) and telemetry's `door_open`.*
 - **Output ports** `IUvOutput` / `IFanOutput` / `IMotorOutput` (§11) — **A6** actuation wiring / **D5**.
 - ~~**Storage port** (LittleFS adapter + in-memory fake; §7) — **B4**, shared by **B5**.~~
   *Landed across B5 + B4: **B5** shipped the single-blob settings half (`ISettingsStorage` +
@@ -566,15 +572,18 @@ existing `IClock`/`IHeaterSwitch` idiom:
     manages, not a target you failed to reach. **Root assumption exposed:** §15's "ASAP re-heat"
     presumes the chamber has COOLED below target while the door was open; with a door open for
     seconds and the overshoot below putting it above setpoint already, it had not.*
-  - **Ramp overshoot mitigation (control loop, §5).** *Now known to do more than stretch cool-downs:
-    it is what put the chamber above setpoint and triggered the resume fault above.* On a fast ASAP ramp into a hold the PID
+  - **Ramp overshoot mitigation (control loop, §5).** On a fast ASAP ramp into a hold the PID
     holds full duty through the whole ramp and overcharges the calrod (elementC≈1000 J/K); when the
     control temp reaches setpoint the stored element heat carries the chamber ~15 °C past it (a
-    60 °C cure peaked ~75 °C on the sim). It settles, but the overshoot (a) trips the §16 deviation
-    cue and (b) stretches the cool-down. Fix is control-side (A5/A6): feedforward/derivative that
-    eases duty off *before* setpoint so the element isn't overcharged. A real oven with this
-    element mass would do the same — a genuine control-quality item, not sim-only. (deps: D7 PID
-    tuning.)
+    60 °C cure peaked **74.9 °C** on the two-devkit bench, matching the sim). It settles, but the
+    overshoot (a) trips the §16 deviation cue and (b) stretches the cool-down. Fix is control-side
+    (A5/A6): feedforward/derivative that eases duty off *before* setpoint so the element isn't
+    overcharged. A real oven with this element mass would do the same — a genuine control-quality
+    item, not sim-only. (deps: D7 PID tuning.)
+    **RAISED IN PRIORITY 2026-07-19:** this is no longer only a cosmetic/timing nuisance. Leaving
+    the chamber above setpoint is what made the cure resume start above its own target, which
+    faulted TARGET_UNREACHABLE (the item above). That one is fixed at the executor, but the
+    overshoot itself keeps producing states downstream logic was not written to expect.
   - [x] ~~**Door-open dismisses "Run complete" — but NOT a fault (§15/§16/§22).**~~ *Done with
     **C8 PR3**, which grew into §15's whole DECIDED door behaviour once it turned out `door_open`
     had no producer at all. See C8 below.*
@@ -670,8 +679,6 @@ existing `IClock`/`IHeaterSwitch` idiom:
   `RAMP_ASAP` and B1 lowers the two differently. Unreachable at realistic phase counts, but the
   reason **Resume is gated on the remainder compiling** rather than assumed. 19.7M runs clean.*
 - [ ] **B9** [B] — random-profile generator within safety bounds. deps: B1, B2. (§5, §20)
-- [ ] **C6** [C] — Setup + Confirm. deps: C4, C5 (loads a library profile as a
-  template into the editor). *Do after C4/C5.* (§19)
 
 ## Wave 4 — Mains hardware + complete safety chain (§8 step 2; gated by D1)
 
