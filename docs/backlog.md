@@ -556,7 +556,18 @@ existing `IClock`/`IHeaterSwitch` idiom:
   frames reach the tracker now; the DONE/FAULT paths were equally affected.*
 - [ ] **Bench-found follow-ups** (C6/C7 validation on the two-devkit bench against the A10 sim,
   2026-07-19; a full cure ran ramp→hold→cool→"Run complete" end-to-end):
-  - **Ramp overshoot mitigation (control loop, §5).** On a fast ASAP ramp into a hold the PID
+  - [x] ~~**ASAP ramp starting above target faulted TARGET_UNREACHABLE** (§5/§15).~~ *Bench-found
+    2026-07-19 on the cure resume, fixed same day. `ProfileExecutor::reached()` used a SYMMETRIC
+    band, so a chamber 9 °C ABOVE target was indistinguishable from one 9 °C below: the executor
+    waited to heat to a temperature it had already passed, the PID correctly commanded zero duty,
+    and the rate-floor watchdog read the absence of a rise as a stall. Both callers are UPWARD waits
+    (RAMP_ASAP is only emitted when heating; the reflow hold-entry gate waits for the workpiece to
+    come up), so `reached()` is now one-sided — being hotter than asked is overshoot, which the hold
+    manages, not a target you failed to reach. **Root assumption exposed:** §15's "ASAP re-heat"
+    presumes the chamber has COOLED below target while the door was open; with a door open for
+    seconds and the overshoot below putting it above setpoint already, it had not.*
+  - **Ramp overshoot mitigation (control loop, §5).** *Now known to do more than stretch cool-downs:
+    it is what put the chamber above setpoint and triggered the resume fault above.* On a fast ASAP ramp into a hold the PID
     holds full duty through the whole ramp and overcharges the calrod (elementC≈1000 J/K); when the
     control temp reaches setpoint the stored element heat carries the chamber ~15 °C past it (a
     60 °C cure peaked ~75 °C on the sim). It settles, but the overshoot (a) trips the §16 deviation

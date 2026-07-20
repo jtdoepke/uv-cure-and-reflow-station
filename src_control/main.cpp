@@ -424,9 +424,13 @@ void loop() {
     // (Console stimulus is drained separately, every loop — see drainSimConsole().)
     // Log the accepted recipe once per run, so a run that misbehaves can be traced to what was
     // actually uploaded rather than to what the CYD believes it sent.
-    static uint32_t logged_recipe_id = 0xFFFFFFFFU;
-    if (g_ctrl.hasRecipe() && g_ctrl.acceptedRecipe().id != logged_recipe_id) {
-      logged_recipe_id = g_ctrl.acceptedRecipe().id;
+    // Keyed on the SESSION, not the recipe id. The CYD compiles every upload with the same id, so
+    // a resumed run's remainder carries id=1 exactly like the run it is finishing — deduping by id
+    // silently swallowed the one recipe this log was added to capture. The session is what actually
+    // distinguishes one run from the next (§9).
+    static uint32_t logged_session = 0;
+    if (g_ctrl.hasRecipe() && session != 0 && session != logged_session) {
+      logged_session = session;
       const oven_Recipe &rc = g_ctrl.acceptedRecipe();
       CONTROL_LOGF("[recipe] id=%u mode=%d segs=%u\n", (unsigned)rc.id, (int)rc.mode,
                    (unsigned)rc.segments_count);
