@@ -477,11 +477,48 @@ D can be enabled later if peak overshoot proves stubborn. Rationale for this pla
   profile), so a feedforward duty term + PI feedback tracks ramps better than
   leaning on D. Reach for feedforward before D.
 
+**Reference shaping (DECIDED 2026-07-19, from the bench).** The clause above —
+"the setpoint trajectory is fully known in advance" — is false for a `RAMP_ASAP`
+segment, which is exactly where the overshoot showed up: the executor emits the
+segment target immediately, the loop answers a 35 °C error with saturated duty for
+the whole ramp, and the element's own mass carries the chamber ~15 °C past setpoint
+after the error reaches zero (a 60 °C cure peaked **74.9 °C** on the two-devkit
+bench, reproduced by the A10 sim). So the controller now *makes* the trajectory
+known: `SetpointShaper` (`lib/control_logic/`) paces the reference toward the target
+at the plant's own achievable rate — the same `thermal_math.h` envelopes the CYD's
+ETA and §12 preview integrate, so the controller tracks the curve the CYD projects —
+with an **approach taper** (rate ≤ remaining/τ, τ anchored to the element's time
+constant) that eases duty off *before* arrival, and a lead clamp bounding how far the
+reference may run ahead of a plant that cannot keep up. Timed ramps are unaffected
+(their setpoint already moves slower than the envelope); descents pass straight
+through, since cool-down is open-loop by the rule below. Feedforward is evaluated
+along that trajectory (`rampFeedforwardDuty` = holding duty + rate ÷ `rateGain`),
+which is what `DutyModel::rateGain` was added for. The shaped reference is never
+above the executor's, so this can only reduce commanded heat; `clampSetpoint()` and
+the supervisor's last word are unchanged. Sim peak after: **0.25 °C** over
+(1.7 °C with the stall-floor guard below). Kd stays 0.
+
+Consequence worth knowing: the taper deliberately slows the approach, and the
+executor's per-segment watchdog judges a target-gated wait by the **measured** heat
+rate — so the taper carries a floor kept clear of `rateFloorCPerS`, or a run that is
+arriving normally gets faulted `TARGET_UNREACHABLE` by its own watchdog. `run_path.h`
+`static_assert`s the relationship, since the two constants live in headers that
+otherwise know nothing of each other.
+
 Non-negotiables that matter more than P/I/D choice:
 
 - **Anti-windup is mandatory** — the actuator saturates (duty 0–100 %) with dead
   time, so the integrator winds up on ramps; clamp / back-calculate or overshoot is
-  guaranteed.
+  guaranteed. Conditional integration alone is **not sufficient** on a shaped ramp:
+  it bounds the integrator only by what keeps total duty in range, which on a long
+  ramp is most of the range, and that integral then holds the element charged past
+  arrival (measured: duty still 0.72 at target, essentially all integral). The
+  integrator is therefore **gated to holds** — feedforward owns ramps, feedback owns
+  standing offsets — with *unbounded* authority while gated on, so the loop can still
+  hold setpoint on feedback alone when the cal is wrong (uncalibrated, it is). The
+  trade: while ramping, tracking is feedforward + proportional, so a bad cal shows as
+  a standing offset along the ramp — which is precisely what §16's deviation cue
+  reports, and what the following hold corrects.
 - **Heater is one-sided** (heat only). Cool-down is passive (heater OFF + optional
   fan) → open-loop, not a PID-controlled descent. The loop acts only during
   preheat/soak/reflow.

@@ -15,6 +15,8 @@
 //   compiler  : the recipe-compiler harness's own struct format (header + phase records, see
 //               fuzz_compiler.cpp). Not a wire encoding — this harness fuzzes a CYD-side producer,
 //               so there is no protocol message to reuse the encoder for; the seed is hand-packed.
+//   setpoint_shaper : the reference-shaper harness's format (plant-model/config header + tick
+//               records, see fuzz_setpoint_shaper.cpp). Hand-packed for the same reason.
 //   heater_control : the PI-loop harness's struct format (gain header + tick records, see
 //               fuzz_heater_control.cpp). Also hand-packed — controller-side control math, no wire
 //               message to reuse the encoder for.
@@ -290,6 +292,62 @@ std::vector<uint8_t> heaterHoldSeed() {
   return v;
 }
 
+// --- setpoint-shaper harness format (fuzz_setpoint_shaper.cpp): 40-byte model/config header +
+// 11-byte ticks ---
+
+void putShaperHeader(std::vector<uint8_t> &v, float slopeOff, float interceptOff, float floorC,
+                     float ceilC, float slopeOn, float interceptOn, float dutySlope, float rateGain,
+                     float tauS, float maxLeadC) {
+  putF32(v, slopeOff);
+  putF32(v, interceptOff);
+  putF32(v, floorC);
+  putF32(v, ceilC);
+  putF32(v, slopeOn);
+  putF32(v, interceptOn);
+  putF32(v, dutySlope);
+  putF32(v, rateGain);
+  putF32(v, tauS);
+  putF32(v, maxLeadC);
+}
+
+// flags bit0 = reset() before this tick, bit1 = convection fan on.
+void putShaperTick(std::vector<uint8_t> &v, float spExec, float measuredC, uint16_t stepMs,
+                   uint8_t flags) {
+  putF32(v, spExec);
+  putF32(v, measuredC);
+  putU16LE(v, stepMs);
+  v.push_back(flags);
+}
+
+// An ASAP ramp to 60 °C with the plant trailing the reference — the bench case the shaper exists
+// for, so the fuzzer mutates outward from the real control regime rather than from noise. Model
+// numbers mirror oven_cal's physics-anchored linearization.
+std::vector<uint8_t> shaperRampSeed() {
+  std::vector<uint8_t> v;
+  putShaperHeader(v, /*slopeOff=*/-0.00197f, /*interceptOff=*/0.549f, /*floor=*/0.01f,
+                  /*ceiling=*/2.0f, /*slopeOn=*/-0.00197f, /*interceptOn=*/0.70f,
+                  /*dutySlope=*/0.00393f, /*rateGain=*/0.5f, /*tauS=*/50.0f, /*maxLeadC=*/40.0f);
+  const float meas[] = {25.0f, 27.0f, 31.0f, 38.0f, 46.0f, 53.0f, 57.0f, 59.0f, 60.0f, 60.0f};
+  for (float m : meas) {
+    putShaperTick(v, /*spExec=*/60.0f, m, /*stepMs=*/500, /*flags=*/0x02); // fan on (a cure)
+  }
+  putShaperTick(v, 60.0f, 60.0f, 500, /*flags=*/0x03); // exercise reset()
+  return v;
+}
+
+// A stalled plant under a falling-then-rising setpoint: seeds the lead clamp and the
+// pass-through-on-descent path, the two branches the ramp seed never reaches.
+std::vector<uint8_t> shaperClampSeed() {
+  std::vector<uint8_t> v;
+  putShaperHeader(v, 0.0f, 0.5f, 0.01f, 2.0f, 0.0f, 1.0f, 0.004f, 0.5f, 50.0f, 10.0f);
+  for (int i = 0; i < 8; ++i) {
+    putShaperTick(v, /*spExec=*/200.0f, /*measuredC=*/25.0f, 1000, 0x00); // never keeps up
+  }
+  putShaperTick(v, /*spExec=*/40.0f, /*measuredC=*/25.0f, 1000, 0x00); // descent: passes through
+  putShaperTick(v, /*spExec=*/200.0f, /*measuredC=*/25.0f, 0, 0x00);   // zero-dt tick
+  return v;
+}
+
 // A faulted control channel (NaN measurement) with an active derivative gain — seeds the fail-safe
 // path and the D seam together.
 std::vector<uint8_t> heaterFaultSeed() {
@@ -379,8 +437,9 @@ std::vector<uint8_t> profileStoreCureSeed() {
 
 int main(int argc, char **argv) {
   const fs::path base = (argc > 1) ? fs::path(argv[1]) : fs::path("fuzz/corpus");
-  for (const char *sub : {"frontdoor", "decode", "validator", "compiler", "executor",
-                          "heater_control", "safety_supervisor", "profile_store"}) {
+  for (const char *sub :
+       {"frontdoor", "decode", "validator", "compiler", "executor", "heater_control",
+        "setpoint_shaper", "safety_supervisor", "profile_store"}) {
     fs::create_directories(base / sub);
   }
 
@@ -426,6 +485,10 @@ int main(int argc, char **argv) {
   // heater_control: the PI-loop harness's struct format (gain header + tick records, hand-packed).
   writeFile(base / "heater_control" / "hold.bin", heaterHoldSeed());
   writeFile(base / "heater_control" / "fault.bin", heaterFaultSeed());
+
+  // setpoint_shaper: the reference-trajectory harness's format (model/config header + ticks).
+  writeFile(base / "setpoint_shaper" / "ramp.bin", shaperRampSeed());
+  writeFile(base / "setpoint_shaper" / "clamp.bin", shaperClampSeed());
 
   // safety_supervisor: the L3-gate harness's struct format (recipe + driver, hand-packed).
   writeFile(base / "safety_supervisor" / "run.bin", safetyRunSeed());

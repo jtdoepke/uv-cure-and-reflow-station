@@ -52,6 +52,7 @@
 #include "profile_executor.h"
 #include "run_path.h"
 #include "safety_supervisor.h"
+#include "setpoint_shaper.h"
 #include "sim_thermocouples.h"
 
 namespace {
@@ -80,6 +81,7 @@ struct Rig {
   HeaterActuator heater;
   ProfileExecutor exec;
   HeaterControl pid;
+  SetpointShaper shaper;
   OvenPlant plant;
   SimThermocouples tc;
   SafetySupervisor safety;
@@ -90,8 +92,9 @@ struct Rig {
   explicit Rig(const PlantParams &pp)
       : cyd_link(pipe.a(), TF_MASTER, cyd_router), cyd(cyd_link, clk),
         ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk), heater(heater_sw, clk),
-        exec(clk), pid(clk), plant(pp), tc(plant), safety(ctrl, heater, contactor, tc, clk),
-        runpath(exec, pid, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
+        exec(clk), pid(clk), shaper(clk), plant(pp), tc(plant),
+        safety(ctrl, heater, contactor, tc, clk),
+        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
     ctrl.setExecutor(exec);

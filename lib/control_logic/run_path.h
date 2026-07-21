@@ -35,15 +35,24 @@
 #include "oven_safety.h" // deriveMode
 #include "profile_executor.h"
 #include "safety_supervisor.h"
-#include "thermal_math.h" // OvenModel, steadyStateDuty (feedforward)
+#include "setpoint_shaper.h" // the reference trajectory the PI tracks (§5 overshoot fix)
+#include "thermal_math.h"    // OvenModel, rampFeedforwardDuty (feedforward)
+
+// The shaper's approach floor must stay above the executor's stall floor, or a run that is arriving
+// normally — just slowly, by design — gets faulted TARGET_UNREACHABLE by its own watchdog. The two
+// constants live in different headers for good reasons (the executor knows nothing of the plant
+// model); this is the one place that includes both, so it is where the relationship is pinned.
+static_assert(SetpointShaper::Config{}.minApproachRateCPerS >
+                  2.0f * ProfileExecutor::Config{}.rateFloorCPerS,
+              "setpoint taper must stay clear of the executor's measured-rate stall floor");
 
 class ControllerRunPath {
 public:
-  ControllerRunPath(ProfileExecutor &exec, HeaterControl &pid, SafetySupervisor &safety,
-                    HeaterActuator &heater, ControllerLink &link, IThermocouples &tc,
-                    IDoorSensor &door, const OvenModel &model)
-      : exec_(exec), pid_(pid), safety_(safety), heater_(heater), link_(link), tc_(tc), door_(door),
-        model_(model) {}
+  ControllerRunPath(ProfileExecutor &exec, HeaterControl &pid, SetpointShaper &shaper,
+                    SafetySupervisor &safety, HeaterActuator &heater, ControllerLink &link,
+                    IThermocouples &tc, IDoorSensor &door, const OvenModel &model)
+      : exec_(exec), pid_(pid), shaper_(shaper), safety_(safety), heater_(heater), link_(link),
+        tc_(tc), door_(door), model_(model) {}
 
   // Advance one control loop. Call before heater_.tick() and safety_.tick().
   void tick() {
@@ -101,21 +110,43 @@ public:
     }
 
     // 3. Drive the heater. When the executor wants outputs off (idle / done / fault / cooldown),
-    //    command OFF and reset the PID so no integral windup leaks across a stop (§5). Otherwise
-    //    feedforward + PI feedback on the clamped setpoint.
+    //    command OFF and reset the PID *and the shaper* so neither integral windup nor a stale
+    //    reference leaks across a stop (§5). Otherwise: shape the setpoint into a trajectory the
+    //    plant can actually follow, feed forward along it, and let the PI trim the residual.
     if (o.safe) {
       pid_.reset();
+      shaper_.reset();
       heater_.setDuty(0.0f);
       return;
     }
+    // The executor's setpoint, safety-clamped, is the TARGET; the shaper turns it into the moving
+    // reference the loop tracks (§5). On a RAMP_ASAP that is the difference between a step the PI
+    // answers with saturated duty — overcharging the element, which then carries the chamber ~15 °C
+    // past setpoint (bench, 2026-07-19) — and a paced approach that eases duty off before arrival.
+    // Transparent for a timed ramp, whose setpoint already moves slower than the plant can follow.
     const float sp = safety_.clampSetpoint(o.setpointC);
-    const float ff = steadyStateDuty(model_, r.celsius, o.convFan);
-    const float duty = pid_.update(sp, r.celsius, ff);
+    const SetpointShaper::Shaped s = shaper_.update(sp, r.celsius, o.convFan, model_);
+    // Feedforward along the trajectory: the holding duty at where we are GOING plus the duty that
+    // buys the reference's climb rate (DutyModel::rateGain — the term B2 added for exactly this and
+    // that nothing consumed until now). Evaluated at the shaped setpoint, not the measurement: the
+    // point of feedforward is to command what the trajectory needs, leaving feedback the residual.
+    const float ff = rampFeedforwardDuty(model_, s.setpointC, s.ratePerS, o.convFan);
+    // Feedforward owns the ramp, the integrator owns the hold (see HeaterControl::setIntegrating).
+    // The shaper reports a rate of exactly 0 once the reference has arrived, which is precisely the
+    // "nothing is moving, so accumulated error means a standing offset" condition — including the
+    // reflow hold-entry gate, where the integrator SHOULD drive the chamber above setpoint to pull
+    // a lagging workpiece up.
+    pid_.setIntegrating(s.ratePerS == 0.0f);
+    const float duty = pid_.update(s.setpointC, r.celsius, ff);
     heater_.setDuty(duty);
   }
 
   const ProfileExecutor::Output &output() const { return exec_.output(); }
   bool armed() const { return armed_; }
+  // The reference the PI is tracking this tick (§5). Diagnostic only — telemetry deliberately
+  // reports the EXECUTOR's setpoint (see src_control/main.cpp), because §15's chart compares the
+  // run against the CYD's projection of the authored profile, not against our internal trajectory.
+  float shapedSetpointC() const { return shaper_.reference(); }
 
   // Door state as of the last tick() — what telemetry reports (§9's `doorOpen` bit) so the CYD can
   // gate Start (§19), wake the display (§17) and say why a run ended (§15).
@@ -128,6 +159,7 @@ public:
 private:
   ProfileExecutor &exec_;
   HeaterControl &pid_;
+  SetpointShaper &shaper_;
   SafetySupervisor &safety_;
   HeaterActuator &heater_;
   ControllerLink &link_;

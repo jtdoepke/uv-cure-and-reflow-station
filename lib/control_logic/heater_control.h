@@ -65,6 +65,29 @@ public:
   // reference Config's member initializers before the class is complete — see HeaterActuator).
   explicit HeaterControl(IClock &clock) : HeaterControl(clock, Config{}) {}
 
+  // Gate integral accumulation (§5). Defaults to ON, i.e. a plain PI loop; ControllerRunPath turns
+  // it OFF while the shaped reference is MOVING, so the division of labour is explicit:
+  //
+  //   ramps → feedforward (+ P). The trajectory is known, rampFeedforwardDuty() commands what it
+  //           needs, and an integrator has no business accumulating against the plant's transport
+  //           lag — that accumulation is not a modelling error being corrected, it is the ramp
+  //           itself, and it keeps the element charged past arrival. Measured on the sim: the loop
+  //           reached its 60 °C target with the reference already BEHIND the measurement and duty
+  //           still at 0.72, essentially all of it integral, and the element carried the chamber
+  //           7 °C past setpoint. With this gate the same run overshoots ~3 °C — the floor set by
+  //           the element's ΔT at holding duty, which no controller can undo.
+  //   holds → the integrator. Nothing moves, so accumulation means what PI assumes it means: a
+  //           standing offset (a wrong cal, a draughty room, an aging element) worth trimming out.
+  //           Authority here is deliberately UNBOUNDED — this loop must be able to hold setpoint
+  //           on feedback alone if the feedforward model is wrong, which, uncalibrated, it is.
+  //
+  // The trade-off, stated plainly: while ramping, tracking is feedforward + proportional, so a
+  // badly wrong cal shows up as a standing offset along the ramp rather than being integrated away.
+  // That is the right failure — §16's deviation cue exists to report exactly that, the hold that
+  // follows still corrects, and it is far preferable to charging the element on every ramp.
+  void setIntegrating(bool on) { integrating_ = on; }
+  bool integrating() const { return integrating_; }
+
   // Drop all accumulated state → next update() starts fresh (dt baseline re-established, so it
   // does no integration on that first tick). Call on any stop/idle/fault so the integrator and
   // derivative history never leak across runs.
@@ -121,8 +144,11 @@ public:
 
     // Anti-windup: conditional integration. Add error·dt to the integrator only if the
     // resulting duty stays in range, or if integrating pulls it back out of saturation.
+    // While integration is gated off (a moving reference — see setIntegrating) the integrator is
+    // frozen, not reset: whatever standing offset the last hold learned is still true, and dropping
+    // it would make every ramp re-learn it.
     const float iCandidate = integrator_ + error * dtS;
-    if (std::isfinite(iCandidate)) {
+    if (integrating_ && std::isfinite(iCandidate)) {
       const float rawCand = pBase + g.ki * iCandidate;
       const bool inRange =
           std::isfinite(rawCand) && rawCand >= cfg_.dutyMin && rawCand <= cfg_.dutyMax;
@@ -159,6 +185,7 @@ private:
   uint32_t lastMs_ = 0;
   bool started_ = false;
 
-  float filtMeas_ = 0.0f; // last (optionally low-passed) measurement, for the D seam
-  bool haveMeas_ = false; // false until the first valid measurement — no derivative yet
+  float filtMeas_ = 0.0f;   // last (optionally low-passed) measurement, for the D seam
+  bool haveMeas_ = false;   // false until the first valid measurement — no derivative yet
+  bool integrating_ = true; // see setIntegrating(); plain PI unless the caller gates it
 };

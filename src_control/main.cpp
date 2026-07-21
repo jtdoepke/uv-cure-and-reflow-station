@@ -44,6 +44,7 @@
 #include "oven_plant.h"     // A10 thermal-plant twin
 #include "profile_executor.h"  // A6 run engine (driven by the link, ticked by the run path)
 #include "run_path.h"          // ControllerRunPath — executor + PID composition
+#include "setpoint_shaper.h"   // §5 reference shaping (the PI tracks a reachable trajectory)
 #include "sim_thermocouples.h" // plant-backed IThermocouples (replaces the stub)
 #endif
 
@@ -104,6 +105,8 @@ static HeaterActuator g_heater(g_heater_sw, g_clk);
 // readings, so never at a real oven.
 static ProfileExecutor g_exec(g_clk);
 static HeaterControl g_pid(g_clk);
+static SetpointShaper g_shaper(g_clk); // paces the PI's reference so ramps don't overcharge the
+                                       // element (§5) — see setpoint_shaper.h
 static OvenPlant g_plant;
 static SimThermocouples g_tc(g_plant);
 #else
@@ -123,8 +126,8 @@ static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor, g_tc, g_clk);
 // Declared after the supervisor it references. The link (setExecutor below) owns the executor's
 // load/start/abort lifecycle; the run path ticks it each loop with the measured control temp,
 // drives the PID, and arms/disarms the supervisor's L3 checks around the run.
-static ControllerRunPath g_runpath(g_exec, g_pid, g_safety, g_heater, g_ctrl, g_tc, g_door,
-                                   oven_cal::kDefaultModel);
+static ControllerRunPath g_runpath(g_exec, g_pid, g_shaper, g_safety, g_heater, g_ctrl, g_tc,
+                                   g_door, oven_cal::kDefaultModel);
 #endif
 
 static Esp32Watchdog g_wdt;
@@ -367,6 +370,10 @@ void loop() {
     const TcReading wp = g_tc.workpiece();
     ts.work_temp = wp.fault ? 0.0F : wp.celsius;
     const ProfileExecutor::Output &o = g_runpath.output();
+    // The EXECUTOR's setpoint, deliberately — not the shaper's internal reference (§5). §15's chart
+    // compares the run against the CYD's projection of the authored profile, and §16's residual
+    // math is built on that comparison; reporting the shaped trajectory instead would quietly
+    // change what "actual vs projected" means. The shaping is a controller-internal concern.
     ts.setpoint = o.setpointC;
     ts.run_state = o.runState;
     ts.seg_idx = o.segIdx;

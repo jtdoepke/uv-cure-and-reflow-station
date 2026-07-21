@@ -34,6 +34,7 @@
 #include "profile_executor.h"
 #include "run_path.h"
 #include "safety_supervisor.h"
+#include "setpoint_shaper.h"
 #include "sim_thermocouples.h"
 
 namespace {
@@ -58,6 +59,7 @@ struct SimRig {
   HeaterActuator heater;
   ProfileExecutor exec;
   HeaterControl pid;
+  SetpointShaper shaper;
   OvenPlant plant;
   SimThermocouples tc;
   FakeDoorSensor door;
@@ -66,12 +68,14 @@ struct SimRig {
 
   float weldDuty = 0.0f; // >0 simulates a welded SSR: the plant heats regardless of commanded duty
   uint32_t stepMs = 500; // sim slice; the plant integrates this interval each controller loop
+  float peakWallC = -1000.0f; // highest wall temp seen — the §5 overshoot measure
 
   SimRig()
       : cyd_router(), cyd_link(pipe.a(), TF_MASTER, cyd_router), cyd(cyd_link, clk), ctrl_router(),
         ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk), heater(heater_sw, clk),
-        exec(clk), pid(clk), plant(), tc(plant), safety(ctrl, heater, contactor, tc, clk),
-        runpath(exec, pid, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
+        exec(clk), pid(clk), shaper(clk), plant(), tc(plant),
+        safety(ctrl, heater, contactor, tc, clk),
+        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
     ctrl.setExecutor(exec); // link drives load/start/abort; the run path ticks it
@@ -87,6 +91,9 @@ struct SimRig {
     const float applied = heater.duty() > weldDuty ? heater.duty() : weldDuty;
     const ProfileExecutor::Output &o = runpath.output();
     plant.step(static_cast<float>(stepMs) / 1000.0f, applied, o.convFan, o.uv, o.motor, door.open);
+    if (plant.wallTempC() > peakWallC) {
+      peakWallC = plant.wallTempC();
+    }
   }
 
   void cydLoop() {
@@ -199,6 +206,12 @@ oven_Recipe resumeRecipe() {
   r.segments[2] = seg(oven_Interp_INTERP_RAMP_OVER_TIME, 43.0f, 600000, false, false, false);
   return r;
 }
+
+// The §5 overshoot budget for the ASAP regression below. An uncalibrated placeholder (§10) with
+// room in it: the sim currently peaks 0.25 °C over, against ~15 °C before the reference shaping,
+// so this is loose enough not to be a tuning tripwire and tight enough that unwiring the shaping or
+// the trajectory feedforward fails it immediately.
+constexpr float kMaxOvershootC = 3.0f;
 
 bool isDone(const SimRig &r) {
   return r.exec.state() == oven_RunState_RUN_STATE_DONE;
@@ -375,6 +388,38 @@ void test_asap_ramp_starting_above_target_is_already_reached(void) {
   TEST_ASSERT_TRUE(r.exec.output().segIdx > 0); // past the ramp, into the hold
 }
 
+// BENCH REGRESSION (§5 overshoot, 2026-07-19): an ASAP ramp into a hold must not carry the chamber
+// far past its setpoint.
+//
+// What the bench saw before SetpointShaper existed: the executor steps the setpoint straight to the
+// target, the PI answers a 35 °C error with saturated duty for the entire ramp, and the calrod
+// (elementC ≈ 1000 J/K) keeps discharging after the error reaches zero — a 60 °C cure peaked at
+// **74.9 °C** on the two-devkit rig, and the sim reproduced it. That overshoot is not cosmetic: it
+// tripped the §16 deviation cue, stretched the cool-down, and left the chamber above setpoint,
+// which is what made a cure resume start above its own target (the sibling test above).
+//
+// The band below is deliberately loose in absolute terms — the cal is uncalibrated (§10, D7 owns
+// the real tuning) — but it is far tighter than the ~15 °C this replaces, and it fails loudly if
+// the shaping or the trajectory feedforward is ever unwired.
+void test_asap_ramp_does_not_overshoot_its_hold(void) {
+  SimRig r;
+  oven_Recipe rec = oven_Recipe_init_default;
+  rec.id = 44;
+  rec.mode = oven_Mode_MODE_CURE;
+  rec.segments_count = 2;
+  rec.segments[0] = seg(oven_Interp_INTERP_RAMP_ASAP, 60.0f, 200000, true, true, true);
+  rec.segments[1] = seg(oven_Interp_INTERP_HOLD, 60.0f, 120000, true, true, true);
+  r.startRun(rec);
+
+  // Run through the ramp and the whole hold, so the peak includes the post-arrival coast.
+  const bool reached = r.runUntil([&] { return r.exec.output().segIdx > 0; }, 600000);
+  TEST_ASSERT_TRUE(reached); // it still gets there — a fix that never arrives is not a fix
+  r.run(180000);
+
+  TEST_ASSERT_FALSE(r.safety.faulted());
+  TEST_ASSERT_TRUE(r.peakWallC <= 60.0f + kMaxOvershootC);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_cure_run_ramps_holds_and_finishes_touch_safe);
@@ -385,5 +430,6 @@ int main(int, char **) {
   RUN_TEST(test_door_open_kills_heat_even_with_duty_commanded);
   RUN_TEST(test_closing_door_does_not_resume);
   RUN_TEST(test_asap_ramp_starting_above_target_is_already_reached);
+  RUN_TEST(test_asap_ramp_does_not_overshoot_its_hold);
   return UNITY_END();
 }

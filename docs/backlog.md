@@ -572,18 +572,68 @@ existing `IClock`/`IHeaterSwitch` idiom:
     manages, not a target you failed to reach. **Root assumption exposed:** §15's "ASAP re-heat"
     presumes the chamber has COOLED below target while the door was open; with a door open for
     seconds and the overshoot below putting it above setpoint already, it had not.*
-  - **Ramp overshoot mitigation (control loop, §5).** On a fast ASAP ramp into a hold the PID
-    holds full duty through the whole ramp and overcharges the calrod (elementC≈1000 J/K); when the
-    control temp reaches setpoint the stored element heat carries the chamber ~15 °C past it (a
-    60 °C cure peaked **74.9 °C** on the two-devkit bench, matching the sim). It settles, but the
-    overshoot (a) trips the §16 deviation cue and (b) stretches the cool-down. Fix is control-side
-    (A5/A6): feedforward/derivative that eases duty off *before* setpoint so the element isn't
-    overcharged. A real oven with this element mass would do the same — a genuine control-quality
-    item, not sim-only. (deps: D7 PID tuning.)
-    **RAISED IN PRIORITY 2026-07-19:** this is no longer only a cosmetic/timing nuisance. Leaving
-    the chamber above setpoint is what made the cure resume start above its own target, which
-    faulted TARGET_UNREACHABLE (the item above). That one is fixed at the executor, but the
-    overshoot itself keeps producing states downstream logic was not written to expect.
+  - [x] ~~**Ramp overshoot mitigation (control loop, §5).**~~ *Bench-found 2026-07-19, fixed
+    2026-07-20. On a fast ASAP ramp into a hold the PID held full duty through the whole ramp and
+    overcharged the calrod (elementC≈1000 J/K); when the control temp reached setpoint the stored
+    element heat carried the chamber ~15 °C past it (a 60 °C cure peaked **74.9 °C** on the
+    two-devkit bench, matching the sim), which tripped the §16 deviation cue, stretched the
+    cool-down, and — the reason it was raised in priority — left the chamber above setpoint, the
+    state that made the cure resume start above its own target and fault TARGET_UNREACHABLE.
+    **Fixed as §5's own advice says to** ("reach for feedforward before D"), by making the
+    trajectory known instead of enabling Kd: new `lib/control_logic/setpoint_shaper.h`
+    (`SetpointShaper`) paces the PI's reference toward the target at the plant's achievable rate
+    from `thermal_math.h`'s envelopes — the same ones the CYD's ETA/preview integrate, so the
+    controller now tracks the curve the CYD projects — and `ControllerRunPath` feeds forward along
+    it via a new `rampFeedforwardDuty()` (holding duty + rate ÷ `rateGain`, the term B2 shipped
+    for exactly this and that had no consumer). Timed ramps are transparent; descents pass
+    through (§5: cool-down is open-loop, not a PID descent); the shaped reference is never above
+    the executor's, so it can only reduce commanded heat, and `clampSetpoint`/`safety.tick()` are
+    untouched. **Sim peak: 74.9 → 60.25 °C**, i.e. 0.25 °C of overshoot.
+    **Two findings the work turned up, both bigger than the shaping itself:**
+    (1) **Pacing at the envelope rate does nothing on its own** — the envelope *is* the
+    saturated-duty rate, so a reference paced at it commands the same full duty as the step it
+    replaced. What kills the overshoot is the **approach taper** (rate ≤ remaining/τ, τ anchored to
+    the element's own time constant), which eases duty off before arrival.
+    (2) **Conditional anti-windup was not enough**, and the diagnosis only showed up once the run
+    path was instrumented: at arrival the reference was already *behind* the measurement and duty
+    was still **0.72 — essentially all integral**. Conditional integration bounds the integrator
+    only by what keeps total duty in range, which on a long ramp is most of the range. So
+    `HeaterControl` gained `setIntegrating()` and the integrator is now **gated to holds**
+    (feedforward owns ramps, feedback owns standing offsets), with authority left *unbounded* while
+    gated on — a magnitude cap was tried first and rejected because it costs the loop its ability to
+    hold setpoint on feedback alone when the cal is wrong, which uncalibrated it is. That single
+    change took the peak from 67.4 → 60.25 °C.
+    **And one interaction worth remembering:** the taper slows the approach, and the executor's
+    per-segment watchdog judges a target-gated wait by the **measured** rate — so a taper left to
+    decay freely gets a normally-arriving run faulted TARGET_UNREACHABLE by its own watchdog (found
+    in `test_run_path`, not on the bench). The taper now carries a floor kept clear of
+    `rateFloorCPerS`, `run_path.h` `static_assert`s the relationship, and the guard costs 1.5 °C of
+    the win (peak 61.7 °C).
+    **New `test_run_path` suite** — the run path had only ever been tested *through*
+    `test_sim_run`'s closed loop, which can hide a wrong feedforward behind the integrator
+    compensating for it; it now pins the composition arithmetically, and picked up the door-abort /
+    arm-disarm / fault-routing behaviours nothing directly tested. Plus `test_setpoint_shaper`, the
+    §5 overshoot regression in `test_sim_run`, the `HeaterControl` gate test, and
+    `fuzz/fuzz_setpoint_shaper.cpp` (107M runs clean) — which found **`steadyStateDuty()` emitting
+    NaN for a non-finite model** (`clampf` passes NaN through, every comparison against it being
+    false); now total, which also removes a latent NaN source from the §12 preview curves.
+    All new constants (`approachTauS`, `maxLeadC`, `arriveBandC`, `minApproachRateCPerS`) are
+    §10-open placeholders — D7 tunes them with the PID gains.
+    **Bench-verified 2026-07-20 on the two-devkit rig** (`esp32dev_control_sim` + the 3.5"
+    `esp32dev_cyd35_bench`), A/B against a build of the parent commit so the only variable is this
+    change — ASAP → 60 °C hold (the reported case): **74.8 → 61.6 °C**; timed 80 °C/120 s → hold
+    (the stock bench stimulus): 90.6 → 85.6 °C.
+    The ASAP baseline reproduced the originally reported 74.9 °C to within 0.1 °C, and the fixed
+    firmware landed within 0.1 °C of the sim's prediction (61.7 °C) — the A10 twin is doing its job.
+    Neither run faulted. **Two honest caveats the bench made visible**, both of which the sim's
+    single headline number hid: (1) reaching the hold took **90 s → 135 s** on the ASAP profile, the
+    price of the soft landing (`approachTauS` is the dial, D7's to tune) — though the baseline's
+    stored heat then kept the chamber ABOVE its 60 °C target for minutes afterward, so time-to-usable
+    is not obviously worse; and (2) on a **timed** ramp the shaper is transparent by design, so the
+    taper barely engages and the improvement comes only from the trajectory feedforward + the
+    integration gate — 5.6 °C of overshoot remains there. A timed ramp authored at the plant's limit
+    is *asking* for saturated duty to the last second; B1's amber rate-limited flag and §16's
+    deviation cue are what report that, not this.
   - [x] ~~**Door-open dismisses "Run complete" — but NOT a fault (§15/§16/§22).**~~ *Done with
     **C8 PR3**, which grew into §15's whole DECIDED door behaviour once it turned out `door_open`
     had no producer at all. See C8 below.*

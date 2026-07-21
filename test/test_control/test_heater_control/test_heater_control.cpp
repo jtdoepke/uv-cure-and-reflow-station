@@ -198,9 +198,46 @@ void test_kd_seam_inert_by_default_active_when_set(void) {
   TEST_ASSERT_FLOAT_WITHIN(1.0e-3f, 0.5f, dutyPi - dutyPid);
 }
 
+// The integration gate (§5): ControllerRunPath turns accumulation off while the shaped reference is
+// moving, so a ramp's transport lag is not integrated into duty that outlives the ramp and keeps
+// the element charged. Frozen, not reset — a standing offset learned during a hold survives the
+// next ramp rather than being re-learned.
+void test_integration_gate_freezes_and_resumes(void) {
+  FakeClock clk;
+  HeaterControl pi(clk);
+  TEST_ASSERT_TRUE(pi.integrating()); // a plain PI loop unless the caller says otherwise
+
+  // Build a standing integrator with the gate open. A SMALL error on purpose: a big one drives the
+  // loop into conditional integration's own limit, where the integrator stops growing for an
+  // unrelated reason and this test would pass without the gate existing.
+  for (int i = 0; i < 20; ++i) {
+    clk.advance(kDtMs);
+    pi.update(100.0f, 99.0f, 0.0f);
+  }
+  const float held = pi.integrator();
+  TEST_ASSERT_TRUE(held > 1.0f);
+
+  // Gate closed: a persistent error no longer accumulates…
+  pi.setIntegrating(false);
+  for (int i = 0; i < 200; ++i) {
+    clk.advance(kDtMs);
+    pi.update(100.0f, 99.0f, 0.0f);
+  }
+  TEST_ASSERT_FLOAT_WITHIN(1.0e-3f, held, pi.integrator()); // …and is not discarded either
+  // P and feedforward still act while gated — the loop is not open.
+  TEST_ASSERT_TRUE(pi.duty() > 0.0f);
+
+  // Gate re-opened: accumulation resumes from where it was.
+  pi.setIntegrating(true);
+  clk.advance(kDtMs);
+  pi.update(100.0f, 99.0f, 0.0f);
+  TEST_ASSERT_TRUE(pi.integrator() > held);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_converges_zero_steady_state_error);
+  RUN_TEST(test_integration_gate_freezes_and_resumes);
   RUN_TEST(test_anti_windup_small_overshoot_on_saturated_ramp);
   RUN_TEST(test_feedforward_carries_holding_duty);
   RUN_TEST(test_one_sided_clamp);
