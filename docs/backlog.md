@@ -333,6 +333,14 @@ existing `IClock`/`IHeaterSwitch` idiom:
   above `TF_SENDBUF_LEN` instead. CYD link plumbing landed **unconditionally** (it is production
   wiring, and a `session=0`/`enable=false` sender authorizes nothing), with only the boot-time
   Recipe+Start+`HEAT_EN` stimulus behind `esp32dev_cyd_bench`; §19/C6 owns starting a run.
+  ***That stimulus was DELETED 2026-07-20*** *(with the two CYD `_bench` envs and the
+  `CYD_BENCH_LINK` flag, which gated nothing else): it started a cure on CYD boot, so plugging the
+  CYD in energized the heater with no Confirm hold — found on the bench when a replug ran the
+  element unattended. It also made step 1's own "or the CYD reboots" clause untestable, since the
+  cut fired and the stimulus re-armed heat ~5 s later. A8's proof stands (the cut is what it
+  measured); the two-devkit bench now pairs a controller bench/sim build with the ORDINARY CYD
+  firmware and runs start from Confirm. See §19's guarantee-boundary note and §8 step 2. Verifying
+  that deletion also surfaced **A11** (a run nothing ever ends when the peer vanishes).*
   **Three bugs the bench found that the host tests could not**, all fixed here with regression
   coverage: (1) **`SetupResponder` dedups on seq alone while `ReliableSender` restarts seq at 0
   each boot**, so a rebooted CYD's `Start{seq=1}` was read as a replay — Acked, but
@@ -428,6 +436,46 @@ existing `IClock`/`IHeaterSwitch` idiom:
   the CYD Home screen was wired to the sim's telemetry (temp-driven status badge + readout colours,
   sleep gating), and the touch-safe temperature was unified into one shared
   `lib/calibration/touch_safe.h` (`oven_domain::kTouchSafeC`).
+- [ ] **A11** [A] — end an **orphaned run** to IDLE when the peer is lost or reboots.
+  deps: A4a, A6, A10 (the run path). (§9, §15)
+  *Found on the bench 2026-07-21 while verifying the A8-stimulus deletion: the supervisor cuts the
+  outputs at `kCommandTimeoutMs` as designed, but **nothing ends the run** — the executor keeps
+  advancing its clock and setpoint with `duty=0`, and telemetry keeps advertising `RUNNING`. A
+  freshly booted CYD then renders a run nobody started and that is not heating (observed: Home
+  showing `run_state=1` against a controller reading `authorized=0 safe=1`).
+  **Why ending it is right, not just tidy:** §15's resume (B6) is driven by the CYD's own
+  `RunTracker` — how far the hold got, what remainder to generate — and that state does not survive
+  a CYD reboot. A run orphaned that way is unrecoverable **by construction**, so keeping it RUNNING
+  holds no door open for recovery; it only misleads. It also composes with B6 rather than fighting
+  it: when the CYD is alive and only the cable glitched, the controller ending its run is exactly
+  the precondition for §15's normal resume (the CYD re-Starts a generated remainder as a new
+  session).
+  **Shape:** a second clause in `ControllerRunPath::tick()` beside the door check (step 0) — same
+  place, same argument, and it keeps `SafetySupervisor`'s "only ever cuts" invariant (A4a) intact:
+  ending a run is bookkeeping, the mitigation already happened. **Two triggers**, deliberately:
+  a changed peer `boot_nonce` (A8 put it in `Hello` and the handshake already watches it) ends the
+  run **immediately** — positive evidence the operator's context is gone rather than mere silence,
+  and the exact case that produces the phantom; and sustained non-authorization past a new
+  `orphanTimeoutMs` covers cable-pulled / CYD-unpowered, where no nonce ever arrives. Then
+  `exec_.abort()` + `SessionGate::clearSession()` (which already exists for precisely "run
+  ended/aborted/faulted → IDLE-safe") + a latched edge for telemetry, mirroring `doorAborted()`.
+  **Must NOT break:** a same-session reconnect inside the window legitimately resumes the run —
+  `authorized()` returns and the supervisor stops cutting — which is the right answer to a brief
+  glitch and is existing behaviour. Only a **rebooted** CYD cannot do this (it draws a fresh
+  `esp_random()` session, so the old one is unreachable forever).
+  **Not a fault** (§22 excludes it, as with the door): no modal, no latch, just IDLE + a telemetry
+  bit. B7's CYD-side run-scoped `LINK_LOST` already covers what an operator who was *present* needs.
+  **§10-open:** `orphanTimeoutMs` — must be ≫ `kCommandTimeoutMs` (750 ms) so dropped frames never
+  end a run; ~30 s is the starting placeholder. **Structural:** `ControllerRunPath` gains an
+  `IClock` (it has none today).
+  **Tests:** `test_run_path` — same-session reconnect inside the window keeps the run and resumes
+  duty (the behaviour that must not regress); silence past the window leaves RUNNING with duty 0,
+  no fault latched, session cleared; a new peer nonce ends it immediately; telemetry then reads
+  IDLE. Extend `fuzz_sim_run`'s link churn with "no run outlives its session by more than
+  `orphanTimeoutMs`".
+  **Known objection:** a reflow run ended by a 30 s glitch — but its outputs were off for those
+  30 s, so the profile is already ruined; ending it honestly and letting §16's summary say so beats
+  pretending it continued.*
 - [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
   **REWIRED 2026-07-17 (Wave R3):** the view-model binds to a `ProfileClient` (remote,
   over the link) instead of a local `ProfileStore`, gaining loading/error states; the
@@ -622,7 +670,8 @@ existing `IClock`/`IHeaterSwitch` idiom:
     **Bench-verified 2026-07-20 on the two-devkit rig** (`esp32dev_control_sim` + the 3.5"
     `esp32dev_cyd35_bench`), A/B against a build of the parent commit so the only variable is this
     change — ASAP → 60 °C hold (the reported case): **74.8 → 61.6 °C**; timed 80 °C/120 s → hold
-    (the stock bench stimulus): 90.6 → 85.6 °C.
+    (the stock bench stimulus): 90.6 → 85.6 °C. *(Those runs were driven by the CYD bench
+    stimulus, which this same day's bench-safety fix deleted — see A8. Re-runs start from Confirm.)*
     The ASAP baseline reproduced the originally reported 74.9 °C to within 0.1 °C, and the fixed
     firmware landed within 0.1 °C of the sim's prediction (61.7 °C) — the A10 twin is doing its job.
     Neither run faulted. **Two honest caveats the bench made visible**, both of which the sim's
@@ -737,6 +786,12 @@ existing `IClock`/`IHeaterSwitch` idiom:
 - [ ] **D3** [D] — safety-chain fitout: donor interlock chain, cutoffs, fuse,
   contactor, high-limit, SSR, UV door switch, window film — then re-run A8's
   step-1 fail-safe proof against the real chain. deps: D1, D2, A8. (§4, §8 step 2)
+  *The re-run must cover **both** step-1 clauses — pulled TX **and CYD reboot** — and the reboot
+  one must be observed with nothing re-arming heat afterwards (the CYD bench stimulus that
+  defeated it was deleted 2026-07-20). Start the run from Confirm (§19), so the proof exercises
+  the production path; an LED proved firmware, this proves a contactor coil's release time and an
+  SSR that holds to the next zero crossing. Also the first real-hardware test of link-on-UART0,
+  which §25's OTA depends on (§2).*
 - [ ] **D4** [D] — TC front-end IC selection + wall-TC channel bring-up, then
   workpiece-TC install (pass-through, panel jack, reflow rack) as separate items.
   *Provides the real temp-input adapter.* deps: D1, D3. (§6)

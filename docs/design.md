@@ -1057,7 +1057,13 @@ hardening step (a shorted SSR doesn't care that the setpoint was only 80 °C).
    door-interlock chain + cavity/element cutoffs integrated (L0), series thermal
    fuse bonded, contactor, independent high-limit, zero-cross SSR sized +
    heatsinked in the ventilated bay, UV-rail door switch + window film (§4).
-   Fail-safe proof from step 1 re-run against the real chain.
+   Fail-safe proof from step 1 re-run against the real chain — **including step 1's
+   second clause, "or the CYD reboots"**, which must be observed with nothing re-arming
+   heat afterwards. (The A8 bench stimulus used to auto-start a run on CYD boot, which
+   made that clause untestable: the cut fired correctly and the stimulus re-energized
+   seconds later. Removed 2026-07-20; the run is started from Confirm, §19, which also
+   makes the re-run exercise the production path.) Also the first test of
+   **link-on-UART0** with real hardware — the bench pinout is not production's (§2).
 3. **UV cure path:** CYD cure engine → upload cure recipe → controller runs gentle
    heat (~80 °C) + UV on + timer (+ optional turntable); telemetry + progress back;
    one wall-thermocouple channel live. One full mode working.
@@ -2166,6 +2172,18 @@ controller/protocol involvement).
 The safety gate: **Setup** (load a template + review, with readiness checks) →
 **Confirm** (deliberate, specific, hard to trigger accidentally). Strictest application
 of the ui-development rules.
+
+> **Where this guarantee lives (worth stating plainly).** "A run never starts without
+> operator confirmation" is enforced **entirely on the CYD**. The controller has no
+> notion of operator intent: it accepts a `Start` from any peer that clears the
+> handshake and schema gate (§9), because it trusts its single authenticated peer, and
+> no in-band token could prove a human was present anyway. Its job is to make a run
+> that *has* started safe (L0–L3: interlocks, over-temp trip, stuck-heater, bounded
+> runtime), not to adjudicate whether it was wanted. The consequence is a rule about
+> **firmware**, not about screens: *no CYD build may command a run without passing
+> through Confirm.* A bench build that did exactly that (`CYD_BENCH_LINK`'s A8 boot
+> stimulus) is why this paragraph exists — plugging the CYD in energized the heater.
+> Deleted 2026-07-20; see §8 step 2.
 
 ### Setup — start empty, Load a profile as a template (DECIDED)
 

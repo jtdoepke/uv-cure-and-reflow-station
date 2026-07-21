@@ -48,12 +48,13 @@ test:      ## Host test suites (no board)
 # geometry-independent, so a layout that only works at 320x240 fails here rather than on glass.
 	pio test -e native_logic_cyd -e native_ui_cyd -e native_ui_cyd_35 -e native_control
 
-build:     ## Firmware compile-check (both MCUs + both bench envs + the on-target suite)
-# The bench envs are #if-guarded code paths, so they rot unless something compiles them.
+build:     ## Firmware compile-check (both MCUs + the controller bench/sim envs + the on-target suite)
+# The bench/sim envs are #if-guarded code paths, so they rot unless something compiles them.
+# There are no CYD bench envs: the two-devkit bench pairs a controller bench/sim build with the
+# ORDINARY CYD firmware, so what you bench with is what ships (see CLAUDE.md).
 # Unlike esp32dev_cyd35_uidev they need no secrets.h, so there is no reason to leave them out.
 	pio run -e esp32dev_cyd -e esp32dev_cyd35 -e esp32dev_control \
-		-e esp32dev_cyd_bench -e esp32dev_cyd35_bench -e esp32dev_control_bench \
-		-e esp32dev_control_sim \
+		-e esp32dev_control_bench -e esp32dev_control_sim \
 		-e touch_calib_cyd -e touch_calib_cyd35
 # The embedded suites need a board to RUN, but not to build — and building them here is the only
 # thing standing between them and bit-rot. It was broken for exactly this reason: nothing built it.

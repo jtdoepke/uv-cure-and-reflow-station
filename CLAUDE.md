@@ -84,11 +84,15 @@ them — see `mise.toml`; run `mise install` on a fresh clone). The default CYD 
 `esp32dev_cyd35` (the 3.5" board, what `pio run` builds); `esp32dev_cyd` is the 2.8" one, and
 the controller's is `esp32dev_control`. Every env comes in board pairs — `<env>` for the 2.8",
 `<env>35` for the 3.5" (`esp32dev_cyd35_uidev`, `embedded_cyd35`, `native_ui_cyd_35`,
-`native_sim_35`, `touch_calib_cyd35`). The
-`esp32dev_control_bench` / `esp32dev_cyd_bench` pair is the two-devkit bench (backlog A8):
-it moves the **controller's** link to UART2 so UART0 stays free for USB — on a devkit the
-USB bridge's TX fights the CYD's on the controller's RX0, so production's link-on-UART0
-(§2/§25) can't coexist with both boards plugged in. The `Makefile` wraps common
+`native_sim_35`, `touch_calib_cyd35`). `esp32dev_control_bench`
+(and `esp32dev_control_sim`) is the two-devkit bench (backlog A8): it moves the **controller's**
+link to UART2 so UART0 stays free for USB — on a devkit the USB bridge's TX fights the CYD's on
+the controller's RX0, so production's link-on-UART0 (§2/§25) can't coexist with both boards
+plugged in. **The CYD side of that bench is the ordinary firmware** — there is deliberately no
+CYD bench env. One existed until 2026-07-20; its boot stimulus auto-started a run, so plugging
+the CYD in energized the heater with no §19 Confirm hold. Deleted: a build that starts heat
+without operator confirmation has no business on a bench, and it defeats the "CYD reboots →
+heater cuts" clause A8 exists to prove. Start bench runs from the UI, like production. The `Makefile` wraps common
 invocations (`make help` lists them).
 
 - Build: `make build` (every firmware + both boards; a variant that isn't built rots) or

@@ -211,76 +211,6 @@ static protocol::CydLink g_cyd_link(g_link, g_link_clk);
 // the settings-sync all drive it (single-outstanding, idle-context UI traffic).
 static ManagementClient g_mgmt_client(g_link, g_link_clk);
 
-#if defined(CYD_BENCH_LINK)
-// A8 bench stimulus (§8 step 1) — NOT production behavior; §19/C6's Setup/Confirm owns starting
-// a run. Drives the controller to authorized() at boot so the dummy-load LEDs light and the
-// fail-safe cut is observable when the TX is pulled.
-//
-// Recipe -> Ack -> Start mirrors the real flow (a run always uploads a recipe before starting)
-// and exercises both setup-path commands rather than just one. The session is random per boot
-// so a CYD reboot presents a genuinely new session, as §9 says it must.
-static uint32_t g_bench_session = 0;
-static bool g_bench_recipe_sent = false;
-static bool g_bench_start_sent = false;
-
-static void bench_link_stimulus() {
-  using protocol::ReliableSender;
-  if (!g_cyd_link.handshake().matched()) {
-    return; // schema gate first, fail-closed (§9)
-  }
-  auto &tx = g_cyd_link.sender();
-
-  if (!g_bench_recipe_sent) {
-    if (tx.state() == ReliableSender::State::Idle) {
-      // A full cure profile: warm to 80 °C (convection + UV + turntable), hold, then a passive
-      // cool tail to touch-safe. For the A8 dummy-load proof the controller ignores the recipe
-      // content (it only needs authorize()), but for the A10 plant simulator this drives a real
-      // ramp -> hold -> coast -> DONE run whose Sum(dur)x1.5 runtime budget covers the actual time.
-      oven_Recipe rec = oven_Recipe_init_default;
-      rec.id = 1;
-      rec.mode = oven_Mode_MODE_CURE;
-      rec.segments_count = 3;
-      rec.segments[0].interp = oven_Interp_INTERP_RAMP_OVER_TIME;
-      rec.segments[0].heat_c = 80.0F;
-      rec.segments[0].dur_ms = 120000;
-      rec.segments[0].conv_fan = true;
-      rec.segments[0].uv = true;
-      rec.segments[0].motor = true;
-      rec.segments[1].interp = oven_Interp_INTERP_HOLD;
-      rec.segments[1].heat_c = 80.0F;
-      rec.segments[1].dur_ms = 60000;
-      rec.segments[1].conv_fan = true;
-      rec.segments[1].uv = true;
-      rec.segments[1].motor = true;
-      rec.segments[2].interp = oven_Interp_INTERP_RAMP_OVER_TIME;
-      rec.segments[2].heat_c = oven_domain::kTouchSafeC; // coast to the shared touch-safe target
-      // ~600 s: the real uninsulated passive coast 80 -> 43 C runs ~500 s, and the L3 runtime
-      // budget is Sum(dur)x1.5, so the cool tail must be sized to the physics or the supervisor
-      // trips RUNTIME_EXCEEDED during the (correct) slow cooldown. In production B1 computes this
-      // from the oven_cal cool envelope; this hand-authored bench recipe matches it.
-      rec.segments[2].dur_ms = 600000;
-      g_bench_recipe_sent = tx.sendRecipe(rec); // the sender stamps the seq
-    }
-    return;
-  }
-  if (!g_bench_start_sent) {
-    if (tx.state() == ReliableSender::State::Acked) {
-      oven_Start st = oven_Start_init_default;
-      st.session = g_bench_session;
-      st.recipe_id = 1;
-      g_bench_start_sent = tx.sendStart(st);
-    }
-    return;
-  }
-  // Start acked -> the controller has adopted the session, so heartbeats can authorize it.
-  if (tx.state() == ReliableSender::State::Acked &&
-      g_cyd_link.heartbeat().session() != g_bench_session) {
-    g_cyd_link.heartbeat().setSession(g_bench_session);
-    g_cyd_link.heartbeat().setEnable(true); // the explicit HEAT_EN bit (§9)
-  }
-}
-#endif // CYD_BENCH_LINK
-
 // Hub-and-spoke navigation via a ScreenRouter (lib/ui_logic/screen_router). Home is CACHED — built
 // once and kept resident, so returning to it is an lv_screen_load, not an lv_obj_clean + rebuild.
 // This is a deliberate exception to the "create-on-demand, delete on leave" rule (architecture.md):
@@ -853,12 +783,6 @@ void setup() {
   // boot: it is how the controller spots that we restarted and re-announces itself, so the link
   // recovers instead of sitting unmatched (§9 re-sync).
   g_cyd_link.begin(esp_random());
-#if defined(CYD_BENCH_LINK)
-  g_bench_session = esp_random() | 1U; // non-zero: 0 means "no session" (§9)
-  Serial.printf("[bench] link stimulus armed, session=%08lx\n",
-                static_cast<unsigned long>(g_bench_session));
-#endif
-
 #if defined(UI_DEV_TOOLS)
   ui_dev_tools_begin(gfx);
 #endif
@@ -894,10 +818,6 @@ void loop() {
   g_mgmt_client.service();
   service_settings_sync();
   poll_screens();
-#if defined(CYD_BENCH_LINK)
-  bench_link_stimulus();
-#endif
-
   // Publish the §9 link health as Home's indicator + run-flow gate (§14). linkAlive() is the
   // part that decays — the controller's telemetry arriving — since the handshake latches and
   // would otherwise keep claiming a link over an unplugged cable. Set every loop rather than
