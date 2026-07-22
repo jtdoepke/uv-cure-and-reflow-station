@@ -31,6 +31,7 @@
 #include "message_router.h"
 #include "recipe_validator.h" // A7 upload-time recipe/start checks (§4/§9)
 #include "safety_supervisor.h"
+#include "stock_seed.h"         // compiled-in factory profile set (§7/§23)
 #include "schema.h"             // shared wire-contract identity (lib/protocol)
 #include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
 #include "codec.h"              // protocol::wireEnum — the interp field is an untrusted wire enum
@@ -205,6 +206,23 @@ void setup() {
   if (!LittleFS.begin(/*formatOnFail=*/true)) {
     CONTROL_LOGF("[profiles] LittleFS mount failed - library unavailable\n");
   }
+
+  // Seed any MISSING stock profile from the firmware's own compiled-in table (§23; backlog S5).
+  // Idempotent, so a populated board does nothing. This is what makes `uploadfs` optional rather
+  // than load-bearing, and it is the recovery path for the formatOnFail above: a corrupt
+  // filesystem is reformatted on the line before this one, taking the whole library with it, and
+  // without this the factory references §23 promises "can't be lost" would be gone until someone
+  // reflashed over USB. overwrite=false so it only ever fills gaps; §24's Restore is the
+  // deliberate repair.
+  {
+    const control::SeedReport c = control::seedStockProfiles(g_cure_store, /*overwrite=*/false);
+    const control::SeedReport r = control::seedStockProfiles(g_reflow_store, /*overwrite=*/false);
+    if (c.written + r.written + c.failed + r.failed > 0) {
+      CONTROL_LOGF("[profiles] stock seeded=%u failed=%u\n", (unsigned)(c.written + r.written),
+                   (unsigned)(c.failed + r.failed));
+    }
+  }
+
   g_settings.load(); // persisted settings (or defaults), caps re-clamped to hard-max (§4)
 
 #if defined(CONTROL_BENCH) || defined(CONTROL_SIM)

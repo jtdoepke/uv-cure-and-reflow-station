@@ -6,9 +6,11 @@
 
 # Vendored/generated files that no hook should touch. The fonts/*.c are lv_font_conv output —
 # kept byte-identical to the generator (README there documents regeneration); the fonts README
-# is NOT excluded, so it's still markdown-linted. fuzz/corpus/** are binary fuzzer seeds — the
-# whitespace/EOF hooks would corrupt them.
-exclude: '^(include/lv_conf\.h|get-platformio\.py|compile_commands\.json|lib/ui_logic/fonts/[^/]+\.c|fuzz/corpus/.*)$'
+# is NOT excluded, so it's still markdown-linted. stock_profiles.h is tools/gen_profiles.cpp
+# output for the same reason: clang-format rewraps its byte rows, which would make every
+# regeneration dirty the tree and break "regenerate, and the file you get is the file that is
+# committed". fuzz/corpus/** are binary fuzzer seeds — the whitespace/EOF hooks would corrupt them.
+exclude: '^(include/lv_conf\.h|get-platformio\.py|compile_commands\.json|lib/ui_logic/fonts/[^/]+\.c|lib/control_logic/stock_profiles\.h|fuzz/corpus/.*)$'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks

@@ -23,6 +23,7 @@
 #include "oven.pb.h"
 #include "profile_library.h"
 #include "request_client.h"
+#include "stock_seed.h"
 
 using control::ProfileStore;
 using protocol::RequestClient;
@@ -436,6 +437,123 @@ void test_mgmt_settings_put_clamps_cap(void) {
   TEST_ASSERT_EQUAL_INT(120, r.settings_store.get().uv_max_cap);
 }
 
+// --- Stock seeding / restore from the compiled-in table (§23; backlog S5) ---
+
+// The recovery case the whole feature exists for: an EMPTY library (a fresh flash with no
+// uploadfs, or a filesystem the formatOnFail mount just wiped) repopulates itself from firmware.
+void test_seed_stock_fills_an_empty_library(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  TEST_ASSERT_EQUAL_UINT32(0, store.list(rows, ProfileStore::kMaxListed));
+
+  const control::SeedReport r = control::seedStockProfiles(store, /*overwrite=*/false);
+  TEST_ASSERT_TRUE(r.ok());
+  TEST_ASSERT_TRUE(r.written > 0);
+  TEST_ASSERT_EQUAL_UINT32(r.written, store.list(rows, ProfileStore::kMaxListed));
+
+  // Whatever the table said, a seeded profile is stock — that is what makes it read-only (§23).
+  oven_Profile p = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(store.load(rows[0].name, p));
+  TEST_ASSERT_TRUE(p.stock);
+  TEST_ASSERT_EQUAL_INT(oven_Mode_MODE_REFLOW, p.mode);
+}
+
+// Boot runs this every time, so it has to be idempotent: a second pass writes nothing.
+void test_seed_stock_is_idempotent(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  const control::SeedReport first = control::seedStockProfiles(store, /*overwrite=*/false);
+  const control::SeedReport second = control::seedStockProfiles(store, /*overwrite=*/false);
+  TEST_ASSERT_TRUE(first.written > 0);
+  TEST_ASSERT_EQUAL_UINT32(0, second.written);
+  TEST_ASSERT_EQUAL_UINT32(first.written, second.present);
+  TEST_ASSERT_TRUE(second.ok());
+}
+
+// §24's Restore: overwrite repairs a stock entry that was corrupted, which is the one thing
+// save() and remove() correctly refuse to do.
+void test_restore_stock_repairs_a_damaged_entry(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  TEST_ASSERT_TRUE(control::seedStockProfiles(store, /*overwrite=*/false).written > 0);
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  store.list(rows, ProfileStore::kMaxListed);
+  const char *name = rows[0].name;
+
+  // Corrupt the blob in place, the way a half-finished write or a bad sector would.
+  fs.put(name, std::vector<uint8_t>{0xDE, 0xAD, 0xBE, 0xEF});
+  oven_Profile broken = oven_Profile_init_zero;
+  TEST_ASSERT_FALSE(store.load(name, broken)); // unreadable, and save/remove cannot fix it
+
+  const control::SeedReport r = control::seedStockProfiles(store, /*overwrite=*/true);
+  TEST_ASSERT_TRUE(r.ok());
+  TEST_ASSERT_TRUE(r.written > 0);
+  oven_Profile fixed = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(store.load(name, fixed));
+  TEST_ASSERT_TRUE(fixed.stock);
+}
+
+// The operator's work outranks a factory reference. §23's promise is about not LOSING the stock
+// set, not about owning the namespace — so a user profile squatting a stock name is reported and
+// left exactly as it was, on a boot seed AND on a deliberate restore.
+void test_seed_stock_never_clobbers_a_user_profile(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  // Take the name first, as a user profile (possible only while the stock one is absent).
+  ProfileStore probe(fs, oven_Mode_MODE_REFLOW);
+  control::seedStockProfiles(probe, /*overwrite=*/false);
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  probe.list(rows, ProfileStore::kMaxListed);
+  const char *stockName = rows[0].name;
+
+  FakeProfileStorage fresh;
+  ProfileStore user(fresh, oven_Mode_MODE_REFLOW);
+  oven_Profile mine = makeProfile(oven_Mode_MODE_REFLOW, stockName, 199.0F, 42);
+  TEST_ASSERT_TRUE(user.save(mine));
+
+  for (bool overwrite : {false, true}) {
+    const control::SeedReport r = control::seedStockProfiles(user, overwrite);
+    TEST_ASSERT_EQUAL_UINT32(0, r.written);
+    TEST_ASSERT_TRUE(r.userOwned > 0);
+    oven_Profile still = oven_Profile_init_zero;
+    TEST_ASSERT_TRUE(user.load(stockName, still));
+    TEST_ASSERT_FALSE(still.stock);                            // still theirs
+    TEST_ASSERT_EQUAL_FLOAT(199.0F, still.phases[1].target_c); // and unaltered
+  }
+}
+
+// One store is one mode's library (§7 "never mixed"): a cure store must not pick up reflow stock,
+// and the entries it skips are not counted as failures.
+void test_seed_stock_respects_the_store_mode(void) {
+  FakeProfileStorage fs;
+  ProfileStore cure(fs, oven_Mode_MODE_CURE);
+  const control::SeedReport r = control::seedStockProfiles(cure, /*overwrite=*/false);
+  TEST_ASSERT_TRUE(r.ok());
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  const size_t n = cure.list(rows, ProfileStore::kMaxListed);
+  TEST_ASSERT_EQUAL_UINT32(r.written, n);
+  for (size_t i = 0; i < n; ++i) {
+    oven_Profile p = oven_Profile_init_zero;
+    TEST_ASSERT_TRUE(cure.load(rows[i].name, p));
+    TEST_ASSERT_EQUAL_INT(oven_Mode_MODE_CURE, p.mode);
+  }
+}
+
+// Every compiled-in entry must decode — a table this firmware cannot read is a build mistake, and
+// the generator is the only thing that writes it.
+void test_stock_table_entries_all_decode(void) {
+  TEST_ASSERT_TRUE(control::stock::kCount > 0);
+  for (size_t i = 0; i < control::stock::kCount; ++i) {
+    const control::stock::Entry &e = control::stock::kEntries[i];
+    oven_Profile p = oven_Profile_init_zero;
+    TEST_ASSERT_TRUE(protocol::decode(oven_Profile_fields, &p, e.body, e.len));
+    TEST_ASSERT_TRUE(p.phases_count > 0);
+    TEST_ASSERT_EQUAL_STRING(e.name, p.name);
+    TEST_ASSERT_EQUAL_INT(e.mode, p.mode);
+  }
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_store_save_load_roundtrip);
@@ -455,5 +573,11 @@ int main(int, char **) {
   RUN_TEST(test_mgmt_dedup_no_double_write);
   RUN_TEST(test_mgmt_settings_get);
   RUN_TEST(test_mgmt_settings_put_clamps_cap);
+  RUN_TEST(test_seed_stock_fills_an_empty_library);
+  RUN_TEST(test_seed_stock_is_idempotent);
+  RUN_TEST(test_restore_stock_repairs_a_damaged_entry);
+  RUN_TEST(test_seed_stock_never_clobbers_a_user_profile);
+  RUN_TEST(test_seed_stock_respects_the_store_mode);
+  RUN_TEST(test_stock_table_entries_all_decode);
   return UNITY_END();
 }

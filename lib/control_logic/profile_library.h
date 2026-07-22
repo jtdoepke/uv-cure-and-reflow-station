@@ -101,6 +101,48 @@ public:
     return writeBlob(stamped);
   }
 
+  // What a seedStock() attempt did, so the caller can report it honestly rather than collapsing
+  // "already there" and "refused" into one failure.
+  enum class SeedOutcome : uint8_t {
+    Written,   // the profile was absent (or overwrite was asked for) and is now stored
+    Present,   // an identical-named stock profile already exists; nothing to do
+    UserOwned, // a USER profile holds this name — left alone, never clobbered
+    Failed,    // encode or write failure
+  };
+
+  // Install a factory profile from the firmware's own compiled-in stock table (§23's "the factory
+  // references can't be lost"). Deliberately NOT routed through save(), which refuses to overwrite
+  // a stock profile — correct for every other caller, and exactly what a restore has to do.
+  //
+  // **This is a privileged write, and its safety is entirely in who may call it.** The only
+  // legitimate source is stock_profiles.h, compiled into this firmware and reviewed with it. A
+  // profile arriving over the wire must never reach here: the CYD may *ask* for a restore (§9
+  // ProfileRestoreStock) but can never *supply* what gets written, so a malicious or confused peer
+  // cannot use the restore path to plant an unremovable read-only profile.
+  //
+  // Never clobbers a USER profile that happens to hold the name — the operator's work outranks a
+  // factory reference, and §23's promise is about not LOSING the stock set, not about owning the
+  // namespace. `overwrite` only governs replacing an existing STOCK entry (the repair case).
+  SeedOutcome seedStock(const oven_Profile &p, bool overwrite) {
+    if (!validName(p.name) || p.phases_count == 0 || p.phases_count > kMaxPhases) {
+      return SeedOutcome::Failed;
+    }
+    oven_Profile existing = oven_Profile_init_zero;
+    if (loadBlob(p.name, existing)) {
+      if (!existing.stock) {
+        return SeedOutcome::UserOwned;
+      }
+      if (!overwrite) {
+        return SeedOutcome::Present;
+      }
+    }
+    oven_Profile stamped = p;
+    stamped.mode = mode_; // authoritative, as in save(): the directory decides the mode
+    stamped.stock = true; // a seeded profile is stock by definition, whatever the table said
+    stamped.use_seq = nextUseSeq();
+    return writeBlob(stamped) ? SeedOutcome::Written : SeedOutcome::Failed;
+  }
+
   // Mark a profile "used" (run-start, §23): bump its recency counter so the CYD's MRU sort floats
   // it to the top. Unlike save(), this is allowed on STOCK profiles — running a stock profile is a
   // use — so it goes straight to writeBlob (which does not enforce the read-only rule). Returns
