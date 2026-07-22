@@ -31,6 +31,20 @@ inline constexpr uint8_t kTfTypeFault = 0x18;
 // remote" split). Request/reply path — also gated by the schema handshake, so these ids may
 // churn as long as both boards are flashed together. Requests carry a seq; the matching reply
 // echoes it.
+//
+// ADDING ONE IS FIVE EDITS, AND MISSING THE FOURTH FAILS SILENTLY. In order:
+//   1. the message in proto/oven.proto (+ any caps in oven.options)
+//   2. an id here
+//   3. a MessageRouter case + an IMessageObserver virtual (message_router.h/.cpp)
+//   4. **a ControllerLink forward to the ManagementResponder** (controller_link.h) — the router's
+//      observer is the FACADE, not the responder, so without this the frame hits
+//      IMessageObserver's do-nothing default and the CYD waits out its timeout with no reply and
+//      no error anywhere
+//   5. the ManagementResponder handler + a ManagementClient request method
+// Step 4 has now been missed twice — SettingsGet/Put once, ProfileRestoreStock again on
+// 2026-07-22 — because every unit rig is happy without it. Cover a new message in
+// test_management_roundtrip, whose rig routes through ControllerLink exactly as the firmware
+// does; a store-level suite that observes the responder directly cannot see this gap.
 inline constexpr uint8_t kTfTypeProfileListReq = 0x19;
 inline constexpr uint8_t kTfTypeProfileGetReq = 0x1A;
 inline constexpr uint8_t kTfTypeProfilePut = 0x1B;

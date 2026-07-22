@@ -1059,4 +1059,22 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   library, `Nothing` (`NAK_NOT_FOUND`) says this firmware has no stock set for the mode, `Failed`
   says the controller is busy or not responding and accuses nothing. Three new UI cases pin all of
   it, including that a collided restore *completes on its own* once the slot frees.
-  **Still not re-checked on glass** after the fix.
+  ***Then it failed AGAIN on glass — "controller busy or not responding" — and that message was
+  telling the literal truth.*** *Diagnosed by instrumenting rather than guessing: a new 1 Hz
+  `[mgmt]` console trace on the CYD (state/op/nak/sync — the management path had **no** console
+  visibility at all, which is why two rounds of this were guesswork) showed the request going out
+  as `op=8` and the client falling to `nak=0` (`NAK_UNSPECIFIED`) about a second later. Unspecified
+  after a send means no reply ever came.*
+  ***Cause: `ControllerLink` never forwarded the new message.*** *The router's observer is the
+  FACADE, not the responder, so `onProfileRestoreStock` hit `IMessageObserver`'s do-nothing default
+  and died there — no reply, no error, the CYD simply waiting out its timeout. **This is the second
+  time**: `test_management_roundtrip`'s own header says a missing forward is how settings once
+  shipped, and that suite exists to prevent exactly it. The new round-trip tests went into
+  `test_profile_management`, whose rig wires the responder **straight to the router** — the bypass
+  that comment warns against — so they passed while the firmware was broken.*
+  **Fixed:** the forward, plus two cases in `test_management_roundtrip` (which routes through the
+  facade like the firmware); both were **confirmed to fail without the forward** before being kept.
+  A five-step checklist now sits at the frame-id definitions in `messages.h`, naming step 4 as the
+  one that fails silently. The `[mgmt]` trace is kept — permanently useful, and its absence is what
+  made this expensive.
+  **Still not re-checked on glass** after the fix (needs hands on the panel).

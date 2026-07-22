@@ -492,6 +492,7 @@ void SettingsScreen::poll() {
   // Only claim success for OUR request: the client is shared, and a reply to someone else's op
   // arriving here must not be read as a restore verdict.
   const bool ours = client_->lastOp() == ManagementClient::Op::RestoreStock;
+  restore_nak_ = ours ? client_->lastNak() : oven_NakReason_NAK_UNSPECIFIED;
   if (!ours) {
     restore_ = RestoreState::Failed;
   } else if (client_->ready()) {

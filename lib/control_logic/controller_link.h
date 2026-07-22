@@ -118,6 +118,11 @@ public:
       mgmt_->onProfileRename(m);
     }
   }
+  void onProfileRestoreStock(const oven_ProfileRestoreStock &m) override {
+    if (mgmt_ != nullptr) {
+      mgmt_->onProfileRestoreStock(m);
+    }
+  }
   void onProfileTouch(const oven_ProfileTouch &m) override {
     if (mgmt_ != nullptr) {
       mgmt_->onProfileTouch(m);

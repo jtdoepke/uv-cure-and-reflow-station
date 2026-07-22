@@ -22,6 +22,7 @@
 #include "phase.h"
 #include "phase_codec.h"
 #include "profile_library.h"
+#include "stock_seed.h"
 
 // The controller side routes through ControllerLink (setManagementResponder), NOT straight into the
 // responder — exactly as src_control/main.cpp wires it. Doing so here is load-bearing: a management
@@ -216,6 +217,40 @@ void test_touch_absent_fails(void) {
 }
 
 // One outstanding request at a time (single-outstanding, like the setup path).
+// §24 Restore stock (backlog S5). Belongs in THIS suite, not the store-level one: it is a NEW
+// message, and a new message's first failure mode is ControllerLink forgetting to forward its
+// virtual — which is exactly how it shipped. The restore reached the responder in a rig that wired
+// the responder straight to the router, and reached nothing at all on hardware, where the frame
+// goes through the facade. The CYD sat until its request timed out.
+void test_restore_stock_reaches_the_responder_through_controller_link(void) {
+  Rig r;
+  TEST_ASSERT_TRUE(r.client.requestRestoreStock(oven_Mode_MODE_REFLOW));
+  r.exchange();
+  // The verdict matters less here than that ONE arrived: an unforwarded request never replies at
+  // all, which is the silence this pins.
+  TEST_ASSERT_FALSE(busy(r.client.state()));
+  TEST_ASSERT_TRUE(r.client.ready());
+
+  control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
+  TEST_ASSERT_TRUE(r.reflow_store.list(rows, control::ProfileStore::kMaxListed) > 0);
+}
+
+// The cure path the operator actually hit: no stock entries for the mode, so the controller must
+// answer NOT_FOUND rather than leave the request hanging.
+void test_restore_stock_answers_even_with_no_entries_for_the_mode(void) {
+  FakeProfileStorage probe_fs;
+  control::ProfileStore probe(probe_fs, oven_Mode_MODE_CURE);
+  if (control::seedStockProfiles(probe, /*overwrite=*/false).considered() > 0) {
+    TEST_IGNORE_MESSAGE("cure now has stock entries - update this test");
+  }
+  Rig r;
+  TEST_ASSERT_TRUE(r.client.requestRestoreStock(oven_Mode_MODE_CURE));
+  r.exchange();
+  TEST_ASSERT_FALSE(busy(r.client.state()));
+  TEST_ASSERT_TRUE(r.client.failed());
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_NOT_FOUND, r.client.lastNak());
+}
+
 void test_single_outstanding(void) {
   Rig r;
   TEST_ASSERT_TRUE(r.client.requestList(oven_Mode_MODE_REFLOW));
@@ -232,6 +267,8 @@ int main(int, char **) {
   RUN_TEST(test_settings_roundtrip);
   RUN_TEST(test_touch_roundtrip_reorders_mru);
   RUN_TEST(test_touch_absent_fails);
+  RUN_TEST(test_restore_stock_reaches_the_responder_through_controller_link);
+  RUN_TEST(test_restore_stock_answers_even_with_no_entries_for_the_mode);
   RUN_TEST(test_single_outstanding);
   return UNITY_END();
 }

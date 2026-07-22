@@ -104,6 +104,11 @@ public:
   };
   RestoreState restoreState() const { return restore_; }
 
+  // The controller's NakReason behind the current terminal state, retained after the shared
+  // client is cleared. The screen switches on it, so keeping it is what lets the firmware trace
+  // (and a test) say WHY a restore ended the way it did rather than inferring it.
+  oven_NakReason lastRestoreNak() const { return restore_nak_; }
+
   // --- Inspection accessors (for tests). One list model serves every panel (only one is shown at
   // a time); the two editor VMs back the open editor. ---
   SelectableListModel &listModel() { return list_model_; }
@@ -155,6 +160,7 @@ private:
 
   RestoreState restore_ = RestoreState::Idle;
   oven_Mode restore_mode_ = oven_Mode_MODE_UNSPECIFIED;
+  oven_NakReason restore_nak_ = oven_NakReason_NAK_UNSPECIFIED;
   // Polls spent waiting for the shared client's slot before giving up. Counted in polls rather
   // than milliseconds because this screen owns no clock, and poll() runs once per firmware loop
   // (~5-20 ms), so this is a bounded couple of seconds — far longer than the one round-trip the

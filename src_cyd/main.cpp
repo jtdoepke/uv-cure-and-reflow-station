@@ -998,6 +998,21 @@ void loop() {
     Serial.printf("[home] run_state=%d chamber=%dC\n",
                   static_cast<int>(lv_subject_get_int(&subj_run_state)),
                   static_cast<int>(lv_subject_get_int(&subj_chamber_temp)));
+    // The management path (§9), which had NO console visibility at all — and that is precisely why
+    // a §24 restore failing on glass could only be guessed at (2026-07-22). The client is SHARED
+    // and single-outstanding: the background settings sync, the profile screens and the Settings
+    // restore all queue through this one slot, so "who holds it and what came back" is the first
+    // question for any management bug.
+    //   state 0=Idle 1=Busy 2=Ready 3=Failed · op: see ManagementClient::Op (8=RestoreStock)
+    //   sync  0=Idle 1=Fetching 2=Pushing · dirty= a local settings edit awaiting push
+    Serial.printf("[mgmt] state=%d op=%d nak=%d sync=%d dirty=%d fetched=%d\n",
+                  static_cast<int>(g_mgmt_client.busy()     ? 1
+                                   : g_mgmt_client.ready()  ? 2
+                                   : g_mgmt_client.failed() ? 3
+                                                            : 0),
+                  static_cast<int>(g_mgmt_client.lastOp()),
+                  static_cast<int>(g_mgmt_client.lastNak()), static_cast<int>(g_ss_state),
+                  static_cast<int>(g_settings_dirty), static_cast<int>(g_settings_fetched));
   }
 
 #if defined(UI_DEV_TOOLS)
