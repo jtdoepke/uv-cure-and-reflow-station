@@ -1077,4 +1077,5 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   A five-step checklist now sits at the frame-id definitions in `messages.h`, naming step 4 as the
   one that fails silently. The `[mgmt]` trace is kept — permanently useful, and its absence is what
   made this expensive.
-  **Still not re-checked on glass** after the fix (needs hands on the panel).
+  **Re-checked on glass 2026-07-22 after the fix — confirmed working by the operator.** Both boards
+  were reflashed from the fixed build first (the schema change needs a matched pair regardless).
