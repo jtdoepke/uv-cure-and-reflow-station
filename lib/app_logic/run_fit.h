@@ -223,7 +223,16 @@ private:
 // §16 quotes ONE paragraph covering both causes ("may mean the oven needs recalibration — or that
 // this board's thermal mass differs from the calibration board"), then says the design now
 // discriminates and "the advisory picks its wording accordingly" — without giving the two split
-// texts. These are drafts of that split and want a human review pass before C8 renders them.
+// texts. B7 drafted the split and flagged it for a human pass; **reviewed and rewritten
+// 2026-07-21**, on four rules worth keeping if these are ever edited again:
+//   - Conclusion first, evidence second. The drafts opened on `boardEst` vs `workTemp` — the
+//     discriminator's internals, which answer a question the operator did not ask.
+//   - Name the action. §16 pairs this advisory with a shortcut into the Calibration workflow, so
+//     the text should point at recalibrating rather than merely diagnose.
+//   - Say "PCB" for the workpiece. "Board" means the ESP32s everywhere else in this codebase, and
+//     the ProjectionModel draft used it twice for the load.
+//   - Keep the hedges ("points at", "most often", "may"). §16 is titled *honest by design*, and
+//     these thresholds are still unmeasured §10 placeholders.
 // GLYPH CONTRACT (learned the hard way — these strings rendered as missing-glyph boxes the first
 // time C8 drew them): the fonts carry ASCII + `°` + `·` and a handful of Font Awesome symbols,
 // nothing else (lib/ui_logic/fonts/README.md). So no em-dash, and NO leading warning sign: the
@@ -234,13 +243,13 @@ private:
 inline const char *advisoryText(DriftCause cause) {
   switch (cause) {
   case DriftCause::Oven:
-    return "Actual temperature differed from the prediction, but the board-temperature "
-           "estimate tracked correctly. This may mean the oven needs recalibration - a "
-           "tiring element or a worn door seal.";
+    return "This run missed its predicted curve while the temperature model still matched the "
+           "workpiece probe. That points at the oven, not the profile: usually an aging element "
+           "or a worn door seal. Recalibrate to realign predictions.";
   case DriftCause::ProjectionModel:
-    return "The board-temperature estimate drifted from the measured workpiece. This "
-           "may mean this board's thermal mass differs from the calibration board - or "
-           "that the estimator needs recalibration. Future time estimates may be optimistic.";
+    return "Predicted temperature drifted from what the workpiece probe measured, so the "
+           "planning model no longer matches this load. Usually this PCB's thermal mass differs "
+           "from the calibration board. Times may run optimistic until you recalibrate.";
   case DriftCause::None:
   default:
     return "";

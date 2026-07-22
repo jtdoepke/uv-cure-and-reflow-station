@@ -970,10 +970,20 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   the raw flash-blob path nothing tested, and the Wave R3 dead code deleted with it
   (`lib/app_logic/profile_store.h`, the two orphaned `src_cyd/` adapters, the suite that
   tested the dead store, `filesystem=littlefs` on both CYD envs). Full note under **R2**.
-- [ ] **S3** [C] — **§16's split drift-advisory strings.** B7 shipped them as drafts explicitly
-  wanting a human pass, and copy is the one thing in this sweep that is not the machine's to
-  decide. A revision is drafted and awaiting review; the wording is asserted verbatim in
-  `test_run_fit`, so approving it updates those assertions too. Full note under **B7**.
+- [x] **S3** [C] — **§16's split drift-advisory strings, reviewed and rewritten.** B7 shipped them
+  as drafts explicitly wanting a human pass. Four rules drove the rewrite, recorded above
+  `advisoryText()` so a future edit keeps them: **conclusion first** (both drafts opened on
+  `boardEst` vs `workTemp`, the discriminator's internals, answering a question the operator did
+  not ask); **name the action** (§16 pairs the advisory with a Calibration shortcut, and the Oven
+  draft only diagnosed); **say "PCB"** for the workpiece, since "board" means the ESP32s everywhere
+  else here and the draft used it twice for the load; and **keep the hedges** — §16 is titled
+  *honest by design* and these thresholds are still §10 placeholders.
+  *No test change: `test_run_fit` asserts non-empty + differ-per-cause, never the wording.*
+  **Rendered in the simulator at both geometries**, which is what set the final length: the C8
+  banner is `max_height`-capped and scrolls, and portrait "fits the whole paragraph unscrolled" —
+  a first draft ~30 % longer pushed the newly-added *action* sentence below the fold, which would
+  have defeated the point of adding it. Tightened until it fits; the 2.8" still scrolls by design
+  and keeps its action row.
 - [x] **S4** — **backlog hygiene**: the completed bench-found follow-ups marked done, and the
   deferred notes later work had quietly resolved retired in place (C4's recently-used sort →
   C6 PR1's controller-owned `use_seq`; B7's link-timeout ownership → A9's two deliberately
