@@ -1,6 +1,7 @@
 #include "profile_library_screen.h"
 
 #include <initializer_list>
+#include <new> // std::nothrow — the prefetch cache degrades instead of throwing
 
 #include "confirm_dialog.h"
 #include "link_banner.h"   // shared "Controller not responding" banner (§9/§14)
@@ -103,6 +104,7 @@ void ProfileLibraryScreen::publishNav(int nav_request) {
 
 void ProfileLibraryScreen::clearParent() {
   lv_obj_clean(parent_);
+  title_label_ = nullptr; // lv_obj_clean deleted it; never leave a dangling handle behind
 }
 
 void ProfileLibraryScreen::configParent() {
@@ -131,6 +133,7 @@ void ProfileLibraryScreen::buildHeader(const char *title) {
 
   lv_obj_t *title_label = lv_label_create(header);
   lv_label_set_text(title_label, title);
+  title_label_ = title_label; // kept so a background refresh can mark the header in place
   lv_obj_set_flex_grow(title_label, 1);
   lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
 
@@ -160,39 +163,137 @@ void ProfileLibraryScreen::openMode(RecipeMode mode) {
   restore_ = Restore::Index; // a fresh mode starts at the top, not on the other mode's anchor
   pending_anchor_[0] = '\0';
   return_page_ = Page::Chooser;
-  // Fetch this mode's library from the controller (§9). The reply lands in poll() → buildList().
-  if (current_->requestList()) {
-    page_ = Page::Loading;
-    pending_ = Pending::List;
-    buildLoading("Loading profiles...");
-  } else {
-    page_ = Page::Error;
-    buildError();
+
+  // Render the prefetched window first, if we have one: the rows appear immediately instead of
+  // after a ~400 ms round-trip. Then revalidate in the background — the cache can be stale (the
+  // library is shared, and §21 will let profiles arrive over WiFi), so what the operator sees is
+  // "instantly right, and corrected within a round-trip" rather than "correct after a wait".
+  // MRU is deliberately not served from cache: its whole point is recency, and the picker's order
+  // changes every time a run starts.
+  const Prefetch *pf = prefetchSlot(mode);
+  if (pf != nullptr && pf->valid && !pick_) { // pick_ == MRU order (set just above)
+    current_->adoptList(pf->list);
+    page_ = Page::List;
+    buildList();
   }
+  // Fetch this mode's library from the controller (§9). The reply lands in poll() → buildList().
+  want_list_ = true;
+  startListRequest();
+}
+
+// Issue the pending list request if the shared client is free, and enter the wait. Leaves
+// want_list_ set when it cannot, so poll() retries.
+//
+// A busy client is NORMAL here, not a failure: the background settings sync and the prefetch both
+// use it. Treating that as "couldn't reach the controller" was a latent bug — tapping into Profiles
+// while a settings sync was in flight showed the error page even though the link was fine.
+void ProfileLibraryScreen::startListRequest() {
+  if (!want_list_ || current_ == nullptr) {
+    return;
+  }
+  const bool ok = restore_ == Restore::Name ? current_->requestListAnchored(pending_anchor_)
+                                            : current_->requestList();
+  if (!ok) {
+    // Client busy. Show *something* while we wait for it, unless rows are already up.
+    if (page_ != Page::List) {
+      page_ = Page::Loading;
+      buildLoading("Loading profiles...");
+    }
+    return;
+  }
+  want_list_ = false;
+  beginListFetch();
 }
 
 void ProfileLibraryScreen::openDetail(int index) {
   selected_ = index;
   return_page_ = Page::List;
-  // Fetch the full profile for the curve (§9). The reply lands in poll() → buildDetail().
-  if (current_->requestDetail(static_cast<size_t>(index))) {
-    page_ = Page::Loading;
+  want_detail_ = index;
+  want_list_ = false; // the operator moved on; a pending background revalidate is now moot
+  startDetailRequest();
+}
+
+// Issue the pending detail fetch if the shared client is free; otherwise wait on the Loading page
+// and let poll() retry. Same reasoning as startListRequest: with a background prefetch and the
+// settings sync both using the client, "busy" is a normal transient, not a link failure.
+void ProfileLibraryScreen::startDetailRequest() {
+  if (want_detail_ < 0 || current_ == nullptr) {
+    return;
+  }
+  page_ = Page::Loading;
+  buildLoading("Loading...");
+  if (current_->requestDetail(static_cast<size_t>(want_detail_))) {
     pending_ = Pending::Detail;
-    buildLoading("Loading...");
-  } else {
-    page_ = Page::Error;
-    buildError();
+    want_detail_ = -1;
+  }
+}
+
+// The cache slot for a mode, allocating the pair on first use. Returns nullptr if the heap says no,
+// in which case every caller degrades to "no prefetch" rather than failing.
+ProfileLibraryScreen::Prefetch *ProfileLibraryScreen::prefetchSlot(RecipeMode m) {
+  if (prefetch_ == nullptr) {
+    prefetch_ = new (std::nothrow) Prefetch[2];
+  }
+  return prefetch_ == nullptr ? nullptr : &prefetch_[modeIdx(m)];
+}
+
+void ProfileLibraryScreen::invalidatePrefetch() {
+  if (prefetch_ == nullptr) {
+    return;
+  }
+  prefetch_[0].valid = false;
+  prefetch_[1].valid = false;
+}
+
+// Speculatively pull window 0 of a mode we have not cached yet. Strictly lowest priority: it only
+// moves when the shared client is idle AND this screen wants nothing itself, so it can never delay
+// a request the operator is waiting on. The composition root gates it further, to the screens where
+// the operator is plainly not in the library.
+void ProfileLibraryScreen::servicePrefetch() {
+  if (client_ == nullptr || pending_ != Pending::None || want_list_ || client_->busy() ||
+      !client_->idle()) {
+    return;
+  }
+  for (RecipeMode m : {RecipeMode::Cure, RecipeMode::Reflow}) {
+    const Prefetch *slot = prefetchSlot(m);
+    if (slot == nullptr) {
+      return; // no heap for the cache; run without one
+    }
+    if (slot->valid) {
+      continue;
+    }
+    // Alphabetical only. MRU is a recency order that a run-start ProfileTouch reorders, so a
+    // cached MRU window would be wrong precisely when it is used (the Setup picker).
+    if (client_->requestList(phase_codec::modeToWire(m), oven_ProfileSort_PROFILE_SORT_ALPHA)) {
+      prefetch_mode_ = m;
+      pending_ = Pending::Prefetch;
+    }
+    return; // one at a time; the other mode gets the next idle turn
   }
 }
 
 // Drive the async state machine (called every loop after client.service()).
 void ProfileLibraryScreen::poll() {
-  if (pending_ == Pending::None || client_ == nullptr || client_->busy()) {
+  if (client_ == nullptr || client_->busy()) {
+    return;
+  }
+  if (pending_ == Pending::None) {
+    // A request that lost the race for the shared client; it is free now. Detail first: it is
+    // user-initiated and they are staring at a Loading page, whereas a list refresh is background.
+    if (want_detail_ >= 0) {
+      startDetailRequest();
+    } else {
+      startListRequest();
+    }
     return;
   }
   if (client_->failed()) {
+    const bool wasPrefetch = pending_ == Pending::Prefetch;
     pending_ = Pending::None;
     client_->clear();
+    if (wasPrefetch) {
+      return; // a speculative fetch failing is not something to show anyone
+    }
     page_ = Page::Error;
     buildError();
     return;
@@ -201,10 +302,28 @@ void ProfileLibraryScreen::poll() {
   switch (pending_) {
   case Pending::List:
     current_->adoptList(client_->list());
+    // Window 0 of the current sort is exactly what a prefetch would have fetched, so keep it: a
+    // trip out to the chooser and back then costs nothing. Only ALPHA is cached (see openMode).
+    if (current_->offset() == 0 && !pick_) {
+      if (Prefetch *slot = prefetchSlot(mode_)) {
+        slot->list = client_->list();
+        slot->valid = true;
+      }
+    }
     client_->clear();
     pending_ = Pending::None;
     page_ = Page::List;
     buildList();
+    break;
+  case Pending::Prefetch:
+    // Completed while the operator is elsewhere: stash it and touch NOTHING on screen. parent_
+    // belongs to whatever screen is actually showing, so building here would draw into it.
+    if (Prefetch *slot = prefetchSlot(prefetch_mode_)) {
+      slot->list = client_->list();
+      slot->valid = true;
+    }
+    client_->clear();
+    pending_ = Pending::None;
     break;
   case Pending::Detail:
     current_->adoptDetail(client_->profile());
@@ -226,20 +345,42 @@ void ProfileLibraryScreen::poll() {
     // highlight whatever slid into that slot. The anchor makes the controller return the window
     // that actually holds it, and Restore::Name puts the highlight back on it.
     client_->clear();
-    const bool ok = restore_ == Restore::Name ? current_->requestListAnchored(pending_anchor_)
-                                              : current_->requestList();
-    if (ok) {
-      pending_ = Pending::List; // stay on Loading until the fresh list arrives
-    } else {
-      pending_ = Pending::None;
-      page_ = Page::List;
-      buildList();
-    }
+    pending_ = Pending::None;
+    invalidatePrefetch(); // the library just changed; a cached window would render the old one
+    want_list_ = true;
+    startListRequest(); // stays on "Working..." until the fresh list arrives
     break;
   }
   case Pending::None:
     break;
   }
+}
+
+// The list title, with a trailing marker while a window is being fetched underneath it.
+const char *ProfileLibraryScreen::listTitle(bool busy) const {
+  const bool cure = mode_ == RecipeMode::Cure;
+  if (busy) {
+    return cure ? "Cure profiles ..." : "Reflow profiles ...";
+  }
+  return cure ? "Cure profiles" : "Reflow profiles";
+}
+
+// Enter the wait for a list reply.
+//
+// A fetch that has rows to show already does NOT tear the screen down: the previous window stays
+// rendered and the header takes a "..." marker. The full-screen "Loading profiles..." is reserved
+// for a fetch with genuinely nothing behind it (a cold open with no prefetch). Swapping a rendered
+// list for a centred spinner reads as a page transition, which made a ~400 ms round-trip feel far
+// slower than it is — and on a page turn it also throws away the rows the operator was reading.
+void ProfileLibraryScreen::beginListFetch() {
+  pending_ = Pending::List;
+  const bool haveRows = page_ == Page::List && current_ != nullptr && current_->count() > 0;
+  if (haveRows && title_label_ != nullptr) {
+    lv_label_set_text(title_label_, listTitle(/*busy=*/true));
+    return; // stay on Page::List with the current rows; buildList() replaces them on arrival
+  }
+  page_ = Page::Loading;
+  buildLoading("Loading profiles...");
 }
 
 void ProfileLibraryScreen::buildLoading(const char *msg) {
@@ -466,9 +607,7 @@ void ProfileLibraryScreen::onPageEdge(int dir) {
     return; // no such window (we were at a real end) — nothing to do, keep the current view
   }
   restore_ = dir < 0 ? Restore::Last : Restore::First;
-  page_ = Page::Loading;
-  pending_ = Pending::List;
-  buildLoading("Loading profiles...");
+  beginListFetch(); // keeps the current rows up while the adjacent window is fetched
 }
 
 // --- Profile detail / actions ---

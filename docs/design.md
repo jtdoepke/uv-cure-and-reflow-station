@@ -2779,6 +2779,43 @@ temperature settings** (rev. 14 July 2026). The reflow side still ships `SAC305`
     prefetched: a window is ~40–70 ms over the 115200 link, behind the loading state the screen
     already has, and a prefetch would mean a second request in flight against a
     single-outstanding client (§9).
+- **Responsiveness (ADDED 2026-07-22).** Opening the library was a visible wait: the controller
+  walks its whole library from flash, then a window crosses a 115200 link. Three changes, and the
+  measurement that ranks them.
+  - **A refresh keeps the current rows.** Only a fetch with genuinely nothing behind it shows the
+    full-screen "Loading profiles…"; a page turn or a post-mutation re-list leaves the window
+    rendered and marks the header. Swapping a rendered list for a centred spinner reads as a page
+    transition, which made a ~400 ms round-trip feel far slower than it was.
+  - **Window 0 of each mode is prefetched** while the operator is elsewhere, so opening renders
+    from RAM and revalidates in the background (stale-while-revalidate — instantly right, corrected
+    within a round-trip). ALPHA only: MRU is a recency order a run-start `ProfileTouch` reorders,
+    so a cached MRU window would be wrong exactly where it is used. The two buffers live on the
+    **heap**; as statics they overflowed `dram0_0_seg` by 296 bytes.
+  - **A per-mode INDEX FILE** (`__index`, magic `IDX1`) holds one record per profile — name, stock,
+    peak, total, `use_seq` — which is exactly what a row renders and what both sort orders key on
+    (`name` for Alpha and the MRU tie-break, `use_seq` for MRU). Building a list is therefore **one
+    filesystem open**, not one per profile. Mutations fold their own row in (one read + one write);
+    only a missing or unusable index costs a full walk, which then rewrites it.
+    - The index is a **cache, never the truth**. It records its mode (so it cannot serve another
+      mode's rows without decoding anything, §7), its record count and its length, and on the READ
+      path cross-checks the count against a directory listing — names only, no per-file opens.
+      Anything that disagrees rebuilds. A well-formed but short index would hide profiles with no
+      error anywhere, which is indistinguishable from data loss.
+    - That cross-check is deliberately **not** applied on the write path: `writeBlob` has just added
+      a file the index lacks, so checking there reports stale on every write and sends each through
+      a full rebuild — measured at 802 → 2797 ms before the distinction existed.
+    - `__index` is a **reserved name** (`validName` refuses it), so no profile can collide with it.
+    - `seedStock` still opens each profile rather than consulting the index, on purpose: it is the
+      privileged write, and §23's "never clobbers a USER profile" should rest on the file itself,
+      not on a cache that could be stale.
+  - **Measured on hardware:** the full-library boot walk went **827 ms → 530 ms**, stable across
+    boots. Fitting the two points (~60 file opens before, ~20 after) puts a LittleFS open at
+    **~7.4 ms** and the mount at a fixed **~380 ms** — so most of what remains is the mount and
+    `seedStock`'s per-profile presence checks, not listing. For the operator's actual complaint,
+    the controller's share of opening the library drops from ~140 ms to ~10 ms.
+    - An earlier attempt denormalized the same fields into each profile's own `PRO2` header instead.
+      It removed the nanopb decode but still opened every file, and measured **3%** (827 → 802 ms).
+      That is the experiment that established the cost is per-file, and it was reverted.
 - **Empty state:** "No profiles — New to create one" (shouldn't happen with stock seeds).
 - **Sort:** recently-used first, then alphabetical (default, §10).
 - **Rename** is via the editor (§12 name entry), not a separate library action.

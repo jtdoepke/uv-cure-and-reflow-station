@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,14 @@ struct FakeProfileStorage : IProfileStorage {
   std::vector<Entry> entries;
   int writeCalls = 0;
   int removeCalls = 0;
+  // Per-key write count. writeCalls alone stopped being a useful "was this profile written once?"
+  // probe when the store gained a per-mode index file, since a single save() writes both the
+  // profile and the index through this same port.
+  std::map<std::string, int> writesByName;
+  int writesTo(const char *name) const {
+    auto it = writesByName.find(name);
+    return it == writesByName.end() ? 0 : it->second;
+  }
 
   Entry *find(const char *name) {
     for (auto &e : entries) {
@@ -62,6 +71,7 @@ struct FakeProfileStorage : IProfileStorage {
 
   bool write(const char *name, const uint8_t *buf, size_t len) override {
     ++writeCalls;
+    ++writesByName[name];
     put(name, std::vector<uint8_t>(buf, buf + len));
     return true;
   }

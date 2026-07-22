@@ -83,6 +83,22 @@ public:
 
   bool pickMode() const { return pick_; }
 
+  // --- Prefetch (§23 responsiveness) ---
+  //
+  // Opening the library costs a round-trip the operator waits on: the controller walks its whole
+  // library from flash, then the window crosses a 115200 link. Pulling window 0 of each mode while
+  // they are idle elsewhere turns that into a render from RAM.
+  //
+  // Call from the composition root every loop while the library is NOT the active screen. It is a
+  // no-op unless the shared client is idle and a mode is still uncached, so it never competes with
+  // a request the operator is actually waiting on.
+  void servicePrefetch();
+  // Forget the cached windows — anything that could have changed the library behind our back.
+  void invalidatePrefetch();
+  bool prefetched(RecipeMode m) const {
+    return prefetch_ != nullptr && prefetch_[modeIdx(m)].valid;
+  }
+
   // Inspection (tests).
   Page page() const { return page_; }
   RecipeMode mode() const { return mode_; }
@@ -92,13 +108,19 @@ public:
 
 private:
   // What this screen's outstanding request is for — poll() dispatches on it when the reply lands.
-  enum class Pending { None, List, Detail, Action };
+  // Prefetch is the odd one out: it is not driven by anything on screen and must never rebuild
+  // widgets, because it completes while the operator is somewhere else entirely.
+  enum class Pending { None, List, Detail, Action, Prefetch };
 
   void buildChooser();
   void buildList();
   void buildDetail();
   void buildConfirm();
-  void buildRename(); // the shared name-entry keyboard, prefilled with the current name
+  void buildRename();        // the shared name-entry keyboard, prefilled with the current name
+  void beginListFetch();     // enter the wait for a list reply (in place if rows exist)
+  void startListRequest();   // issue want_list_ if the shared client is free
+  void startDetailRequest(); // issue want_detail_ if the shared client is free
+  const char *listTitle(bool busy) const;
   void buildLoading(const char *msg);  // centred spinner label while a reply is in flight
   void buildError();                   // "couldn't reach the controller" + Back
   void buildHeader(const char *title); // < Back + title into `parent_`
@@ -141,8 +163,32 @@ private:
   const OvenModel *model_ = nullptr;
   ProfileLibraryViewModel vm_;
   ProfileLibraryViewModel *current_ = &vm_;
-  SelectableListModel list_model_; // the mode-scoped list (the chooser is two tiles)
-  lv_obj_t *rename_ta_ = nullptr;  // the Rename page's textarea (read on the ✓ key)
+  SelectableListModel list_model_;  // the mode-scoped list (the chooser is two tiles)
+  lv_obj_t *rename_ta_ = nullptr;   // the Rename page's textarea (read on the ✓ key)
+  lv_obj_t *title_label_ = nullptr; // header title; retitled in place during a background refresh
+
+  static size_t modeIdx(RecipeMode m) { return m == RecipeMode::Cure ? 0 : 1; }
+
+  // One prefetched window per mode. Deliberately the raw wire reply rather than a second
+  // ProfileLibraryViewModel: adoptList() consumes exactly this type, and a VM would also drag in
+  // its ~1.3 KB detail cache, which a prefetch has no use for.
+  //
+  // HEAP, not .bss, and allocated on first use. At 712 B each these two overflowed `dram0_0_seg`
+  // by 296 bytes as statics — .bss is the segment that is actually scarce on this board, not RAM
+  // overall (the editor is heap-allocated for the same reason; see g_profile_editor). A failed
+  // allocation is not an error: prefetching is an optimisation, so the screen just falls back to
+  // fetching on open.
+  struct Prefetch {
+    oven_ProfileList list{};
+    bool valid = false;
+  };
+  Prefetch *prefetch_ = nullptr; // [2], lazily allocated; may stay null
+  Prefetch *prefetchSlot(RecipeMode m);
+  RecipeMode prefetch_mode_ = RecipeMode::Cure; // which mode the in-flight prefetch is for
+  // A list this screen wants but could not start because the shared client was busy (a background
+  // settings sync or our own prefetch). Retried from poll() rather than surfaced as an error.
+  bool want_list_ = false;
+  int want_detail_ = -1; // row whose detail is wanted, or -1; same busy-client retry as want_list_
 
   void (*on_exit_)(void *) = nullptr;
   void *exit_ud_ = nullptr;

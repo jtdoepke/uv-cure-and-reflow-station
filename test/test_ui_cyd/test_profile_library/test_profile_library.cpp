@@ -72,6 +72,18 @@ static void settle() {
   }
 }
 
+// Pump the link/client/screen unconditionally. settle() exits as soon as the page leaves Loading,
+// which is exactly wrong for background work: the §23 prefetch deliberately never touches the
+// screen, so settle() would return on its first iteration and the reply would never land.
+static void pump(int n = 12) {
+  for (int i = 0; i < n; ++i) {
+    ctrl_link.poll();
+    cyd_link.poll();
+    client.service();
+    screen.poll();
+  }
+}
+
 void setUp(void) {
   lv_init();
   lv_test_display_create(panel::W, panel::H);
@@ -84,6 +96,11 @@ void setUp(void) {
   ctrl_router.setObserver(responder);
   cyd_router.setObserver(client);
   client.clear();
+  // `screen` is a file-static shared by every test, and the §23 prefetch cache deliberately
+  // survives begin() (it is per-entry, so clearing it there would defeat the feature). Drop it
+  // here or one test's cached window renders instantly in the next, which is exactly the kind of
+  // cross-test coupling that makes a real regression look like a flaky assertion.
+  screen.invalidatePrefetch();
   g_exited = false;
   g_picked = false;
   g_pick_draft = ProfileDraft{};
@@ -408,6 +425,92 @@ void test_pick_back_exits(void) {
   TEST_ASSERT_TRUE(g_exited);
 }
 
+// --- Prefetch + shared-client contention (§23 responsiveness) ---
+
+// The point of the prefetch: opening a mode renders from RAM, with no Loading page at all. Asserted
+// BEFORE any pumping, so a round-trip cannot be what satisfied it.
+void test_prefetch_renders_the_list_with_no_round_trip(void) {
+  seed(cure_store, "Grey V4.1", true, 60.0f, 2);
+  screen.begin(lv_screen_active(), client);
+  TEST_ASSERT_FALSE(screen.prefetched(RecipeMode::Cure));
+
+  screen.servicePrefetch();
+  pump();
+  TEST_ASSERT_TRUE(screen.prefetched(RecipeMode::Cure));
+
+  screen.openMode(RecipeMode::Cure); // no settle(): the rows must already be there
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page());
+  TEST_ASSERT_EQUAL_UINT32(1, screen.vm().count());
+  TEST_ASSERT_EQUAL_STRING("Grey V4.1", screen.vm().name(0));
+
+  // Drain the background revalidate openMode just fired. ManagementClient::clear() is a no-op while
+  // a request is still Busy, so leaving one in flight would hand the NEXT test a client it can
+  // never reclaim — and its prefetch would silently never run.
+  settle();
+}
+
+// MRU is a recency order that a run-start ProfileTouch reorders, so a cached ALPHA window would be
+// wrong exactly where MRU is used — the Setup picker. The picker must still fetch.
+void test_prefetch_is_not_used_for_the_mru_picker(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.begin(lv_screen_active(), client);
+  // Prefetch takes one mode per idle turn; loop until reflow lands rather than encoding how many
+  // turns that is.
+  for (int i = 0; i < 6 && !screen.prefetched(RecipeMode::Reflow); ++i) {
+    screen.servicePrefetch();
+    pump();
+  }
+  TEST_ASSERT_TRUE(screen.prefetched(RecipeMode::Reflow));
+
+  screen.beginPick(lv_screen_active(), client, RecipeMode::Reflow);
+  TEST_ASSERT_EQUAL_INT((int)Page::Loading, (int)screen.page()); // fetched, not served from cache
+  settle();
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page());
+}
+
+// The shared client is used by the background settings sync and by the prefetch, so finding it busy
+// is a normal transient. It used to fall through to "Couldn't reach the controller" — a link error
+// for a link that was fine.
+void test_busy_shared_client_defers_rather_than_erroring(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  screen.begin(lv_screen_active(), client);
+  TEST_ASSERT_TRUE(client.requestSettingsGet()); // occupy it, as service_settings_sync would
+
+  screen.openMode(RecipeMode::Reflow);
+  TEST_ASSERT_EQUAL_INT((int)Page::Loading, (int)screen.page()); // waiting, NOT Page::Error
+  settle();
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page()); // and it recovers on its own
+  TEST_ASSERT_EQUAL_STRING("LF-245", screen.vm().name(0));
+}
+
+// A cached window describes the library as it WAS, so a mutation must not leave one that predates
+// it — otherwise re-entering the mode renders the operator's own delete as undone.
+//
+// Note what this does NOT assert: that the cache is empty afterwards. The post-mutation re-list is
+// itself a window-0 fetch, so it legitimately refills the cache with the NEW library. Asserting
+// "no cache" would pin the implementation; asserting "the cache is not stale" pins the promise.
+void test_mutation_drops_the_prefetch(void) {
+  seed(reflow_store, "LF-245", false, 245.0f, 3);
+  seed(reflow_store, "SAC305", false, 249.0f, 3);
+  screen.begin(lv_screen_active(), client);
+  openMode(RecipeMode::Reflow);
+  TEST_ASSERT_TRUE(screen.prefetched(RecipeMode::Reflow)); // a window-0 list also fills the cache
+  TEST_ASSERT_TRUE(indexOf("SAC305") >= 0);
+
+  screen.openDetail(indexOf("SAC305"));
+  settle();
+  screen.onDeleteRequested();
+  screen.onDeleteConfirmed();
+  settle();
+
+  // Re-enter the mode. This renders from cache before any reply can arrive, so a stale cache would
+  // put the deleted profile straight back on screen.
+  screen.openMode(RecipeMode::Reflow);
+  TEST_ASSERT_EQUAL_INT((int)Page::List, (int)screen.page());
+  TEST_ASSERT_EQUAL_INT(-1, indexOf("SAC305"));
+  TEST_ASSERT_TRUE(indexOf("LF-245") >= 0);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_chooser_to_list_to_detail_and_back);
@@ -426,5 +529,9 @@ int main(int, char **) {
   RUN_TEST(test_pick_sort_toggle_reloads);
   RUN_TEST(test_pick_use_hands_back_draft);
   RUN_TEST(test_pick_back_exits);
+  RUN_TEST(test_prefetch_renders_the_list_with_no_round_trip);
+  RUN_TEST(test_prefetch_is_not_used_for_the_mru_picker);
+  RUN_TEST(test_busy_shared_client_defers_rather_than_erroring);
+  RUN_TEST(test_mutation_drops_the_prefetch);
   return UNITY_END();
 }

@@ -14,6 +14,7 @@
 // Superseded the pre-R2 version, which wrote the CYD's old memcpy "PRO1" blobs; the controller's
 // store speaks the nanopb "PRO2" format, so the old fixtures would be rejected on load.
 
+#include <dirent.h>
 #include <sys/stat.h>
 
 #include <cmath>
@@ -38,7 +39,32 @@ public:
   explicit FileProfileStorage(std::string dir) : dir_(std::move(dir)) {
     ::mkdir(dir_.c_str(), 0755); // best-effort; ignore "already exists"
   }
-  size_t list(ProfileEntry *, size_t) override { return 0; } // unused by save()
+  // A real directory listing. This used to return 0 with "unused by save()" — true once, and
+  // false the moment the store grew a per-mode index it rebuilds from list(). A lying port made
+  // the generator emit an index missing whatever it wrote first.
+  size_t list(ProfileEntry *out, size_t cap) override {
+    DIR *d = ::opendir(dir_.c_str());
+    if (d == nullptr) {
+      return 0;
+    }
+    size_t n = 0;
+    while (const dirent *e = ::readdir(d)) {
+      std::string nm = e->d_name;
+      const std::string suffix = ".bin";
+      if (nm.size() <= suffix.size() ||
+          nm.compare(nm.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        continue;
+      }
+      nm.resize(nm.size() - suffix.size());
+      if (n < cap) {
+        std::strncpy(out[n].name, nm.c_str(), kProfileNameCap - 1);
+        out[n].name[kProfileNameCap - 1] = '\0';
+      }
+      ++n;
+    }
+    ::closedir(d);
+    return n;
+  }
   size_t read(const char *name, uint8_t *buf, size_t cap) override {
     FILE *f = std::fopen(path(name).c_str(), "rb");
     if (f == nullptr) {

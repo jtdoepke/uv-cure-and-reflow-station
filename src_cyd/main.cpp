@@ -264,6 +264,10 @@ static void on_profiles_exit(void *) {
 // reached only from the Profiles branch (C5) now, so it always returns there.
 static void on_editor_exit(void *) {
   lv_subject_set_int(&subj_nav_request, NAV_NONE);
+  // The editor may have just saved, so any prefetched window (§23) describes the library as it was
+  // before the edit. openMode revalidates anyway, but it renders the cache FIRST — so without this
+  // the operator would see their own edit missing for a round-trip.
+  g_profile_library.invalidatePrefetch();
   g_router.show(SCREEN_PROFILES);
   g_profile_library.openMode(g_editor_mode);
 }
@@ -821,6 +825,14 @@ void loop() {
   g_mgmt_client.service();
   service_settings_sync();
   poll_screens();
+  // Lowest-priority background work, LAST so everything above gets the shared client first: pull
+  // the profile library's first window per mode while the operator is elsewhere, so opening
+  // Profiles renders from RAM instead of waiting on a full-library flash walk plus a 115200
+  // round-trip (§23). Gated off the library's own screens — there it would compete with the fetch
+  // they are actively showing a spinner for.
+  if (g_router.current() != SCREEN_PROFILES && g_router.current() != SCREEN_PICKER) {
+    g_profile_library.servicePrefetch();
+  }
   // Publish the §9 link health as Home's indicator + run-flow gate (§14). linkAlive() is the
   // part that decays — the controller's telemetry arriving — since the handshake latches and
   // would otherwise keep claiming a link over an unplugged cable. Set every loop rather than

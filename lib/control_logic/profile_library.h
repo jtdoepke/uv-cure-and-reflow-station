@@ -171,7 +171,11 @@ public:
     if (loadBlob(name, scratch().probe) && scratch().probe.stock) {
       return false; // stock (§23)
     }
-    return storage_.remove(name);
+    if (!storage_.remove(name)) {
+      return false;
+    }
+    indexRemove(name);
+    return true;
   }
 
   // Copy `src` to a new user profile `dst` ("Dup", §23) — always user-owned (stock cleared).
@@ -211,7 +215,11 @@ public:
     if (!save(p)) {
       return false;
     }
-    return storage_.remove(src);
+    if (!storage_.remove(src)) {
+      return false;
+    }
+    indexRemove(src); // save() added the new key; drop the old one
+    return true;
   }
 
   // What a paged list() actually returned, so the caller never has to re-derive it (§23). The CYD
@@ -308,6 +316,11 @@ public:
     if (std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0) {
       return false;
     }
+    // Reserved: the per-mode index file shares this directory (see kIndexName). Refusing the name
+    // here is what makes "the index is not a profile" true by construction rather than by a filter.
+    if (std::strcmp(name, kIndexName) == 0) {
+      return false;
+    }
     size_t len = 0;
     for (const char *c = name; *c != '\0'; ++c) {
       if (*c == '/' || *c == '\\') {
@@ -322,6 +335,11 @@ public:
     }
     return true;
   }
+
+  static constexpr uint32_t kMagic = 0x50524F32; // "PRO2" — nanopb format (distinct from the
+                                                 // CYD's old memcpy "PRO1")
+  static constexpr uint16_t kVersion = 1;
+  static constexpr size_t kHeaderLen = 6; // magic(4) + version(2), little-endian
 
   // Encode a profile to its on-flash blob (header + nanopb body) into `buf`. Static so the seed
   // generator produces byte-identical blobs. Returns false only if the buffer is too small.
@@ -338,10 +356,22 @@ public:
     return true;
   }
 
-  // Blob capacity a caller must provide (header + the largest nanopb Profile).
-  static constexpr size_t kBlobCap = 6 /*header*/ + oven_Profile_size;
+  // Blob capacity a caller must provide (header + the largest nanopb Profile). Sized to the v2
+  // header, which is the only one written; a v1 blob is shorter and reads fine into this.
+  static constexpr size_t kBlobCap = kHeaderLen + oven_Profile_size;
 
 private:
+  static constexpr uint32_t kIndexMagic = 0x31584449; // "IDX1"
+  static constexpr uint16_t kIndexVersion = 1;
+  static constexpr size_t kIndexHeaderLen = 10; // magic(4) version(2) mode(1) pad(1) count(2)
+  static constexpr size_t kIndexRecLen =
+      kProfileNameCap + 1 + 4 + 4 + 4; // name stock peak total seq
+  static constexpr size_t kIndexCap = kIndexHeaderLen + kMaxListed * kIndexRecLen;
+
+  // The index lives beside the profiles, under a name validName() refuses so no profile can ever
+  // collide with it (see validName) and list() can skip it by name.
+  static constexpr const char *kIndexName = "__index";
+
   // Shared working memory, deliberately in .bss rather than on the caller's stack.
   //
   // WHY: these buffers are large (a decoded oven_Profile is ~1.3 KB, the encode/decode blob ~1.5
@@ -365,84 +395,257 @@ private:
   // and keep their carried profile on the STACK, because it stays live across save(), which owns
   // both scratch profiles. Re-read this before reusing a field for anything new.
   struct Scratch {
-    ProfileEntry names[kMaxListed]; // storage_.list() destination (collectSorted)
-    Summary rows[kMaxListed];       // the fully-sorted library, sliced into a window by list()
-    oven_Profile probe;             // read-only decode target; value dead before the next call
-    oven_Profile stamped;           // the outgoing copy for writeBlob (save/seedStock/touch)
-    uint8_t blob[kBlobCap];         // on-flash bytes, in either direction (loadBlob/writeBlob)
+    ProfileEntry names[kMaxListed + 1]; // storage_.list() dest; +1 for the index file itself
+    Summary rows[kMaxListed];           // the fully-sorted library, sliced into a window by list()
+    oven_Profile probe;                 // read-only decode target; value dead before the next call
+    oven_Profile stamped;               // the outgoing copy for writeBlob (save/seedStock/touch)
+    uint8_t blob[kBlobCap];             // on-flash bytes, in either direction (loadBlob/writeBlob)
+    uint8_t index[kIndexCap];           // the serialized index file (see writeIndex)
   };
   static Scratch &scratch() {
     static Scratch s;
     return s;
   }
 
-  // Decode every valid profile in this mode's library into scratch().rows, ordered per `sort`.
-  // Returns how many rows are live. The shared walk behind both list() and count().
-  size_t collectSorted(SortMode sort) const {
+  // --- The index file (design.md §23) -----------------------------------------------------------
+  //
+  // ONE file per mode holding every list row, so building a list is one filesystem open instead of
+  // one per profile. That is the whole point, and it comes straight from measurement: on hardware a
+  // per-profile LittleFS open costs ~20 ms against ~1.25 ms to nanopb-decode what it contains, so
+  // the file count — not the parsing — is what a library walk actually pays for. (An earlier
+  // attempt denormalized the same fields into each profile's own header instead; it removed the
+  // decode and bought 3%, because it still opened every file.)
+  //
+  // A record carries exactly what a row needs and what the two sort orders need: `name` is the
+  // Alpha key and the MRU tie-break, `use_seq` is the MRU key. Nothing here is authoritative — it
+  // is a cache of facts derivable from the profiles themselves, so a missing or corrupt index costs
+  // a rebuild, never data. Serialize scratch().rows[0..n) into scratch().index and persist it.
+  // Best-effort: a failed write leaves the index stale, and the next read notices and rebuilds.
+  bool writeIndex(size_t n) const {
     Scratch &s = scratch();
-    size_t total = storage_.list(s.names, kMaxListed);
-    if (total > kMaxListed) {
-      total = kMaxListed; // a library past the cap is truncated, not mis-paged
+    if (n > kMaxListed) {
+      n = kMaxListed;
+    }
+    put32(s.index, kIndexMagic);
+    put16(s.index + 4, kIndexVersion);
+    // The mode is in here for the same reason the body carries it (§7 never-mixed): the index is
+    // read WITHOUT decoding any profile, so without this it would be the one path into a list that
+    // skips the guard entirely — and two stores sharing a directory would each serve the other's
+    // rows. Cheap to record, and it makes a wrong-mode index a rebuild rather than a leak.
+    s.index[6] = static_cast<uint8_t>(protocol::wireEnum(mode_) & 0xFF);
+    s.index[7] = 0;
+    put16(s.index + 8, static_cast<uint16_t>(n));
+    for (size_t i = 0; i < n; ++i) {
+      uint8_t *r = s.index + kIndexHeaderLen + i * kIndexRecLen;
+      std::memset(r, 0, kIndexRecLen);
+      std::strncpy(reinterpret_cast<char *>(r), s.rows[i].name, kProfileNameCap - 1);
+      r[kProfileNameCap] = s.rows[i].stock ? 1 : 0;
+      putFloat(r + kProfileNameCap + 1, s.rows[i].facts.peak_c);
+      put32(r + kProfileNameCap + 5, s.rows[i].facts.total_s);
+      put32(r + kProfileNameCap + 9, s.rows[i].use_seq);
+    }
+    return storage_.write(kIndexName, s.index, kIndexHeaderLen + n * kIndexRecLen);
+  }
+
+  // Load the index into scratch().rows, UNSORTED. Returns SIZE_MAX if there is no usable index, so
+  // "empty library" (0) stays distinguishable from "no index".
+  // `crossCheck` compares the record count against the directory. Correct on the READ path, where a
+  // disagreement means something changed behind the store's back and a short list would look like
+  // data loss. WRONG on the write path: writeBlob() has just added a file the index does not have
+  // yet, so a cross-check there reports stale on every single write and sends each one through a
+  // full rebuild — which is how the O(n-per-write) walk this index exists to remove crept straight
+  // back in (boot 802 ms -> 2797 ms on hardware before this parameter existed).
+  size_t readIndex(bool crossCheck) const {
+    Scratch &s = scratch();
+    const size_t n = storage_.read(kIndexName, s.index, kIndexCap);
+    if (n < kIndexHeaderLen || get32(s.index) != kIndexMagic) {
+      return SIZE_MAX;
+    }
+    const uint16_t version =
+        static_cast<uint16_t>(s.index[4]) | (static_cast<uint16_t>(s.index[5]) << 8);
+    if (static_cast<int32_t>(s.index[6]) != static_cast<int32_t>(mode_)) {
+      return SIZE_MAX; // another mode's index (§7) — rebuild ours rather than serve theirs
+    }
+    const size_t count = static_cast<size_t>(s.index[8]) | (static_cast<size_t>(s.index[9]) << 8);
+    // The length must match the count exactly — a truncated index would otherwise be read as a
+    // short library, silently hiding profiles rather than triggering a rebuild.
+    if (version != kIndexVersion || count > kMaxListed ||
+        n != kIndexHeaderLen + count * kIndexRecLen) {
+      return SIZE_MAX;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      const uint8_t *r = s.index + kIndexHeaderLen + i * kIndexRecLen;
+      std::memcpy(s.rows[i].name, r, kProfileNameCap - 1);
+      s.rows[i].name[kProfileNameCap - 1] = '\0';
+      s.rows[i].stock = r[kProfileNameCap] != 0;
+      s.rows[i].facts.peak_c = getFloat(r + kProfileNameCap + 1);
+      s.rows[i].facts.total_s = get32(r + kProfileNameCap + 5);
+      s.rows[i].use_seq = get32(r + kProfileNameCap + 9);
+    }
+    // Cross-check the count against the directory. storage_.list() enumerates NAMES — one directory
+    // traversal, no per-file opens — so this is cheap next to what the index saves, and it is the
+    // only thing standing between "profiles changed behind the store's back" and an index that is
+    // well-formed, self-consistent and quietly short. A library that hides a profile with no error
+    // anywhere is indistinguishable from data loss, so err toward rebuilding.
+    if (crossCheck) {
+      const size_t listed = storage_.list(s.names, kMaxListed + 1);
+      size_t onDisk = 0;
+      for (size_t i = 0; i < listed && i < kMaxListed + 1; ++i) {
+        if (std::strcmp(s.names[i].name, kIndexName) != 0) {
+          ++onDisk; // count profiles, rather than assuming the index file is present to subtract
+        }
+      }
+      if (onDisk != count) {
+        return SIZE_MAX;
+      }
+    }
+    return count;
+  }
+
+  // The slow path: walk every profile, fill scratch().rows, and persist the result as the index.
+  // Runs when the index is absent or unusable — a fresh library, an interrupted write, or a
+  // filesystem that reformatted under us.
+  size_t rebuildIndex() const {
+    Scratch &s = scratch();
+    size_t total = storage_.list(s.names, kMaxListed + 1); // +1: the index file is in there too
+    if (total > kMaxListed + 1) {
+      total = kMaxListed + 1;
     }
     size_t m = 0;
-    for (size_t i = 0; i < total; ++i) {
+    for (size_t i = 0; i < total && m < kMaxListed; ++i) {
+      if (std::strcmp(s.names[i].name, kIndexName) == 0) {
+        continue; // the index itself is not a profile
+      }
       if (!loadBlob(s.names[i].name, s.probe)) {
         continue; // corrupt / wrong-version / other-mode -> not part of this library
       }
-      std::strncpy(s.rows[m].name, s.names[i].name, kProfileNameCap - 1);
-      s.rows[m].name[kProfileNameCap - 1] = '\0';
-      s.rows[m].stock = s.probe.stock;
-      s.rows[m].facts = facts(s.probe);
-      s.rows[m].use_seq = s.probe.use_seq;
+      fillRow(s.rows[m], s.names[i].name, s.probe.stock, facts(s.probe), s.probe.use_seq);
       ++m;
     }
-    sortRows(s.rows, m, sort);
+    writeIndex(m);
     return m;
   }
 
-  static constexpr uint32_t kMagic = 0x50524F32; // "PRO2" — nanopb format (distinct from the
-                                                 // CYD's old memcpy "PRO1")
-  static constexpr uint16_t kVersion = 1;
-  static constexpr size_t kHeaderLen = 6; // magic(4) + version(2), little-endian
+  static void fillRow(Summary &out, const char *name, bool stock, const ProfileFacts &f,
+                      uint32_t use_seq) {
+    std::strncpy(out.name, name, kProfileNameCap - 1);
+    out.name[kProfileNameCap - 1] = '\0';
+    out.stock = stock;
+    out.facts = f;
+    out.use_seq = use_seq;
+  }
+
+  // Fill scratch().rows from the index (rebuilding it if need be) and order them per `sort`.
+  size_t collectSorted(SortMode sort) const {
+    size_t m = readIndex(/*crossCheck=*/true);
+    if (m == SIZE_MAX) {
+      m = rebuildIndex();
+    }
+    sortRows(scratch().rows, m, sort);
+    return m;
+  }
+
+  // Re-derive this profile's row and fold it into the index, without touching any other profile.
+  // `removed` drops the row instead. Called from every mutation, so the index tracks the library
+  // for one read + one write rather than a full walk.
+  void indexUpsert(const oven_Profile &p, bool removed) const {
+    Scratch &s = scratch();
+    size_t m =
+        readIndex(/*crossCheck=*/false); // see readIndex: the count is meant to disagree here
+    if (m == SIZE_MAX) {
+      rebuildIndex(); // no usable index at all: a full rebuild already reflects this write
+      return;
+    }
+    size_t at = m;
+    for (size_t i = 0; i < m; ++i) {
+      if (std::strcmp(s.rows[i].name, p.name) == 0) {
+        at = i;
+        break;
+      }
+    }
+    if (removed) {
+      if (at < m) {
+        for (size_t i = at; i + 1 < m; ++i) {
+          s.rows[i] = s.rows[i + 1];
+        }
+        --m;
+      }
+    } else if (at < m) {
+      fillRow(s.rows[at], p.name, p.stock, facts(p), p.use_seq);
+    } else if (m < kMaxListed) {
+      fillRow(s.rows[m], p.name, p.stock, facts(p), p.use_seq);
+      ++m;
+    }
+    writeIndex(m);
+  }
+
+  // Drop `name` from the index (rename removes the old key; remove() drops the row).
+  void indexRemove(const char *name) const {
+    oven_Profile key = oven_Profile_init_zero;
+    std::strncpy(key.name, name, sizeof(key.name) - 1);
+    indexUpsert(key, /*removed=*/true);
+  }
+
+  static void put16(uint8_t *p, uint16_t v) {
+    p[0] = static_cast<uint8_t>(v & 0xFF);
+    p[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+  }
+  static void put32(uint8_t *p, uint32_t v) {
+    for (int i = 0; i < 4; ++i) {
+      p[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
+    }
+  }
+  static uint32_t get32(const uint8_t *p) {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) {
+      v |= static_cast<uint32_t>(p[i]) << (8 * i);
+    }
+    return v;
+  }
+  // float via its bit pattern — memcpy, not a cast, so there is no aliasing UB and no assumption
+  // about float alignment inside the blob.
+  static void putFloat(uint8_t *p, float f) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &f, sizeof(bits));
+    put32(p, bits);
+  }
+  static float getFloat(const uint8_t *p) {
+    const uint32_t bits = get32(p);
+    float f = 0.0F;
+    std::memcpy(&f, &bits, sizeof(f));
+    return f;
+  }
 
   static void writeHeader(uint8_t *buf) {
-    buf[0] = static_cast<uint8_t>(kMagic & 0xFF);
-    buf[1] = static_cast<uint8_t>((kMagic >> 8) & 0xFF);
-    buf[2] = static_cast<uint8_t>((kMagic >> 16) & 0xFF);
-    buf[3] = static_cast<uint8_t>((kMagic >> 24) & 0xFF);
-    buf[4] = static_cast<uint8_t>(kVersion & 0xFF);
-    buf[5] = static_cast<uint8_t>((kVersion >> 8) & 0xFF);
+    put32(buf, kMagic);
+    put16(buf + 4, kVersion);
   }
 
   static bool checkHeader(const uint8_t *buf, size_t len) {
-    if (len < kHeaderLen) {
-      return false;
-    }
-    const uint32_t magic = static_cast<uint32_t>(buf[0]) | (static_cast<uint32_t>(buf[1]) << 8) |
-                           (static_cast<uint32_t>(buf[2]) << 16) |
-                           (static_cast<uint32_t>(buf[3]) << 24);
-    const uint16_t version = static_cast<uint16_t>(buf[4]) | (static_cast<uint16_t>(buf[5]) << 8);
-    return magic == kMagic && version == kVersion;
+    return len >= kHeaderLen && get32(buf) == kMagic &&
+           (static_cast<uint16_t>(buf[4]) | (static_cast<uint16_t>(buf[5]) << 8)) == kVersion;
   }
 
-  // Read + validate + decode a named blob into `out`. Rejects a short/absent blob, a bad header,
-  // a body nanopb can't decode, and a profile whose mode is not this store's.
+  // Decode + mode-check a body out of a buffer that has already been read and header-parsed.
+  // Split out so the v1 summary fallback can reuse the bytes it already has instead of re-reading.
+  bool decodeBody(const uint8_t *buf, size_t n, oven_Profile &out) const {
+    out = oven_Profile_init_zero;
+    if (!protocol::decode(oven_Profile_fields, &out, buf + kHeaderLen, n - kHeaderLen)) {
+      return false;
+    }
+    // The §7 never-mixed guard at the store: an out-of-range mode byte or the other mode's profile
+    // (a cross-mode upload landing in the wrong dir) is not part of this library. Checked against
+    // the BODY, never the header — this is the path a run is fed from.
+    return protocol::wireEnum(out.mode) == static_cast<int32_t>(mode_);
+  }
+
   bool loadBlob(const char *name, oven_Profile &out) const {
     uint8_t *buf = scratch().blob; // ~1.5 KB — off the stack, see Scratch
     const size_t n = storage_.read(name, buf, kBlobCap);
     if (!checkHeader(buf, n)) {
       return false;
     }
-    out = oven_Profile_init_zero;
-    if (!protocol::decode(oven_Profile_fields, &out, buf + kHeaderLen, n - kHeaderLen)) {
-      return false;
-    }
-    // The §7 never-mixed guard at the store: an out-of-range mode byte or the other mode's profile
-    // (a cross-mode upload landing in the wrong dir) is not part of this library.
-    if (protocol::wireEnum(out.mode) != static_cast<int32_t>(mode_)) {
-      return false;
-    }
-    return true;
+    return decodeBody(buf, n, out);
   }
 
   // The next recency stamp: one past the highest use_seq currently stored in this mode's library
@@ -454,15 +657,18 @@ private:
   // Reuses scratch().names — safe because this is never called from inside collectSorted(), the
   // only other user, and callers (save/seedStock/touch) hold their live value in `stamped`.
   uint32_t nextUseSeq() const {
-    Scratch &s = scratch();
-    size_t total = storage_.list(s.names, kMaxListed);
-    if (total > kMaxListed) {
-      total = kMaxListed;
+    // Off the index: one file read instead of one per profile. This runs on every save() and on
+    // the run-start touch(), so it was the write path's share of the same per-file cost the index
+    // exists to remove.
+    // Cross-checked: this runs before the write, so the index and the directory should agree.
+    size_t m = readIndex(/*crossCheck=*/true);
+    if (m == SIZE_MAX) {
+      m = rebuildIndex();
     }
     uint32_t mx = 0;
-    for (size_t i = 0; i < total; ++i) {
-      if (loadBlob(s.names[i].name, s.probe) && s.probe.use_seq > mx) {
-        mx = s.probe.use_seq;
+    for (size_t i = 0; i < m; ++i) {
+      if (scratch().rows[i].use_seq > mx) {
+        mx = scratch().rows[i].use_seq;
       }
     }
     return mx + 1U;
@@ -476,7 +682,14 @@ private:
     if (!encodeBlob(p, buf, kBlobCap, len)) {
       return false;
     }
-    return storage_.write(p.name, buf, len);
+    if (!storage_.write(p.name, buf, len)) {
+      return false;
+    }
+    // The index is a cache of exactly these facts, so it is refreshed with the profile rather than
+    // left to be noticed as stale later. Note the ordering: the profile is authoritative and is
+    // written first, so an interrupted write can only ever cost a rebuild.
+    indexUpsert(p, /*removed=*/false);
+    return true;
   }
 
   static void setName(oven_Profile &p, const char *name) {

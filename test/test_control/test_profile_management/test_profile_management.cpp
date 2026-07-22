@@ -102,6 +102,86 @@ void test_store_stock_readonly(void) {
   TEST_ASSERT_FALSE(copy.stock);
 }
 
+// ---- the per-mode index file (design.md §23; added 2026-07-22) ---------------------------------
+
+// The index is a CACHE, never the truth. Anything wrong with it must cost a rebuild, not a profile:
+// a library that silently listed short would look exactly like data loss to an operator.
+void test_index_rebuilds_when_missing_or_corrupt(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "AAA", 200.0F, 30)));
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "BBB", 210.0F, 30)));
+
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  TEST_ASSERT_EQUAL_UINT32(2, store.list(rows, ProfileStore::kMaxListed));
+
+  // Deleted outright (a fresh flash, or a filesystem that reformatted under us).
+  TEST_ASSERT_TRUE(fs.remove("__index"));
+  TEST_ASSERT_EQUAL_UINT32(2, store.list(rows, ProfileStore::kMaxListed));
+  TEST_ASSERT_EQUAL_STRING("AAA", rows[0].name);
+
+  // Truncated mid-record (an interrupted write). The length check must catch it: read as a short
+  // library it would hide BBB with no error anywhere.
+  FakeProfileStorage::Entry *idx = fs.find("__index");
+  TEST_ASSERT_NOT_NULL(idx);
+  idx->blob.resize(idx->blob.size() - 5);
+  TEST_ASSERT_EQUAL_UINT32(2, store.list(rows, ProfileStore::kMaxListed));
+
+  // Garbage.
+  fs.put("__index", std::vector<uint8_t>(64, 0xAB));
+  TEST_ASSERT_EQUAL_UINT32(2, store.list(rows, ProfileStore::kMaxListed));
+  TEST_ASSERT_EQUAL_STRING("BBB", rows[1].name);
+}
+
+// The index is read without decoding any profile, so it is the one path into a list that could
+// skip §7's never-mixed guard. Two stores over one directory must not serve each other's rows.
+void test_index_is_mode_scoped(void) {
+  FakeProfileStorage fs;
+  ProfileStore reflow(fs, oven_Mode_MODE_REFLOW);
+  TEST_ASSERT_TRUE(reflow.save(makeProfile(oven_Mode_MODE_REFLOW, "R", 200.0F, 30)));
+
+  ProfileStore cure(fs, oven_Mode_MODE_CURE);
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  TEST_ASSERT_EQUAL_UINT32(0, cure.list(rows, ProfileStore::kMaxListed));
+  // And the reflow store still sees its own after cure rebuilt over the shared name.
+  TEST_ASSERT_EQUAL_UINT32(1, reflow.list(rows, ProfileStore::kMaxListed));
+}
+
+// The index name is reserved, so a profile can never collide with it (validName refuses it) and the
+// rebuild walk can treat "not a profile" as true by construction.
+void test_index_name_is_reserved(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  TEST_ASSERT_FALSE(ProfileStore::validName("__index"));
+  TEST_ASSERT_FALSE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "__index", 200.0F, 30)));
+}
+
+// Mutations keep the index in step without a full walk, including the one that only moves recency.
+void test_index_tracks_mutations(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "AAA", 200.0F, 30)));
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "BBB", 210.0F, 30)));
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+
+  TEST_ASSERT_TRUE(store.rename("AAA", "ZZZ"));
+  const size_t n = store.list(rows, ProfileStore::kMaxListed);
+  TEST_ASSERT_EQUAL_UINT32(2, n);
+  TEST_ASSERT_TRUE(containsName(rows, n, "ZZZ"));
+  TEST_ASSERT_FALSE(containsName(rows, n, "AAA")); // the old key is gone, not merely re-pointed
+
+  TEST_ASSERT_TRUE(store.remove("BBB"));
+  TEST_ASSERT_EQUAL_UINT32(1, store.list(rows, ProfileStore::kMaxListed));
+
+  // touch() only bumps recency, but the index carries use_seq (it is the MRU key), so it has to
+  // follow — otherwise the picker would order by a stale value.
+  TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, "CCC", 220.0F, 30)));
+  TEST_ASSERT_TRUE(store.touch("ZZZ"));
+  TEST_ASSERT_EQUAL_UINT32(2,
+                           store.list(rows, ProfileStore::kMaxListed, ProfileStore::SortMode::Mru));
+  TEST_ASSERT_EQUAL_STRING("ZZZ", rows[0].name); // most recently used floats to the top
+}
+
 // ---- paging (design.md §23; added 2026-07-22 with ProfileListReq.offset/limit/anchor_name) ------
 
 // Fill a store with `n` profiles named "P00".."Pnn" — alphabetical order == creation order, so a
@@ -618,15 +698,15 @@ void test_mgmt_dedup_no_double_write(void) {
   r.ctrl_tx.drop_tx = true; // lose the first reply
   sendReq(r.client, oven_ProfilePut_fields, protocol::kTfTypeProfilePut, put);
   r.exchange();
-  TEST_ASSERT_EQUAL_INT(1, r.reflow_fs.writeCalls); // written once
-  TEST_ASSERT_TRUE(r.client.busy());                // reply lost -> still Pending
+  TEST_ASSERT_EQUAL_INT(1, r.reflow_fs.writesTo("Once")); // the PROFILE written once
+  TEST_ASSERT_TRUE(r.client.busy());                      // reply lost -> still Pending
 
   r.ctrl_tx.drop_tx = false;
   r.clk.advance(protocol::kSetupAckTimeoutMs);
   r.client.service();
   r.exchange();
   TEST_ASSERT_TRUE(r.cyd_obs.last_result.ok);
-  TEST_ASSERT_EQUAL_INT(1, r.reflow_fs.writeCalls); // NOT written twice — deduped
+  TEST_ASSERT_EQUAL_INT(1, r.reflow_fs.writesTo("Once")); // NOT written twice — deduped
 }
 
 // Settings get returns the controller's current settings (defaults on a fresh store).
@@ -784,6 +864,10 @@ int main(int, char **) {
   RUN_TEST(test_store_mode_guard);
   RUN_TEST(test_store_stock_readonly);
   RUN_TEST(test_store_list_sorted_facts);
+  RUN_TEST(test_index_rebuilds_when_missing_or_corrupt);
+  RUN_TEST(test_index_is_mode_scoped);
+  RUN_TEST(test_index_name_is_reserved);
+  RUN_TEST(test_index_tracks_mutations);
   RUN_TEST(test_page_windows_cover_every_row_alpha);
   RUN_TEST(test_page_windows_cover_every_row_mru);
   RUN_TEST(test_page_offset_past_end_clamps_and_reports);
