@@ -357,18 +357,37 @@ void SettingsScreen::buildProfiles() {
   // The verdict from the last attempt, if any — shown above the list, on the panel that issued it.
   // Plain rows, not a modal: nothing here is hazardous and nothing needs acknowledging (§22 keeps
   // the modal rare on purpose).
+  //
+  // Every message names the MODE. Two rows sit right below it and the rebuild resets the
+  // highlight, so a bare "Stock profiles restored" would sit above whichever row happens to be
+  // selected and read as a verdict on that one.
+  const bool cure = restore_mode_ == oven_Mode_MODE_CURE;
   switch (restore_) {
   case Restore::Busy:
-    build_info_row(parent_, "Restoring...", nullptr);
+    build_info_row(parent_, cure ? "Restoring cure profiles..." : "Restoring reflow profiles...",
+                   nullptr);
     break;
   case Restore::Done:
-    build_info_row(parent_, "Stock profiles restored", nullptr);
+    build_info_row(
+        parent_, cure ? "Cure stock profiles restored" : "Reflow stock profiles restored", nullptr);
     break;
   case Restore::Failed:
     // Deliberately specific about the likely cause. The controller refuses rather than clobber a
     // user profile that holds a stock name, and an operator told only "failed" would have no way
     // to work out why the stock profile never came back.
-    build_info_row(parent_, "Restore failed - a saved profile may be using a stock name", nullptr);
+    build_info_row(parent_,
+                   cure ? "Cure restore failed - a saved profile may be using a stock name"
+                        : "Reflow restore failed - a saved profile may be using a stock name",
+                   nullptr);
+    break;
+  case Restore::Nothing:
+    // The firmware carries no stock profiles for this mode. Distinct from both success and
+    // failure: nothing was wrong and nothing was done, and saying "restored" would be a quiet lie
+    // about a library that was never touched.
+    build_info_row(parent_,
+                   cure ? "No stock cure profiles in this firmware"
+                        : "No stock reflow profiles in this firmware",
+                   nullptr);
     break;
   case Restore::Idle:
   case Restore::Confirming:
@@ -384,6 +403,11 @@ void SettingsScreen::buildProfiles() {
   list_model_.init(items, 2, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::profiles_open, this);
   create_selectable_list(parent_, list_model_);
+  if (restore_ != Restore::Idle) {
+    // Keep the highlight on the row this verdict is about — init() resets it to the first row, and
+    // a verdict sitting above a differently-highlighted row invites exactly the wrong reading.
+    list_model_.select(cure ? 0 : 1);
+  }
 
   if (restore_ == Restore::Confirming) {
     // A SIMPLE confirm, not §19's press-and-hold: restoring writes profiles and energizes nothing.
@@ -430,7 +454,15 @@ void SettingsScreen::poll() {
   // Only claim success for OUR request: the client is shared, and a reply to someone else's op
   // arriving here must not be read as a restore verdict.
   const bool ours = client_->lastOp() == ManagementClient::Op::RestoreStock;
-  restore_ = (ours && client_->ready()) ? Restore::Done : Restore::Failed;
+  if (!ours) {
+    restore_ = Restore::Failed;
+  } else if (client_->ready()) {
+    restore_ = Restore::Done;
+  } else {
+    // NOT_FOUND is the controller's "this mode has no stock set", not a failure to report as one.
+    restore_ =
+        client_->lastNak() == oven_NakReason_NAK_NOT_FOUND ? Restore::Nothing : Restore::Failed;
+  }
   client_->clear();
   if (page_ == SettingsPage::Profiles) {
     showPage(SettingsPage::Profiles); // render the verdict

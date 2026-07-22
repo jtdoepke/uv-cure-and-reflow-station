@@ -137,6 +137,14 @@ public:
       return;
     }
     const control::SeedReport r = control::seedStockProfiles(*s, /*overwrite=*/true);
+    if (r.considered() == 0) {
+      // This mode has no entries in the compiled table at all — nothing to restore, rather than a
+      // restore that succeeded. Reporting ok here would tell the operator their library was
+      // reinstated when it was not touched, which is the kind of quiet lie a maintenance action
+      // must never tell.
+      replyResult(m.seq, false, oven_NakReason_NAK_NOT_FOUND);
+      return;
+    }
     if (r.userOwned > 0) {
       replyResult(m.seq, false, oven_NakReason_NAK_NAME_INVALID); // the name is taken by a user
       return;

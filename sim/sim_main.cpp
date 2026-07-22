@@ -300,6 +300,7 @@ static protocol::FrameLink *g_link_ctrl = nullptr;
 static ManagementClient *g_client = nullptr;
 static ProfileLibraryScreen *g_profiles_screen = nullptr;
 static ProfileEditorScreen *g_editor_screen = nullptr;
+static SettingsScreen *g_settings_screen = nullptr; // §24's Profiles panel is async too
 
 // Pump both link directions + the active screen's poll() until it settles (bounded). Synchronous
 // pipe, so a handful of iterations resolves any single outstanding request.
@@ -318,6 +319,9 @@ static void pump_link() {
     }
     if (g_editor_screen != nullptr) {
       g_editor_screen->poll();
+    }
+    if (g_settings_screen != nullptr) {
+      g_settings_screen->poll();
     }
   }
 }
@@ -493,8 +497,16 @@ int main(int argc, char **argv) {
   RunScreen run;
   if (screen == "settings") {
     // The full Settings hub over an in-memory store (defaults). Navigate with click actions.
+    // The shared client is passed so §24's Profiles panel (Restore stock profiles) is reachable
+    // and reviewable — it runs against the same fake responder + stores the library screen uses.
     settings_store.load();
-    settings.begin(lv_screen_active(), settings_store);
+    settings.begin(lv_screen_active(), settings_store, &client);
+    // §24's Restore is a round-trip like the library screens', so pump_link() needs all four
+    // pointers — the screen alone is not enough, it bails on a null link.
+    g_settings_screen = &settings;
+    g_link_cyd = &cyd_link;
+    g_link_ctrl = &ctrl_link;
+    g_client = &client;
   } else if (screen == "list") {
     // A settings-hub-shaped list (§24) with a disabled "coming soon" row, to review the
     // ▲/▼-highlight + Open layout without a hosting Settings screen.

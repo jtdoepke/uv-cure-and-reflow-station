@@ -437,6 +437,27 @@ void test_mgmt_restore_stock_refuses_over_a_user_profile(void) {
   TEST_ASSERT_EQUAL_FLOAT(199.0F, still.phases[1].target_c); // and unaltered
 }
 
+// A mode the compiled table has no entries for reports NOT_FOUND, not success. "Restored" for a
+// library that was never touched is the quiet lie a maintenance action must never tell — and the
+// cure set is genuinely empty today, so this is the live case, not a hypothetical.
+void test_mgmt_restore_stock_reports_nothing_to_restore(void) {
+  // Only assert this for a mode the table really is empty for; if cure ever gains a stock entry
+  // this test should follow the data rather than fail misleadingly.
+  FakeProfileStorage probe_fs;
+  ProfileStore probe(probe_fs, oven_Mode_MODE_CURE);
+  if (control::seedStockProfiles(probe, /*overwrite=*/false).considered() > 0) {
+    TEST_IGNORE_MESSAGE("cure now has stock entries - update this test");
+  }
+
+  Rig r;
+  oven_ProfileRestoreStock req = oven_ProfileRestoreStock_init_zero;
+  req.mode = oven_Mode_MODE_CURE;
+  sendReq(r.client, oven_ProfileRestoreStock_fields, protocol::kTfTypeProfileRestoreStock, req);
+  r.exchange();
+  TEST_ASSERT_FALSE(r.cyd_obs.last_result.ok);
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_NOT_FOUND, r.cyd_obs.last_result.reason);
+}
+
 // A dropped reply makes the client resend the Put; the responder dedups — one write only.
 void test_mgmt_dedup_no_double_write(void) {
   Rig r;
@@ -620,6 +641,7 @@ int main(int, char **) {
   RUN_TEST(test_mgmt_delete_stock_refused);
   RUN_TEST(test_mgmt_restore_stock_repopulates);
   RUN_TEST(test_mgmt_restore_stock_refuses_over_a_user_profile);
+  RUN_TEST(test_mgmt_restore_stock_reports_nothing_to_restore);
   RUN_TEST(test_mgmt_dedup_no_double_write);
   RUN_TEST(test_mgmt_settings_get);
   RUN_TEST(test_mgmt_settings_put_clamps_cap);

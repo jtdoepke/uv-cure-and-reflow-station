@@ -135,7 +135,7 @@ private:
 
   // §24 "Restore stock profiles" round-trip state. A plain enum rather than a view-model: it is
   // one request with one verdict, shown on the panel that issued it.
-  enum class Restore : uint8_t { Idle, Confirming, Busy, Done, Failed };
+  enum class Restore : uint8_t { Idle, Confirming, Busy, Done, Nothing, Failed };
   Restore restore_ = Restore::Idle;
   oven_Mode restore_mode_ = oven_Mode_MODE_UNSPECIFIED;
   bool last_link_ok_ = true; // last link gate applied to the hub — only rebuild when it flips
