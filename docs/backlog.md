@@ -1044,5 +1044,19 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   **After the fix, on an erased filesystem: `[profiles] stock seeded=1 failed=0` then
   `[profiles] cure=0 reflow=1`** — SAC305 reinstated from firmware with no `uploadfs` anywhere.
   Next boot silent (`cure=0 reflow=1`, no seed line): idempotent, as designed.
-  **Still not done:** driving Settings → Profiles → Restore on glass (the production CYD build has
-  no touch injection, so it needs hands on the panel).
+  **ON-GLASS 2026-07-22 — and it failed, on a defect the sim could not show.** "Restore cure stock"
+  reported *"Cure restore failed - a saved profile may be using a stock name"*, which was wrong
+  twice over: the compiled table has no cure entries at all, and no cure profile existed to clash
+  with. ***Cause: the request was never sent.*** *`ManagementClient` is single-outstanding and the
+  firmware's background settings sync competes for it (`src_cyd/main.cpp`), so
+  `requestRestoreStock()` returned false — and `confirmRestore()` mapped that straight to `Failed`,
+  whose one message blamed the operator's library for a scheduling collision. The simulator drives
+  the client with nothing else contending, so it could never reproduce it; the host suite tested
+  only the reflow/`Done` and no-client paths.* **Two fixes:** a `Pending` state that keeps trying
+  for the slot from `poll()` (bounded in polls — this screen owns no clock) so the collision is
+  invisible rather than an error the operator is asked to work around; and the terminal states
+  split so wording matches verdict — `NameTaken` (only from `NAK_NAME_INVALID`) accuses the
+  library, `Nothing` (`NAK_NOT_FOUND`) says this firmware has no stock set for the mode, `Failed`
+  says the controller is busy or not responding and accuses nothing. Three new UI cases pin all of
+  it, including that a collided restore *completes on its own* once the slot frees.
+  **Still not re-checked on glass** after the fix.

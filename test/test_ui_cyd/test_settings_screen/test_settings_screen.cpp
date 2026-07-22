@@ -368,6 +368,87 @@ void test_restore_confirmed_repopulates_the_library(void) {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Profiles), static_cast<int>(screen.page()));
 }
 
+// Reproduces the bench report: "Restore cure stock" on a firmware whose compiled table has no
+// CURE entries must read "no stock profiles for this mode", NOT a failure blaming a name clash.
+// The reflow path was tested and this one was not, which is exactly how it shipped wrong.
+void test_restore_cure_with_no_stock_entries_reports_nothing(void) {
+  FakeProfileStorage probe_fs;
+  control::ProfileStore probe(probe_fs, oven_Mode_MODE_CURE);
+  if (control::seedStockProfiles(probe, /*overwrite=*/false).considered() > 0) {
+    TEST_IGNORE_MESSAGE("cure now has stock entries - update this test");
+  }
+
+  screen.begin(lv_screen_active(), store, &client);
+  open_row(ROW_PROFILES);
+  open_row(0); // "Restore cure stock"
+  screen.confirmRestore();
+  settle();
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Profiles), static_cast<int>(screen.page()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsScreen::RestoreState::Nothing),
+                        static_cast<int>(screen.restoreState()));
+}
+
+// The shared ManagementClient is single-outstanding, and the firmware's background settings sync
+// competes for it (src_cyd/main.cpp). If a restore is confirmed while that slot is taken, the
+// request is never sent — and the panel must not then blame a name clash for something that never
+// reached the controller.
+void test_restore_when_the_client_is_busy_does_not_blame_a_name_clash(void) {
+  screen.begin(lv_screen_active(), store, &client);
+  open_row(ROW_PROFILES);
+  open_row(1); // reflow, which DOES have a stock entry, so a real send would have succeeded
+
+  // Occupy the single-outstanding slot the way the background settings sync does.
+  TEST_ASSERT_TRUE(client.requestSettingsGet());
+  TEST_ASSERT_TRUE(client.busy());
+
+  screen.confirmRestore();
+  // Not sent yet, and emphatically not reported as a library problem.
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsScreen::RestoreState::Pending),
+                        static_cast<int>(screen.restoreState()));
+
+  // Once the sync's round-trip completes and frees the slot, poll() sends it and it succeeds --
+  // the operator never has to know the collision happened.
+  settle();
+  client.clear();
+  settle();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsScreen::RestoreState::Done),
+                        static_cast<int>(screen.restoreState()));
+  control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
+  TEST_ASSERT_TRUE(reflow_store.list(rows, control::ProfileStore::kMaxListed) > 0);
+}
+
+// The name-clash wording must be reachable ONLY from the controller's NAK_NAME_INVALID, since it
+// accuses the operator's own library. Take a stock name with a user profile and confirm the panel
+// says so -- and that the user profile survives.
+void test_restore_blocked_by_a_user_profile_says_so(void) {
+  FakeProfileStorage probe_fs;
+  control::ProfileStore probe(probe_fs, oven_Mode_MODE_REFLOW);
+  control::seedStockProfiles(probe, /*overwrite=*/false);
+  control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
+  probe.list(rows, control::ProfileStore::kMaxListed);
+
+  oven_Profile mine = oven_Profile_init_zero;
+  mine.mode = oven_Mode_MODE_REFLOW;
+  std::strncpy(mine.name, rows[0].name, sizeof(mine.name) - 1);
+  mine.phases_count = 1;
+  mine.phases[0].target_c = 199.0F;
+  mine.phases[0].ramp_s = 60;
+  TEST_ASSERT_TRUE(reflow_store.save(mine));
+
+  screen.begin(lv_screen_active(), store, &client);
+  open_row(ROW_PROFILES);
+  open_row(1); // reflow
+  screen.confirmRestore();
+  settle();
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsScreen::RestoreState::NameTaken),
+                        static_cast<int>(screen.restoreState()));
+  oven_Profile still = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(reflow_store.load(rows[0].name, still));
+  TEST_ASSERT_FALSE(still.stock); // the operator's profile is untouched
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_shows_hub);
@@ -388,5 +469,8 @@ int main(int, char **) {
   RUN_TEST(test_profiles_panel_offers_both_modes);
   RUN_TEST(test_restore_requires_the_confirm);
   RUN_TEST(test_restore_confirmed_repopulates_the_library);
+  RUN_TEST(test_restore_cure_with_no_stock_entries_reports_nothing);
+  RUN_TEST(test_restore_when_the_client_is_busy_does_not_blame_a_name_clash);
+  RUN_TEST(test_restore_blocked_by_a_user_profile_says_so);
   return UNITY_END();
 }

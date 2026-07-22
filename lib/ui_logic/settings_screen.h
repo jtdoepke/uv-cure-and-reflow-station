@@ -84,6 +84,26 @@ public:
   // Exit seam: fired when Back is pressed on the hub. Home is the caller's to rebuild.
   void setExitHandler(void (*cb)(void *user_data), void *user_data);
 
+  // §24 "Restore stock profiles" round-trip state. A plain enum rather than a view-model: it is
+  // one request with one verdict, shown on the panel that issued it.
+  //
+  // The terminal states are split finely on purpose, because they call for different actions and a
+  // shared message would misdirect: Nothing means this firmware carries no stock set for that mode
+  // (nothing wrong, nothing done); NameTaken means the controller refused rather than clobber a
+  // saved profile holding a stock name; Failed means the request did not complete at all. Pending
+  // is "confirmed, but the shared client's single-outstanding slot was taken" — see poll().
+  enum class RestoreState : uint8_t {
+    Idle,
+    Confirming,
+    Pending,
+    Busy,
+    Done,
+    Nothing,
+    NameTaken,
+    Failed,
+  };
+  RestoreState restoreState() const { return restore_; }
+
   // --- Inspection accessors (for tests). One list model serves every panel (only one is shown at
   // a time); the two editor VMs back the open editor. ---
   SelectableListModel &listModel() { return list_model_; }
@@ -133,11 +153,16 @@ private:
   ManagementClient *client_ = nullptr; // §24 restore; nullptr disables the Profiles row
   SettingsPage page_ = SettingsPage::Hub;
 
-  // §24 "Restore stock profiles" round-trip state. A plain enum rather than a view-model: it is
-  // one request with one verdict, shown on the panel that issued it.
-  enum class Restore : uint8_t { Idle, Confirming, Busy, Done, Nothing, Failed };
-  Restore restore_ = Restore::Idle;
+  RestoreState restore_ = RestoreState::Idle;
   oven_Mode restore_mode_ = oven_Mode_MODE_UNSPECIFIED;
+  // Polls spent waiting for the shared client's slot before giving up. Counted in polls rather
+  // than milliseconds because this screen owns no clock, and poll() runs once per firmware loop
+  // (~5-20 ms), so this is a bounded couple of seconds — far longer than the one round-trip the
+  // background settings sync can hold the slot for.
+  static constexpr uint16_t kMaxSendPolls = 200;
+  uint16_t send_polls_ = 0;
+
+  void trySendRestore();     // Pending -> Busy once the client's slot frees
   bool last_link_ok_ = true; // last link gate applied to the hub — only rebuild when it flips
 
   SettingsPage editor_return_ = SettingsPage::Hub;

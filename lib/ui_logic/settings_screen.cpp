@@ -94,7 +94,7 @@ void SettingsScreen::begin(lv_obj_t *parent, SettingsStore &store, ManagementCli
   parent_ = parent;
   store_ = &store;
   client_ = client;
-  restore_ = Restore::Idle;
+  restore_ = RestoreState::Idle;
   publishToSubjects();
   // Re-grey the hub's category rows when the link flips (§9). Tied to parent_ so it is removed with
   // the screen (create-on-demand); seed last_link_ok_ from the current state so the first (possibly
@@ -176,7 +176,7 @@ void SettingsScreen::openHubItem(int index) {
     showPage(SettingsPage::TempLimits);
     break;
   case HUB_PROFILES:
-    restore_ = Restore::Idle; // entering fresh: don't re-show a previous verdict
+    restore_ = RestoreState::Idle; // entering fresh: don't re-show a previous verdict
     showPage(SettingsPage::Profiles);
     break;
   case HUB_ABOUT:
@@ -363,24 +363,34 @@ void SettingsScreen::buildProfiles() {
   // selected and read as a verdict on that one.
   const bool cure = restore_mode_ == oven_Mode_MODE_CURE;
   switch (restore_) {
-  case Restore::Busy:
+  case RestoreState::Pending:
+  case RestoreState::Busy:
+    // Pending and Busy read the same on purpose: "waiting for the link to be free" and "the
+    // request is in flight" are the same fact to the operator.
     build_info_row(parent_, cure ? "Restoring cure profiles..." : "Restoring reflow profiles...",
                    nullptr);
     break;
-  case Restore::Done:
+  case RestoreState::Done:
     build_info_row(
         parent_, cure ? "Cure stock profiles restored" : "Reflow stock profiles restored", nullptr);
     break;
-  case Restore::Failed:
-    // Deliberately specific about the likely cause. The controller refuses rather than clobber a
-    // user profile that holds a stock name, and an operator told only "failed" would have no way
-    // to work out why the stock profile never came back.
+  case RestoreState::NameTaken:
+    // The controller refused rather than clobber a saved profile holding a stock name. Worth
+    // naming precisely: an operator told only "failed" would have no way to work out why the
+    // stock profile never came back. This wording is ONLY for that verdict -- it used to cover
+    // every failure, including requests that never left the CYD.
     build_info_row(parent_,
-                   cure ? "Cure restore failed - a saved profile may be using a stock name"
-                        : "Reflow restore failed - a saved profile may be using a stock name",
+                   cure ? "Cure restore stopped - a saved profile is using a stock name"
+                        : "Reflow restore stopped - a saved profile is using a stock name",
                    nullptr);
     break;
-  case Restore::Nothing:
+  case RestoreState::Failed:
+    build_info_row(parent_,
+                   cure ? "Cure restore failed - controller busy or not responding"
+                        : "Reflow restore failed - controller busy or not responding",
+                   nullptr);
+    break;
+  case RestoreState::Nothing:
     // The firmware carries no stock profiles for this mode. Distinct from both success and
     // failure: nothing was wrong and nothing was done, and saying "restored" would be a quiet lie
     // about a library that was never touched.
@@ -389,13 +399,13 @@ void SettingsScreen::buildProfiles() {
                         : "No stock reflow profiles in this firmware",
                    nullptr);
     break;
-  case Restore::Idle:
-  case Restore::Confirming:
+  case RestoreState::Idle:
+  case RestoreState::Confirming:
     break;
   }
 
   const bool ok = client_ != nullptr && lv_subject_get_int(&subj_link_state) == LINK_OK &&
-                  restore_ != Restore::Busy;
+                  restore_ != RestoreState::Busy;
   const SelectableListItem items[2] = {
       {"Restore cure stock", nullptr, ok, "Restore"},
       {"Restore reflow stock", nullptr, ok, "Restore"},
@@ -403,13 +413,13 @@ void SettingsScreen::buildProfiles() {
   list_model_.init(items, 2, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::profiles_open, this);
   create_selectable_list(parent_, list_model_);
-  if (restore_ != Restore::Idle) {
+  if (restore_ != RestoreState::Idle) {
     // Keep the highlight on the row this verdict is about — init() resets it to the first row, and
     // a verdict sitting above a differently-highlighted row invites exactly the wrong reading.
     list_model_.select(cure ? 0 : 1);
   }
 
-  if (restore_ == Restore::Confirming) {
+  if (restore_ == RestoreState::Confirming) {
     // A SIMPLE confirm, not §19's press-and-hold: restoring writes profiles and energizes nothing.
     // Not danger-red either, for the same reason (§13/§22 reserve red for the hazardous verb).
     create_confirm_dialog(
@@ -422,30 +432,58 @@ void SettingsScreen::buildProfiles() {
 }
 
 void SettingsScreen::onProfilesOpen(int index) {
-  if (client_ == nullptr || restore_ == Restore::Busy) {
+  if (client_ == nullptr || restore_ == RestoreState::Busy) {
     return;
   }
   restore_mode_ = index == 0 ? oven_Mode_MODE_CURE : oven_Mode_MODE_REFLOW;
-  restore_ = Restore::Confirming;
+  restore_ = RestoreState::Confirming;
   showPage(SettingsPage::Profiles);
   list_model_.select(index); // keep the highlight where the operator left it
 }
 
+void SettingsScreen::trySendRestore() {
+  if (client_ != nullptr && client_->requestRestoreStock(restore_mode_)) {
+    restore_ = RestoreState::Busy;
+  }
+}
+
 void SettingsScreen::confirmRestore() {
-  // requestRestoreStock fails only when the single-outstanding slot is busy; treat that as a
-  // failed attempt rather than silently dropping it, so the operator can retry.
-  restore_ = (client_ != nullptr && client_->requestRestoreStock(restore_mode_)) ? Restore::Busy
-                                                                                 : Restore::Failed;
+  // requestRestoreStock fails only when the shared client's single-outstanding slot is taken --
+  // which the firmware's background settings sync does routinely (src_cyd/main.cpp). That is a
+  // transient the operator should never see, let alone be asked to work around: go to Pending and
+  // let poll() send it as soon as the slot frees.
+  //
+  // It previously went straight to Failed, which rendered "a saved profile may be using a stock
+  // name" for a request that had NEVER BEEN SENT -- a message that blames the library for a
+  // scheduling collision. Found on the bench: a cure restore reported exactly that (2026-07-22).
+  restore_ = RestoreState::Pending;
+  send_polls_ = 0;
+  trySendRestore();
   showPage(SettingsPage::Profiles);
 }
 
 void SettingsScreen::cancelRestore() {
-  restore_ = Restore::Idle;
+  restore_ = RestoreState::Idle;
   showPage(SettingsPage::Profiles);
 }
 
 void SettingsScreen::poll() {
-  if (restore_ != Restore::Busy || client_ == nullptr) {
+  if (client_ == nullptr) {
+    return;
+  }
+  if (restore_ == RestoreState::Pending) {
+    // Keep trying for the shared slot, bounded. Give up as Failed (not NameTaken) -- if the slot
+    // never frees, the controller is busy or gone, which has nothing to do with the library.
+    trySendRestore();
+    if (restore_ == RestoreState::Pending && ++send_polls_ > kMaxSendPolls) {
+      restore_ = RestoreState::Failed;
+    }
+    if (restore_ != RestoreState::Pending && page_ == SettingsPage::Profiles) {
+      showPage(SettingsPage::Profiles);
+    }
+    return;
+  }
+  if (restore_ != RestoreState::Busy) {
     return;
   }
   if (client_->busy()) {
@@ -455,13 +493,24 @@ void SettingsScreen::poll() {
   // arriving here must not be read as a restore verdict.
   const bool ours = client_->lastOp() == ManagementClient::Op::RestoreStock;
   if (!ours) {
-    restore_ = Restore::Failed;
+    restore_ = RestoreState::Failed;
   } else if (client_->ready()) {
-    restore_ = Restore::Done;
+    restore_ = RestoreState::Done;
   } else {
-    // NOT_FOUND is the controller's "this mode has no stock set", not a failure to report as one.
-    restore_ =
-        client_->lastNak() == oven_NakReason_NAK_NOT_FOUND ? Restore::Nothing : Restore::Failed;
+    // Map the controller's reason to the state whose wording matches it. Only NAME_INVALID means
+    // a saved profile is holding a stock name; NOT_FOUND means this firmware has no stock set for
+    // the mode; anything else is a plain failure and must not be dressed up as either.
+    switch (client_->lastNak()) {
+    case oven_NakReason_NAK_NOT_FOUND:
+      restore_ = RestoreState::Nothing;
+      break;
+    case oven_NakReason_NAK_NAME_INVALID:
+      restore_ = RestoreState::NameTaken;
+      break;
+    default:
+      restore_ = RestoreState::Failed;
+      break;
+    }
   }
   client_->clear();
   if (page_ == SettingsPage::Profiles) {
