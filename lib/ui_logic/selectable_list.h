@@ -28,10 +28,13 @@ struct SelectableListItem {
 
 class SelectableListModel {
 public:
-  // Sized to hold a full profile library (§23): ProfileStore lists up to 32 profiles, and the
-  // library binds the whole list to one model so ▲/▼ can walk all of them. The settings hub uses a
-  // handful. A profile_library_screen static_assert ties this to ProfileStore::kMaxListed (this
-  // header stays free of the app_logic/protobuf include a store dependency would drag in).
+  // Sized to hold a full profile library (§23): a ProfileList reply carries up to 32 rows
+  // (oven.options, == the controller store's kMaxListed == ProfileLibraryViewModel::kMaxRows), and
+  // the library binds the whole list to one model so ▲/▼ can walk all of them. The settings hub
+  // uses a handful. Deliberately a plain literal rather than a reference to any of those: this
+  // header stays free of the app_logic/protobuf include that a store or wire dependency would drag
+  // in. A profile_library_screen static_assert ties the two together where both are already
+  // visible.
   static constexpr int kMaxItems = 32;
 
   // Prepare the model for a fresh list. Call after lv_init() and before building the view. Copies

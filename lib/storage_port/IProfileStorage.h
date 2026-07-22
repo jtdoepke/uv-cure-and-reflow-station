@@ -1,12 +1,14 @@
-// IProfileStorage — the CYD's per-mode profile-library storage port (design.md §7, §23).
+// IProfileStorage — the per-mode profile-library storage port (design.md §7, §23).
 //
-// ProfileStore (lib/app_logic) owns the typed Phase[] model + serialization + validation; this
-// port is deliberately just "keyed blob CRUD in one namespace" — list / read / write / remove a
-// blob by name — so the store decides the byte layout and the adapter stays dumb. Per-mode
-// separation (§7 "never mixed": /profiles/cure/, /profiles/reflow/) is achieved by constructing
-// one ProfileStore over one adapter bound to that mode's directory; this port itself is
-// mode-agnostic. It is the multi-entry sibling of the single-blob ISettingsStorage (B5): a
-// LittleFS adapter on device (src_cyd/), an in-memory fake on host (test/helpers/).
+// REHOMED by Wave R2 (the §2 "CYD is a UI remote" split): the library lives on the CONTROLLER
+// now. control::ProfileStore (lib/control_logic/profile_library.h) owns the byte layout —
+// a versioned header wrapping a nanopb oven_Profile — plus every validity check; this port is
+// deliberately just "keyed blob CRUD in one namespace" (list / read / write / remove a blob by
+// name), so the adapter stays dumb. Per-mode separation (§7 "never mixed": /profiles/cure/,
+// /profiles/reflow/) comes from constructing one store over one adapter bound to that mode's
+// directory; this port itself is mode-agnostic. It is the multi-entry sibling of the single-blob
+// ISettingsStorage: a LittleFS adapter on device (src_control/), an in-memory fake on host
+// (test/helpers/), and a plain file-backed one in tools/gen_profiles.cpp.
 //
 // Keep this header free of <Arduino.h> so it stays native-compilable (mirrors ISettingsStorage.h
 // and the lib/control_port / lib/display_port idiom).
