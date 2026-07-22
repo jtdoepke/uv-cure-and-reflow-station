@@ -71,9 +71,7 @@ public:
     if (!pathFor(name, path)) {
       return false;
     }
-    if (!LittleFS.exists(dir_)) {
-      LittleFS.mkdir(dir_); // first save into this mode's library
-    }
+    ensureDir(dir_); // first save into this mode's library, or a freshly formatted volume
     File f = LittleFS.open(path, "w");
     if (!f) {
       return false;
@@ -94,6 +92,39 @@ public:
 private:
   static constexpr size_t kPathCap = 64; // "/profiles/reflow/" + 31-char name + ".bin" + NUL fits
   static constexpr const char *kExt = ".bin";
+
+  // Create `dir` and every parent it needs.
+  //
+  // **LittleFS.mkdir() is NOT recursive**, and on a freshly formatted volume neither "/profiles"
+  // nor "/profiles/<mode>" exists — so a lone mkdir("/profiles/reflow") fails and the open() after
+  // it fails too. This went unnoticed because `uploadfs` shipped both directories inside the image,
+  // so the only volume the firmware ever wrote to already had them. Found the first time a board
+  // booted onto a formatted-empty filesystem (bench, 2026-07-22): the §23 stock seed reported
+  // cure=0 reflow=0 with `fopen(/littlefs/profiles/reflow/SAC305.bin) failed` above it.
+  //
+  // No host test could have caught it — FakeProfileStorage is a keyed map with no directories at
+  // all, which is the right shape for the port (the port is "keyed blob CRUD", §7) and precisely
+  // why this is adapter-only behaviour that needs hardware to exercise.
+  static void ensureDir(const char *dir) {
+    char path[kPathCap];
+    const size_t len = std::strlen(dir);
+    if (len == 0 || len >= kPathCap) {
+      return;
+    }
+    std::memcpy(path, dir, len + 1);
+    // Walk the components, creating each prefix in turn. Start at 1: index 0 is the leading '/'.
+    for (size_t i = 1; i <= len; ++i) {
+      if (path[i] != '/' && path[i] != '\0') {
+        continue;
+      }
+      const char saved = path[i];
+      path[i] = '\0';
+      if (!LittleFS.exists(path)) {
+        LittleFS.mkdir(path);
+      }
+      path[i] = saved;
+    }
+  }
 
   // "<dir>/<name>.bin". Rejects a name that (with the dir + extension) would overrun kPathCap;
   // ProfileStore::validName already bars separators/length, but keep the buffer guard local too.

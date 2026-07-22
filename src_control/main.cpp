@@ -199,32 +199,6 @@ void setup() {
   // as Fault{WATCHDOG} (§9) rather than the pair coming back silently. Read after begin().
   g_safety.noteResetCause(g_wdt.lastResetCause());
 
-  // Mount the profile-library filesystem (§7; Wave R2). formatOnFail so a fresh/blank board comes
-  // up with an empty library rather than a mount error; the stock seed set is `uploadfs`-flashed
-  // into /profiles/<mode>/. A mount failure is non-fatal to the safety loop — the library is just
-  // empty. The stores are already constructed (their dirs are created lazily on first write).
-  if (!LittleFS.begin(/*formatOnFail=*/true)) {
-    CONTROL_LOGF("[profiles] LittleFS mount failed - library unavailable\n");
-  }
-
-  // Seed any MISSING stock profile from the firmware's own compiled-in table (§23; backlog S5).
-  // Idempotent, so a populated board does nothing. This is what makes `uploadfs` optional rather
-  // than load-bearing, and it is the recovery path for the formatOnFail above: a corrupt
-  // filesystem is reformatted on the line before this one, taking the whole library with it, and
-  // without this the factory references §23 promises "can't be lost" would be gone until someone
-  // reflashed over USB. overwrite=false so it only ever fills gaps; §24's Restore is the
-  // deliberate repair.
-  {
-    const control::SeedReport c = control::seedStockProfiles(g_cure_store, /*overwrite=*/false);
-    const control::SeedReport r = control::seedStockProfiles(g_reflow_store, /*overwrite=*/false);
-    if (c.written + r.written + c.failed + r.failed > 0) {
-      CONTROL_LOGF("[profiles] stock seeded=%u failed=%u\n", (unsigned)(c.written + r.written),
-                   (unsigned)(c.failed + r.failed));
-    }
-  }
-
-  g_settings.load(); // persisted settings (or defaults), caps re-clamped to hard-max (§4)
-
 #if defined(CONTROL_BENCH) || defined(CONTROL_SIM)
   Serial.begin(115200); // bench/sim only: UART0 is the console, the link is on UART2
   Serial.println();
@@ -242,6 +216,33 @@ void setup() {
                (unsigned long)(protocol::kSchemaHash >> 32),
                (unsigned long)(protocol::kSchemaHash & 0xFFFFFFFFu));
 #endif
+
+  // Mount the profile-library filesystem (§7; Wave R2), then fill any gap in the stock set from
+  // the firmware's own compiled-in table (§23; backlog S5).
+  //
+  // Deliberately placed AFTER the console comes up: every diagnostic below is a CONTROL_LOGF, and
+  // when this ran before Serial.begin() its output went nowhere. That is how a real seeding
+  // failure hid on the bench (2026-07-22) — the only visible trace was ESP-IDF's own vfs error on
+  // the ROM UART. CONTROL_LOGF compiles to nothing in production (control_board.h), where the link
+  // owns UART0, so this ordering costs that build nothing.
+  //
+  // formatOnFail so a fresh/blank board comes up with an empty library rather than a mount error;
+  // a mount failure is non-fatal to the safety loop, the library is just empty. The seed is
+  // idempotent (overwrite=false fills gaps only), so a populated board does nothing — and it is
+  // the recovery path for that formatOnFail, which reformats the whole library away, stock
+  // included. §24's Restore is the deliberate repair.
+  if (!LittleFS.begin(/*formatOnFail=*/true)) {
+    CONTROL_LOGF("[profiles] LittleFS mount failed - library unavailable\n");
+  }
+  {
+    const control::SeedReport c = control::seedStockProfiles(g_cure_store, /*overwrite=*/false);
+    const control::SeedReport r = control::seedStockProfiles(g_reflow_store, /*overwrite=*/false);
+    if (c.written + r.written + c.failed + r.failed > 0) {
+      CONTROL_LOGF("[profiles] stock seeded=%u failed=%u\n", (unsigned)(c.written + r.written),
+                   (unsigned)(c.failed + r.failed));
+    }
+  }
+  g_settings.load(); // persisted settings (or defaults), caps re-clamped to hard-max (§4)
 
   // Buffer sizes must precede begin(). The controller *receives* Recipes, so RX is the side
   // that needs the headroom; see esp32_serial_transport.h on why TX must never short-write.

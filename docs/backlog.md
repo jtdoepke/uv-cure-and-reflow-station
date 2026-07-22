@@ -1024,6 +1024,25 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   geometries (`test_settings_screen`, driven through the real `ManagementResponder` over a
   `LoopbackPipe` so the restore is exercised end-to-end). Schema hash moved as expected — the two
   `Hello` fuzz seeds were regenerated (`make fuzz-seed`).
-  **Not done — needs the bench:** flashing a controller *without* `uploadfs` and confirming the
-  boot log reports a seeded library rather than `cure=0 reflow=0`, then driving Settings → Profiles
-  → Restore on glass. Both boards need a matched-pair reflash for the schema change regardless.
+  **BENCH-VERIFIED 2026-07-22 — and it did not work the first time.** Matched-pair reflash
+  (`esp32dev_control_sim` + `esp32dev_cyd35`), both boards `matched=1`, then the controller's
+  LittleFS partition erased (`esptool erase_region 0x310000 0xE0000`, backed up first) to force the
+  exact case the feature exists for. First boot after the erase: **`cure=0 reflow=0`**, with
+  ESP-IDF's own `fopen(/littlefs/profiles/reflow/SAC305.bin) failed` above it.
+  ***The bug: `LittleFS.mkdir()` is NOT recursive.*** *On a formatted-empty volume neither
+  `/profiles` nor `/profiles/<mode>` exists, so `LittleFsProfileStorage::write()`'s lone
+  `mkdir(dir_)` failed and the `open()` after it failed too. It had never mattered because
+  `uploadfs` shipped both directories inside the image — the only volume the firmware had ever
+  written to already had them, which is precisely the assumption seeding-from-firmware breaks.
+  **No host test could have caught it:** `FakeProfileStorage` is a keyed map with no directories,
+  which is the correct shape for a port defined as "keyed blob CRUD" (§7) — so this is
+  adapter-only behaviour that needs hardware. Fixed with a recursive `ensureDir()`.*
+  ***A second bug it hid behind:*** *the seed ran before `Serial.begin()`, so both its report and
+  the mount-failure line went nowhere and the only visible trace was ESP-IDF's vfs error. The
+  mount + seed now sit after the console banner (`CONTROL_LOGF` compiles to nothing in production,
+  where the link owns UART0, so the move costs that build nothing).*
+  **After the fix, on an erased filesystem: `[profiles] stock seeded=1 failed=0` then
+  `[profiles] cure=0 reflow=1`** — SAC305 reinstated from firmware with no `uploadfs` anywhere.
+  Next boot silent (`cure=0 reflow=1`, no seed line): idempotent, as designed.
+  **Still not done:** driving Settings → Profiles → Restore on glass (the production CYD build has
+  no touch injection, so it needs hands on the panel).
