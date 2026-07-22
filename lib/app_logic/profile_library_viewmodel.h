@@ -30,9 +30,16 @@
 
 class ProfileLibraryViewModel {
 public:
-  // Max list rows == the wire ProfileList bound (oven.options) == the controller store's
-  // kMaxListed.
-  static constexpr size_t kMaxRows = 32;
+  // Rows held at once — the paging WINDOW (== oven.ProfileList.profiles max_count ==
+  // ProfileStore::kListWindow), NOT the library size. Since 2026-07-22 the list is paged (§23):
+  // the controller holds up to kMaxListed (64) profiles and sorts all of them, and the CYD caches
+  // one window at a time, so this buffer no longer grows when the library cap does.
+  static constexpr size_t kMaxRows = 16;
+  // The cache must hold whatever one reply can carry, or adoptList() would silently drop the tail
+  // of a window and the operator would page past rows that never appeared. Ties the CYD's buffer to
+  // the wire bound so raising oven.ProfileList.profiles without raising this fails to compile.
+  static_assert(kMaxRows >= sizeof(oven_ProfileList::profiles) / sizeof(oven_ProfileSummary),
+                "kMaxRows must hold a full ProfileList window");
   static constexpr size_t kValueCap = 24; // "peak 245° · ~6:10" + NUL, with °/· as 2 bytes each
 
   ProfileLibraryViewModel() = default;
@@ -46,6 +53,8 @@ public:
     fahrenheit_ = false;
     mru_sort_ = false;
     count_ = 0;
+    offset_ = 0;
+    total_ = 0;
     detail_count_ = 0;
     have_detail_ = false;
   }
@@ -70,13 +79,23 @@ public:
 
   // --- List: request + adopt ---
 
-  // Ask the controller for this mode's library, in the current sort order (§23). Returns false if
-  // the client is busy. The screen shows a loading state, polls the client, and calls adoptList()
-  // when it is Ready.
-  bool requestList() {
-    return client_ != nullptr &&
-           client_->requestList(mode_, mru_sort_ ? oven_ProfileSort_PROFILE_SORT_MRU
-                                                 : oven_ProfileSort_PROFILE_SORT_ALPHA);
+  // Ask the controller for the FIRST window of this mode's library, in the current sort order
+  // (§23). Returns false if the client is busy. The screen shows a loading state, polls the client,
+  // and calls adoptList() when it is Ready.
+  bool requestList() { return requestListAt(0); }
+
+  // Ask for the window starting at `offset`. The controller clamps it and reports what it used, so
+  // an offset that outran a shrinking library converges instead of failing.
+  bool requestListAt(size_t offset) {
+    return client_ != nullptr && client_->requestList(mode_, sortWire(), offset, nullptr);
+  }
+
+  // Ask for whichever window CONTAINS `name` — the refresh a mutation should use. The CYD never
+  // computes a page number: after a delete anchor on the neighbour row, after a save/dup/rename on
+  // the new name, after a run-start touch (which reorders MRU) on the profile that ran. A name that
+  // no longer exists falls back to the current offset rather than erroring.
+  bool requestListAnchored(const char *name) {
+    return client_ != nullptr && client_->requestList(mode_, sortWire(), offset_, name);
   }
 
   // Adopt a ProfileList reply into the row cache (call from the screen's poll on Ready).
@@ -85,6 +104,9 @@ public:
     if (count_ > kMaxRows) {
       count_ = kMaxRows;
     }
+    // The controller's offset, not the one we asked for: it clamps, and it resolves anchors.
+    offset_ = list.offset;
+    total_ = list.total;
     for (size_t i = 0; i < count_; ++i) {
       std::strncpy(name_buf_[i], list.profiles[i].name, kProfileNameCap - 1);
       name_buf_[i][kProfileNameCap - 1] = '\0';
@@ -97,7 +119,35 @@ public:
     // received.
   }
 
+  // Rows in THIS window. Every index-taking method below is window-relative.
   size_t count() const { return count_; }
+
+  // --- Paging position (§23) ---
+
+  size_t offset() const { return offset_; } // global index of row 0 of this window
+  size_t total() const { return total_; }   // profiles in the whole library
+  bool morePrev() const { return offset_ > 0; }
+  bool moreNext() const { return offset_ + count_ < total_; }
+
+  // Load the adjacent window. `dir` -1 = the one above, +1 = the one below. The new window abuts
+  // this one, so scrolling reads as continuous rather than jumping.
+  bool requestAdjacent(int dir) {
+    if (dir < 0) {
+      return morePrev() && requestListAt(offset_ >= kMaxRows ? offset_ - kMaxRows : 0);
+    }
+    return moreNext() && requestListAt(offset_ + count_);
+  }
+
+  // Window-relative index of `name`, or -1 if it is not in this window. Lets the screen restore the
+  // highlight onto the row it acted on after an anchored refresh.
+  int indexOfName(const char *name) const {
+    for (size_t i = 0; i < count_; ++i) {
+      if (std::strcmp(name_buf_[i], name) == 0) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
   const char *rowLabel(size_t i) const { return i < count_ ? name_buf_[i] : ""; }
   const char *rowValue(size_t i) const { return i < count_ ? value_buf_[i] : ""; }
   const char *name(size_t i) const { return rowLabel(i); }
@@ -105,9 +155,13 @@ public:
   bool canDelete(size_t i) const { return i < count_ && !stock_[i]; }
   bool editIsSaveAs(size_t i) const { return rowStock(i); }
 
-  // Is `name` already in the current cached list? Lets the rename UI reject an obvious clash
-  // client-side (staying on the keyboard) rather than round-tripping for a NAK (§23). The
-  // controller still validates authoritatively.
+  // Is `name` already in the CURRENT WINDOW? Lets the rename UI reject an obvious clash client-side
+  // (staying on the keyboard) rather than round-tripping for a NAK (§23).
+  //
+  // Since the list was paged this is a one-way test: true means definitely taken, false only means
+  // "not on this page". The controller has always been the authority (it NAKs a clash with
+  // NAK_NAME_INVALID) — what changed is that this can no longer *prove* a name is free, so it must
+  // stay a fast-path rejection and never a precondition.
   bool nameExists(const char *name) const { return nameTaken(name); }
 
   // --- Detail: request + adopt + derived facts/curve (off the fetched phases) ---
@@ -193,9 +247,14 @@ public:
 
   // --- Actions: issue a request; the screen polls and re-lists on Ready ---
 
-  // Duplicate row `i` as "<name> copy" (or " copy 2", …), deconflicting against the CURRENT cached
-  // list (the controller also refuses a clash, §23). Returns false if `i` is out of range, no free
-  // name was found, or the client is busy.
+  // Duplicate row `i` as "<name> copy" (or " copy 2", …), deconflicting against the current WINDOW
+  // (the controller refuses a clash authoritatively, §23). Returns false if `i` is out of range, no
+  // free name was found, or the client is busy.
+  //
+  // Paging narrowed what this can see, but barely, and only here: Dup exists solely in the manage
+  // context, whose sort is alphabetical (§23) — so "X", "X copy" and "X copy 2" sort adjacently and
+  // land in the same window except when X is the last row of one. In that case the controller NAKs
+  // and the screen surfaces the error, which is the pre-existing behaviour for a raced clash.
   bool requestDuplicate(size_t i) {
     if (i >= count_ || client_ == nullptr) {
       return false;
@@ -278,8 +337,14 @@ private:
   bool fahrenheit_ = false;
   bool mru_sort_ = false; // which order the next requestList() asks the controller for (§23)
 
-  // List cache (from ProfileList), rendered in the order the controller returned.
+  oven_ProfileSort sortWire() const {
+    return mru_sort_ ? oven_ProfileSort_PROFILE_SORT_MRU : oven_ProfileSort_PROFILE_SORT_ALPHA;
+  }
+
+  // List cache — ONE WINDOW (from ProfileList), rendered in the order the controller returned.
   size_t count_ = 0;
+  size_t offset_ = 0; // global index of row 0; controller-reported, never computed here
+  size_t total_ = 0;  // profiles in the whole library
   char name_buf_[kMaxRows][kProfileNameCap] = {};
   char value_buf_[kMaxRows][kValueCap] = {};
   bool stock_[kMaxRows] = {};

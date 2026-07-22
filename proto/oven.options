@@ -6,7 +6,7 @@ oven.Telemetry.wall_temp max_count:4
 
 # Profile & settings management (design.md §9, added 2026-07-17). String caps match
 # lib/app_logic: kPhaseNameCap=16, kProfileNameCap=32. Repeated caps: kMaxPhases=32,
-# ProfileStore::kMaxListed=32.
+# ProfileList window=16 (see below — since the list was paged this is NOT the library cap).
 oven.Phase.name              max_size:16
 oven.Profile.name            max_size:32
 oven.Profile.phases          max_count:32
@@ -18,4 +18,9 @@ oven.ProfileDup.dst          max_size:32
 oven.ProfileRename.old_name  max_size:32
 oven.ProfileRename.new_name  max_size:32
 oven.ProfileTouch.name       max_size:32
-oven.ProfileList.profiles    max_count:32
+oven.ProfileListReq.anchor_name max_size:32
+# The list is PAGED (design.md §23, 2026-07-22), so this is the reply WINDOW, no longer the
+# per-mode library cap — that is ProfileStore::kMaxListed (64) and no longer touches the wire.
+# 16 rows keeps ProfileList ~790 B against TF_MAX_PAYLOAD_RX=2048 (it was 1542 at 32, which
+# capped the library at 42 rows); ProfileData/ProfilePut (~1.5 KB) are now the largest frames.
+oven.ProfileList.profiles    max_count:16

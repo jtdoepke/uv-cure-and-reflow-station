@@ -266,10 +266,22 @@ enum ProfileSort {
 
 // --- Requests (CYD -> controller). Each carries seq for correlation + dedup. ---
 
+// PAGED since 2026-07-22 (design.md §23). One reply carries a *window* of the mode's library,
+// not the whole thing, so the frame size stops scaling with the library and the per-mode cap
+// became a storage question rather than a DRAM one. The controller still sorts the FULL set to
+// page it correctly — it owns use_seq and has the DRAM (§2/§6a); only the reply is windowed.
 message ProfileListReq {
   uint32 seq = 1;
   Mode mode = 2;
   ProfileSort sort = 3;
+  uint32 offset = 4; // index of the first row wanted, in `sort` order; clamped by the controller
+  uint32 limit = 5;  // max rows to return; 0 => the controller's window size
+  // If set and present in this mode's library, the controller returns the page CONTAINING this
+  // name and ignores `offset`. This is how the CYD keeps a row in view across a mutation without
+  // ever computing a page number itself: after a delete it anchors on the neighbour row, after a
+  // save/dup/rename on the new name, after a run-start ProfileTouch (which reorders MRU) on the
+  // profile it ran. An anchor that no longer exists falls back to `offset`.
+  string anchor_name = 6;
 }
 message ProfileGetReq {
   uint32 seq = 1;
@@ -329,9 +341,17 @@ message SettingsPut {
 
 // --- Replies (controller -> CYD). seq echoes the request. ---
 
+// One window of the mode's library (see ProfileListReq). `offset`/`total` are what let the CYD
+// page without arithmetic of its own: it renders `profiles` at `offset`, knows it is done when
+// `offset + count >= total`, and sizes its scroll position from `total`.
 message ProfileList {
   uint32 seq = 1;
   repeated ProfileSummary profiles = 2;
+  // The offset the controller ACTUALLY used — the request's, clamped into range, or the one it
+  // resolved from anchor_name. The CYD trusts this over what it asked for, which is what makes a
+  // delete that empties the last page self-correcting rather than a phantom-row bug.
+  uint32 offset = 3;
+  uint32 total = 4; // profiles in this mode's library (not in this reply)
 }
 message ProfileData {
   uint32 seq = 1;

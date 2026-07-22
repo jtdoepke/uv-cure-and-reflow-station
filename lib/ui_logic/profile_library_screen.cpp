@@ -9,12 +9,14 @@
 #include "subjects.h"
 #include "theme.h"
 
-// The library lists up to kMaxRows; the whole list binds to one SelectableListModel so ▲/▼ can
-// walk it, so the model must hold at least as many. (The header keeps this dependency out of the
-// generic widget; the assert lives here where both types are known.)
+// One WINDOW of the library binds to one SelectableListModel (§23 paging — ▲/▼ walks the window
+// and asks for the next at its edges), so the model must hold a whole window. It no longer has to
+// hold the whole library: that grew to ProfileStore::kMaxListed and never reaches the CYD at once.
+// (The header keeps this dependency out of the generic widget; the assert lives here where both
+// types are known.)
 static_assert(ProfileLibraryViewModel::kMaxRows <=
                   static_cast<size_t>(SelectableListModel::kMaxItems),
-              "SelectableListModel::kMaxItems must cover a full profile library");
+              "SelectableListModel::kMaxItems must cover a full profile-library window");
 
 // Captureless thunks — a friend of ProfileLibraryScreen so they can reach its private navigation /
 // action methods (the codebase's single-void*-user_data idiom, no std::function).
@@ -27,6 +29,9 @@ struct ProfileThunks {
   }
   static void list_open(int index, void *ud) {
     static_cast<ProfileLibraryScreen *>(ud)->openDetail(index);
+  }
+  static void list_edge(int dir, void *ud) {
+    static_cast<ProfileLibraryScreen *>(ud)->onPageEdge(dir);
   }
   static void back_evt(lv_event_t *e) {
     static_cast<ProfileLibraryScreen *>(lv_event_get_user_data(e))->back();
@@ -152,6 +157,8 @@ void ProfileLibraryScreen::openMode(RecipeMode mode) {
   // the requestList() below asks for.
   current_->setMruSort(pick_);
   selected_ = 0;
+  restore_ = Restore::Index; // a fresh mode starts at the top, not on the other mode's anchor
+  pending_anchor_[0] = '\0';
   return_page_ = Page::Chooser;
   // Fetch this mode's library from the controller (§9). The reply lands in poll() → buildList().
   if (current_->requestList()) {
@@ -212,10 +219,16 @@ void ProfileLibraryScreen::poll() {
       buildDetail();
     }
     break;
-  case Pending::Action:
-    // A mutation (dup/rename/delete) succeeded — re-list to reflect it.
+  case Pending::Action: {
+    // A mutation (dup/rename/delete) succeeded — re-list to reflect it. ANCHORED on the row the
+    // action was about (§23): the sort can move it to a different window entirely, so asking for
+    // "the same offset" would show the wrong rows, and keeping the old `selected_` index would
+    // highlight whatever slid into that slot. The anchor makes the controller return the window
+    // that actually holds it, and Restore::Name puts the highlight back on it.
     client_->clear();
-    if (current_->requestList()) {
+    const bool ok = restore_ == Restore::Name ? current_->requestListAnchored(pending_anchor_)
+                                              : current_->requestList();
+    if (ok) {
       pending_ = Pending::List; // stay on Loading until the fresh list arrives
     } else {
       pending_ = Pending::None;
@@ -223,6 +236,7 @@ void ProfileLibraryScreen::poll() {
       buildList();
     }
     break;
+  }
   case Pending::None:
     break;
   }
@@ -385,6 +399,11 @@ void ProfileLibraryScreen::buildList() {
   }
   list_model_.init(items, static_cast<int>(n), /*wrap=*/false);
   list_model_.setOpenHandler(ProfileThunks::list_open, this);
+  // This list is a WINDOW onto the controller's library (§23 paging), so ▲/▼ at the loaded ends
+  // must fetch the adjacent window rather than disable. init() cleared both seams, so re-declare
+  // them here alongside the Open handler.
+  list_model_.setEdgeHandler(ProfileThunks::list_edge, this);
+  list_model_.setMore(current_->morePrev(), current_->moreNext());
 
   // The manage-library "+ New" makes no sense while picking one to run — pick mode has no leading
   // action (a plain 3-button footer).
@@ -392,7 +411,15 @@ void ProfileLibraryScreen::buildList() {
       pick_ ? LeadingAction{} : LeadingAction{"+ New", ProfileThunks::new_evt, this};
   SelectableList ui = create_selectable_list(parent_, list_model_, new_action);
 
+  // Whatever the outcome, this list has consumed the restore intent — clear it before either
+  // branch. Leaving it set on the empty path would apply a stale anchor to the NEXT list built
+  // (e.g. after deleting the only profile, then creating one), highlighting by a name that has
+  // nothing to do with it.
+  const Restore restore = restore_;
+  restore_ = Restore::Index;
+
   if (n == 0) {
+    pending_anchor_[0] = '\0';
     // §23 empty state. Shouldn't happen once stock seeds ship, but a fresh flash has no profiles.
     lv_obj_t *empty = lv_label_create(ui.list);
     lv_label_set_text(empty, "No profiles - New to create one"); // ASCII dash (font has no em dash)
@@ -400,8 +427,48 @@ void ProfileLibraryScreen::buildList() {
     lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
     theme::apply_caption(empty);
   } else {
-    list_model_.select(selected_ < static_cast<int>(n) ? selected_ : 0);
+    // Place the highlight per what it MEANT, not per its old row number — the window may have
+    // scrolled or the sort may have moved the row (see Restore).
+    int want = selected_;
+    switch (restore) {
+    case Restore::Name: {
+      const int found = current_->indexOfName(pending_anchor_);
+      want = found >= 0 ? found : 0; // gone (deleted, or a failed rename) → top of the window
+      break;
+    }
+    case Restore::First:
+      want = 0;
+      break;
+    case Restore::Last:
+      want = static_cast<int>(n) - 1;
+      break;
+    case Restore::Index:
+      break;
+    }
+    selected_ = want < static_cast<int>(n) ? want : 0;
+    list_model_.select(selected_);
+    pending_anchor_[0] = '\0';
   }
+}
+
+// ▲/▼ at a loaded end of the window: pull in the adjacent one (§23). The highlight lands on the
+// abutting row — first row when paging down, last when paging up — so a continuous press walks the
+// library without the selection jumping.
+//
+// Deliberately on demand rather than prefetched: a window is ~16 rows over a 115200 link, ~40-70 ms
+// behind the Loading state this screen already has, and prefetching would mean holding a second
+// request in flight against a single-outstanding client (§9). Revisit only if it reads as laggy.
+void ProfileLibraryScreen::onPageEdge(int dir) {
+  if (current_ == nullptr || pending_ != Pending::None) {
+    return; // a reply is already in flight; ignore the press rather than queue a second request
+  }
+  if (!current_->requestAdjacent(dir)) {
+    return; // no such window (we were at a real end) — nothing to do, keep the current view
+  }
+  restore_ = dir < 0 ? Restore::Last : Restore::First;
+  page_ = Page::Loading;
+  pending_ = Pending::List;
+  buildLoading("Loading profiles...");
 }
 
 // --- Profile detail / actions ---
@@ -564,7 +631,11 @@ void ProfileLibraryScreen::onEdit() {
 
 void ProfileLibraryScreen::onDuplicate() {
   return_page_ = Page::List;
-  // Clone on the controller ("<name> copy", deconflicted against the cached list); poll() re-lists.
+  // Clone on the controller ("<name> copy", deconflicted against the cached window); poll()
+  // re-lists anchored on the SOURCE row. The copy sorts next to it alphabetically, so both land in
+  // view, and the highlight stays on the profile the operator was looking at rather than following
+  // the new one somewhere they did not ask to go.
+  setAnchor(current_->name(static_cast<size_t>(selected_)));
   if (current_->requestDuplicate(static_cast<size_t>(selected_))) {
     page_ = Page::Loading;
     pending_ = Pending::Action;
@@ -590,6 +661,10 @@ void ProfileLibraryScreen::onRenameCommit(const char *text) {
     return;
   }
   return_page_ = Page::List;
+  // Anchor on the NEW name: a rename re-sorts the row, potentially into a different window, and
+  // this is what follows it there. (Before paging this screen kept the old index and could end up
+  // highlighting whichever profile slid into that slot.)
+  setAnchor(text);
   if (current_->requestRename(static_cast<size_t>(selected_), text)) {
     page_ = Page::Loading;
     pending_ = Pending::Action;
@@ -631,8 +706,19 @@ void ProfileLibraryScreen::onDeleteRequested() {
 
 void ProfileLibraryScreen::onDeleteConfirmed() {
   return_page_ = Page::List;
-  // Delete on the controller; poll() re-lists. buildList() clamps the selection if the row is gone.
-  if (current_->requestRemove(static_cast<size_t>(selected_))) {
+  // Anchor on the row that will SURVIVE next to this one — the one below, or the one above when
+  // deleting the last row — so the cursor lands where the deleted profile was rather than jumping
+  // to the top of a library that may be several windows long. If this was the only row, there is no
+  // neighbour and the refresh falls back to the current offset, which the controller clamps.
+  const size_t sel = static_cast<size_t>(selected_);
+  const size_t neighbour = sel + 1 < current_->count() ? sel + 1 : (sel > 0 ? sel - 1 : sel);
+  if (neighbour != sel) {
+    setAnchor(current_->name(neighbour));
+  } else {
+    restore_ = Restore::Index;
+    pending_anchor_[0] = '\0';
+  }
+  if (current_->requestRemove(sel)) {
     selected_ = 0; // the row is going away; reset the remembered highlight
     page_ = Page::Loading;
     pending_ = Pending::Action;
@@ -641,6 +727,18 @@ void ProfileLibraryScreen::onDeleteConfirmed() {
     page_ = Page::Error;
     buildError();
   }
+}
+
+// Record which profile the next adopted list should highlight, and ask for it by name.
+void ProfileLibraryScreen::setAnchor(const char *name) {
+  if (name == nullptr) {
+    restore_ = Restore::Index;
+    pending_anchor_[0] = '\0';
+    return;
+  }
+  std::strncpy(pending_anchor_, name, kProfileNameCap - 1);
+  pending_anchor_[kProfileNameCap - 1] = '\0';
+  restore_ = Restore::Name;
 }
 
 // --- Pick mode (§19/C6) ---

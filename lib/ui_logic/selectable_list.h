@@ -28,13 +28,13 @@ struct SelectableListItem {
 
 class SelectableListModel {
 public:
-  // Sized to hold a full profile library (§23): a ProfileList reply carries up to 32 rows
-  // (oven.options, == the controller store's kMaxListed == ProfileLibraryViewModel::kMaxRows), and
-  // the library binds the whole list to one model so ▲/▼ can walk all of them. The settings hub
-  // uses a handful. Deliberately a plain literal rather than a reference to any of those: this
-  // header stays free of the app_logic/protobuf include that a store or wire dependency would drag
-  // in. A profile_library_screen static_assert ties the two together where both are already
-  // visible.
+  // Sized to hold a full profile-library WINDOW (§23): since the list was paged a ProfileList reply
+  // carries 16 rows (oven.options == ProfileLibraryViewModel::kMaxRows), and the library binds one
+  // window to one model so ▲/▼ can walk it, asking for the next window at the edges (see setMore).
+  // The library itself is larger and never arrives at once. The settings hub uses a handful.
+  // Deliberately a plain literal rather than a reference to any of those: this header stays free of
+  // the app_logic/protobuf include that a store or wire dependency would drag in. A
+  // profile_library_screen static_assert ties the two together where both are already visible.
   static constexpr int kMaxItems = 32;
 
   // Prepare the model for a fresh list. Call after lv_init() and before building the view. Copies
@@ -51,6 +51,19 @@ public:
 
   // Highlight a specific row (row-tap seam); ignored if the index is out of range or disabled.
   void select(int index);
+
+  // --- Windowing seam (design.md §23 paged profile library) ---
+  //
+  // By default a model holds the WHOLE list and both ends are real ends: Up/Down saturate there and
+  // the footer button disables. A caller that is showing a *window* onto a longer sequence says so
+  // here — then the loaded end is not the list's end, so the button stays enabled and pressing it
+  // calls the edge handler (dir -1 = before, +1 = after) instead of doing nothing. The handler is
+  // expected to load the adjacent window and re-init the model.
+  //
+  // Deliberately generic: this widget knows "there is more, ask someone" and nothing about pages,
+  // offsets, or the link. The settings hub, which holds complete lists, never sets any of it.
+  void setEdgeHandler(void (*cb)(int dir, void *user_data), void *user_data);
+  void setMore(bool before, bool after);
 
   // Open the highlighted row: fires the Open handler with the selected index (no-op if that row
   // is somehow disabled). Neither this nor selection persists or energizes anything.
@@ -78,6 +91,10 @@ private:
   lv_subject_t selected_subject_{};
   void (*on_open_)(int, void *) = nullptr;
   void *open_ud_ = nullptr;
+  bool more_before_ = false; // rows exist above this window (see setMore)
+  bool more_after_ = false;  // rows exist below this window
+  void (*on_edge_)(int, void *) = nullptr;
+  void *edge_ud_ = nullptr;
 };
 
 // An optional footer button to the LEFT of ▲/▼/Open — the §23 profile library's `+ New`, which the

@@ -73,6 +73,14 @@ public:
   void onPickUse();           // detail "Use this profile" → hand the run draft to the pick handler
   void toggleSortAndReload(); // list sort toggle → flip MRU⇄alpha and re-fetch the list
 
+  // ▲/▼ pressed at a loaded end of a paged window (§23): fetch the adjacent one. `dir` -1 = above,
+  // +1 = below. The highlight lands on the abutting row so scrolling reads as continuous.
+  void onPageEdge(int dir);
+
+  // Record the profile the next adopted list should highlight, by NAME, and request it as the
+  // anchor. Used by every mutation, since a row's index is not stable across one.
+  void setAnchor(const char *name);
+
   bool pickMode() const { return pick_; }
 
   // Inspection (tests).
@@ -101,7 +109,21 @@ private:
   lv_obj_t *parent_ = nullptr;
   Page page_ = Page::Chooser;
   RecipeMode mode_ = RecipeMode::Reflow;
-  int selected_ = 0; // remembered highlight, restored when returning list → (detail →) list
+  int selected_ = 0; // remembered highlight (WINDOW-relative), restored list → (detail →) list
+
+  // How the next adopted list should place the highlight (§23 paging). The window is a moving view
+  // over the library, so "row 3" is not a stable identity across a refresh — these say what the
+  // highlight actually meant.
+  enum class Restore {
+    Index, // keep selected_ (a plain refresh of the same window)
+    Name,  // put it on pending_anchor_, wherever that row landed (after a mutation)
+    First, // top row (paged down into a new window)
+    Last,  // bottom row (paged up into a new window)
+  };
+  Restore restore_ = Restore::Index;
+  // The row a mutation acted on, sent as ProfileListReq.anchor_name so the controller returns
+  // whichever window now holds it. Empty when restore_ != Restore::Name.
+  char pending_anchor_[kProfileNameCap] = {};
 
   ManagementClient *client_ = nullptr;
   Pending pending_ = Pending::None;

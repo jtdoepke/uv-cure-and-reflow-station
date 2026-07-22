@@ -25,8 +25,13 @@
 
 namespace control {
 
-// Factory defaults (design.md §4/§24): units C, auto-brightness on, UV cap 100, reflow cap 250.
+// Factory defaults (design.md §4/§24): units C, auto-brightness on, UV cap 110, reflow cap 250.
 // A fresh controller (no blob yet) hands these to the CYD on the first SettingsGet.
+//
+// These mirror settings_defaults.h on the CYD, deliberately: §4 has this board keep its own copy
+// so a buggy/malicious CYD cannot define what "factory default" means. The flip side is that the
+// two copies must be edited together — one moved alone leaves a fresh CYD and a fresh controller
+// disagreeing about what shipped.
 inline oven_Settings defaultSettings() {
   oven_Settings s = oven_Settings_init_zero;
   s.units = oven_TempUnits_TEMP_UNITS_CELSIUS;
@@ -35,7 +40,7 @@ inline oven_Settings defaultSettings() {
   s.brightness_bias = 0;
   s.screen_brightness_pct = 80;
   s.idle_timeout_min = 2;
-  s.uv_max_cap = 100;
+  s.uv_max_cap = 110; // see the note above; stays under CURE_HARD_MAX_C (120)
   s.reflow_max_cap = 250;
   return s;
 }

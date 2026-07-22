@@ -52,6 +52,8 @@
 #include "profile_editor_screen.h"
 #include "profile_facts.h"
 #include "profile_library.h" // control::ProfileStore (lib/control_logic — the store lives here now)
+#include "stock_seed.h"      // control::seedStockProfiles — the real boot seed, so the sim shows
+                             // the shipped stock set rather than an invented demo row
 #include "confirm_run_screen.h"
 #include "cyd_link.h"
 #include "profile_library_screen.h"
@@ -558,15 +560,12 @@ int main(int argc, char **argv) {
     sac305[2].targetC = 50.0f;
     seed_profile(reflow_profiles, RecipeMode::Reflow, "LF-245", /*stock=*/false, lf245, 4);
     seed_profile(reflow_profiles, RecipeMode::Reflow, "SAC305", /*stock=*/true, sac305, 3);
-    // A cure profile so the chooser's other library is not empty.
-    Phase cure[2] = {};
-    cure[0].targetC = 60.0f;
-    cure[0].rampSeconds = 0.0f;
-    cure[0].uv = true;
-    cure[0].motor = true;
-    cure[0].exposurePerSurface = 45.0f;
-    cure[1].targetC = 40.0f;
-    seed_profile(cure_profiles, RecipeMode::Cure, "Resin-A", /*stock=*/false, cure, 2);
+    // The cure library is seeded from the REAL compiled-in stock table (stock_seed.h — the same
+    // call the controller makes at boot), not a hand-built demo row. That makes a simulator
+    // screenshot the cheap way to check the shipped set: 17 rows is more than one paging window, so
+    // it exercises the §23 window-edge fetch, name truncation on the narrow panel, and the row
+    // facts — none of which a single invented profile would show.
+    control::seedStockProfiles(cure_profiles, /*overwrite=*/false);
     // LINK_OK so the (now link-gated) chooser tiles are navigable; pass `link none` as an action to
     // review the disconnected banner + greyed buttons. pump_link()/settle() drives the round-trips.
     lv_subject_set_int(&subj_link_state, LINK_OK);
@@ -941,6 +940,15 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "Unknown action: %s\n", op.c_str());
       return usage(argv[0]);
     }
+    // Resolve the link after EVERY action, not just before the screenshot.
+    //
+    // The §9 screens are async: a click issues a request and the screen sits on Loading until
+    // poll() adopts the reply — and poll() only runs from pump_link(). Without this, the only
+    // pump was the one inside the final settle(), so every action after the first navigation
+    // landed on a Loading page that had not become a list yet. That made a whole class of state
+    // unreachable from `make sim-shot`: paging past a window edge, acting on a row, anything
+    // needing two round-trips. It read as "clicks do nothing" rather than as a missing pump.
+    pump_link();
   }
 
   return write_png(out_path) ? 0 : 2;

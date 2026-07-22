@@ -28,7 +28,16 @@ constexpr int32_t TEMP_CAP_MIN = 60;
 
 // Factory defaults the firmware ships (design.md:2251 / §4). A first boot / "restore defaults"
 // lands here.
-constexpr int32_t UV_CAP_DEFAULT = 100;
+// 110 rather than 100 since 2026-07-22: the stock cure set's Flame Retardant profile post-cures
+// at 100 °C (Form Cure V2), which at a 100 °C default compiled with *zero* margin — the compiler
+// rejects on `targetC > capC`, so any operator who trimmed their cap at all would break a factory
+// profile. This is the shipped default of the user setting only; the layer-1 absolute hard-max
+// (UV_HARD_MAX / oven_safety::CURE_HARD_MAX_C) stays 120, and 110 sits inside it, so the §4
+// ceiling and the boot clamp are untouched. Mirrored on the controller — control::defaultSettings()
+// in lib/control_logic/device_settings.h holds its own copy (§4: the controller never trusts the
+// CYD's numbers), and the two must move together or a fresh CYD and a fresh controller disagree
+// about what shipped.
+constexpr int32_t UV_CAP_DEFAULT = 110;
 constexpr int32_t REFLOW_CAP_DEFAULT = 250;
 constexpr int32_t IDLE_TIMEOUT_DEFAULT_MIN = 2;
 constexpr int32_t BRIGHTNESS_BIAS_DEFAULT = 0;

@@ -42,6 +42,15 @@ static oven_Profile makeProfile(oven_Mode mode, const char *name, float peak, ui
   return p;
 }
 
+static bool containsName(const ProfileStore::Summary *rows, size_t n, const char *name) {
+  for (size_t i = 0; i < n; ++i) {
+    if (std::strcmp(rows[i].name, name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -91,6 +100,147 @@ void test_store_stock_readonly(void) {
   oven_Profile copy = oven_Profile_init_zero;
   TEST_ASSERT_TRUE(store.load("Resin-A copy", copy));
   TEST_ASSERT_FALSE(copy.stock);
+}
+
+// ---- paging (design.md §23; added 2026-07-22 with ProfileListReq.offset/limit/anchor_name) ------
+
+// Fill a store with `n` profiles named "P00".."Pnn" — alphabetical order == creation order, so a
+// test can predict exactly which rows a window should hold.
+static void fillProfiles(ProfileStore &store, size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    char name[8];
+    std::snprintf(name, sizeof(name), "P%02u", static_cast<unsigned>(i));
+    TEST_ASSERT_TRUE(store.save(makeProfile(oven_Mode_MODE_REFLOW, name, 200.0F, 30)));
+  }
+}
+
+// The property the whole paging scheme rests on: walking windows enumerates every profile exactly
+// once, in order, with no duplicate and no gap. That holds only because both sort orders are TOTAL
+// orders (Alpha unique-by-name; Mru tie-broken by name) — if either admitted equal rows, windows
+// would overlap. Checked under BOTH orders for that reason.
+static void assertWindowsCoverEverything(ProfileStore &store, ProfileStore::SortMode sort,
+                                         size_t expected) {
+  ProfileStore::Summary win[ProfileStore::kListWindow];
+  ProfileStore::Summary all[ProfileStore::kMaxListed];
+  const size_t whole = store.list(all, ProfileStore::kMaxListed, sort);
+  TEST_ASSERT_EQUAL_UINT32(expected, whole);
+
+  size_t seen = 0;
+  size_t offset = 0;
+  while (seen < whole) {
+    const ProfileStore::Page pg = store.listPage(win, ProfileStore::kListWindow, sort, offset);
+    TEST_ASSERT_EQUAL_UINT32(whole, pg.total);
+    TEST_ASSERT_EQUAL_UINT32(offset, pg.offset); // in range, so the offset is used as asked
+    TEST_ASSERT_TRUE(pg.written > 0);            // must make progress or the walk cannot terminate
+    for (size_t i = 0; i < pg.written; ++i) {
+      // Same row, same position as the unpaged listing — windows are slices, not a re-sort.
+      TEST_ASSERT_EQUAL_STRING(all[offset + i].name, win[i].name);
+      ++seen;
+    }
+    offset += pg.written;
+  }
+  TEST_ASSERT_EQUAL_UINT32(whole, seen);
+}
+
+void test_page_windows_cover_every_row_alpha(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  fillProfiles(store, 40); // > 2 windows, and not a whole multiple of one
+  assertWindowsCoverEverything(store, ProfileStore::SortMode::Alpha, 40);
+}
+
+void test_page_windows_cover_every_row_mru(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  fillProfiles(store, 40);
+  // Bump a few use_seqs so MRU is genuinely a different order from Alpha, including a run of rows
+  // that never moved and therefore tie on nothing but their name.
+  TEST_ASSERT_TRUE(store.touch("P37"));
+  TEST_ASSERT_TRUE(store.touch("P02"));
+  TEST_ASSERT_TRUE(store.touch("P19"));
+  assertWindowsCoverEverything(store, ProfileStore::SortMode::Mru, 40);
+}
+
+// An offset past the end clamps and REPORTS the offset it used, so a CYD paging through a library
+// that shrank under it converges on a real window instead of rendering a phantom row.
+void test_page_offset_past_end_clamps_and_reports(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  fillProfiles(store, 5);
+  ProfileStore::Summary win[ProfileStore::kListWindow];
+  const ProfileStore::Page pg =
+      store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, /*offset=*/99);
+  TEST_ASSERT_EQUAL_UINT32(5, pg.total);
+  TEST_ASSERT_EQUAL_UINT32(4, pg.offset); // clamped to the last row, not left at 99
+  TEST_ASSERT_EQUAL_UINT32(1, pg.written);
+  TEST_ASSERT_EQUAL_STRING("P04", win[0].name);
+}
+
+// An empty library pages to nothing rather than clamping to a negative/underflowed offset.
+void test_page_empty_library(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  ProfileStore::Summary win[ProfileStore::kListWindow];
+  const ProfileStore::Page pg =
+      store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, /*offset=*/7);
+  TEST_ASSERT_EQUAL_UINT32(0, pg.total);
+  TEST_ASSERT_EQUAL_UINT32(0, pg.offset);
+  TEST_ASSERT_EQUAL_UINT32(0, pg.written);
+}
+
+// The anchor returns whichever window CONTAINS the name — the mechanism that lets the CYD keep a
+// row in view across a mutation without ever computing a page number.
+void test_page_anchor_returns_the_window_holding_the_name(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  fillProfiles(store, 40);
+  ProfileStore::Summary win[ProfileStore::kListWindow];
+
+  // A name on the first window, asked for from a wrong offset: the anchor wins.
+  ProfileStore::Page pg = store.listPage(win, ProfileStore::kListWindow,
+                                         ProfileStore::SortMode::Alpha, /*offset=*/32, "P03");
+  TEST_ASSERT_EQUAL_UINT32(0, pg.offset);
+  TEST_ASSERT_TRUE(containsName(win, pg.written, "P03"));
+
+  // A name on the LAST, short window.
+  pg = store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, 0, "P39");
+  TEST_ASSERT_EQUAL_UINT32(32, pg.offset);
+  TEST_ASSERT_EQUAL_UINT32(8, pg.written);
+  TEST_ASSERT_TRUE(containsName(win, pg.written, "P39"));
+
+  // Repeating the same anchor is STABLE — it snaps to a window boundary rather than re-centring,
+  // so a refresh loop cannot drift the window one row at a time.
+  const ProfileStore::Page again =
+      store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, 0, "P39");
+  TEST_ASSERT_EQUAL_UINT32(pg.offset, again.offset);
+
+  // An anchor that does not exist falls back to the requested offset rather than failing.
+  pg = store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, 16, "nope");
+  TEST_ASSERT_EQUAL_UINT32(16, pg.offset);
+}
+
+// The two mutation cases the anchor exists for. Deleting anchors on the surviving neighbour;
+// renaming anchors on the new name, which the alphabetical sort may have moved to another window.
+// Before paging this screen kept a stale row INDEX across both, which is the bug this pins.
+void test_page_anchor_survives_delete_and_rename(void) {
+  FakeProfileStorage fs;
+  ProfileStore store(fs, oven_Mode_MODE_REFLOW);
+  fillProfiles(store, 40);
+  ProfileStore::Summary win[ProfileStore::kListWindow];
+
+  // Delete a row on the second window, then anchor on its neighbour.
+  TEST_ASSERT_TRUE(store.remove("P20"));
+  ProfileStore::Page pg =
+      store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, 0, "P21");
+  TEST_ASSERT_EQUAL_UINT32(39, pg.total);
+  TEST_ASSERT_TRUE(containsName(win, pg.written, "P21"));
+
+  // Rename a row from the FIRST window to a name that sorts onto the LAST one; the anchor follows.
+  TEST_ASSERT_TRUE(store.rename("P01", "zzz-last"));
+  pg = store.listPage(win, ProfileStore::kListWindow, ProfileStore::SortMode::Alpha, 0, "zzz-last");
+  TEST_ASSERT_EQUAL_UINT32(39, pg.total);
+  TEST_ASSERT_TRUE(containsName(win, pg.written, "zzz-last"));
+  TEST_ASSERT_TRUE(pg.offset > 0); // genuinely a later window, not row 0
 }
 
 void test_store_list_sorted_facts(void) {
@@ -487,8 +637,13 @@ void test_mgmt_settings_get(void) {
   r.exchange();
   TEST_ASSERT_EQUAL_INT(1, r.cyd_obs.settings);
   TEST_ASSERT_TRUE(r.cyd_obs.last_settings.has_settings);
-  TEST_ASSERT_EQUAL_INT(250, r.cyd_obs.last_settings.settings.reflow_max_cap);
-  TEST_ASSERT_EQUAL_INT(100, r.cyd_obs.last_settings.settings.uv_max_cap);
+  // Through defaultSettings() rather than literals: this asserts "a fresh controller hands the
+  // CYD its factory defaults", not "the defaults are 250/110". A literal here silently rotted the
+  // day the UV cap default moved 100 -> 110.
+  TEST_ASSERT_EQUAL_INT(control::defaultSettings().reflow_max_cap,
+                        r.cyd_obs.last_settings.settings.reflow_max_cap);
+  TEST_ASSERT_EQUAL_INT(control::defaultSettings().uv_max_cap,
+                        r.cyd_obs.last_settings.settings.uv_max_cap);
 }
 
 // Settings put persists; a cap above the controller's hard-max is clamped (§4 defense-in-depth).
@@ -629,6 +784,12 @@ int main(int, char **) {
   RUN_TEST(test_store_mode_guard);
   RUN_TEST(test_store_stock_readonly);
   RUN_TEST(test_store_list_sorted_facts);
+  RUN_TEST(test_page_windows_cover_every_row_alpha);
+  RUN_TEST(test_page_windows_cover_every_row_mru);
+  RUN_TEST(test_page_offset_past_end_clamps_and_reports);
+  RUN_TEST(test_page_empty_library);
+  RUN_TEST(test_page_anchor_returns_the_window_holding_the_name);
+  RUN_TEST(test_page_anchor_survives_delete_and_rename);
   RUN_TEST(test_store_invalid_name_refused);
   RUN_TEST(test_store_untrusted_blob_rejected);
   RUN_TEST(test_store_use_seq_stamped_monotonic);

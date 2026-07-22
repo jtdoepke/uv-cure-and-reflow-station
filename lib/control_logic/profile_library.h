@@ -47,9 +47,22 @@ public:
   // counter (Setup → Load picker). The controller sorts because it owns use_seq and the DRAM.
   enum class SortMode { Alpha, Mru };
 
-  // Upper bound on how many profiles list() enumerates (design.md §23; == ProfileStore::kMaxListed
-  // on the CYD and oven.ProfileList.profiles max_count). A larger set is truncated.
-  static constexpr size_t kMaxListed = 32;
+  // How many profiles one mode's library may hold (design.md §23). A larger set is truncated.
+  //
+  // REVISED 2026-07-22, 32 -> 64: this used to be pinned to oven.ProfileList.profiles max_count,
+  // because one reply carried the whole library — so the TinyFrame payload budget was what capped
+  // the library (1542 B at 32 rows against TF_MAX_PAYLOAD_RX=2048 left room for only 42). Now the
+  // list is PAGED: the wire carries a 16-row window (kListWindow) and this is purely a storage
+  // bound. The two numbers are deliberately no longer equal; do not re-couple them.
+  //
+  // What this DOES still cost is the sort: paging correctly means ordering the whole library
+  // before slicing a window, so the scratch below is sized to this.
+  static constexpr size_t kMaxListed = 64;
+
+  // Rows in one ProfileList reply — the paging window (== oven.ProfileList.profiles max_count).
+  // Sized so a reply stays ~790 B, comfortably inside TF_MAX_PAYLOAD_RX; the §23 list shows ~4-5
+  // rows at a time, so a window is ~3 screens of scrolling per round-trip.
+  static constexpr size_t kListWindow = 16;
 
   // The nanopb static bound on a Profile's phases (oven.options oven.Profile.phases max_count).
   // Local so this header needn't pull the CYD's phase.h; asserted against the generated array.
@@ -70,15 +83,11 @@ public:
   bool load(const char *name, oven_Profile &out) const { return loadBlob(name, out); }
 
   // Does a valid, same-mode profile exist under `name`? (For the responder's NAK-reason mapping.)
-  bool contains(const char *name) const {
-    oven_Profile b = oven_Profile_init_zero;
-    return loadBlob(name, b);
-  }
+  bool contains(const char *name) const { return loadBlob(name, scratch().probe); }
 
   // Is the named profile a stock (read-only, §23) one? False if absent/invalid.
   bool isStock(const char *name) const {
-    oven_Profile b = oven_Profile_init_zero;
-    return loadBlob(name, b) && b.stock;
+    return loadBlob(name, scratch().probe) && scratch().probe.stock;
   }
 
   // Persist a profile. Stamps *this store's* mode (never trusts the caller's field across dirs).
@@ -91,11 +100,11 @@ public:
     if (p.phases_count == 0 || p.phases_count > kMaxPhases) {
       return false;
     }
-    oven_Profile existing = oven_Profile_init_zero;
-    if (loadBlob(p.name, existing) && existing.stock) {
+    if (loadBlob(p.name, scratch().probe) && scratch().probe.stock) {
       return false; // stock profiles are read-only (Edit -> Save-as at the UI, §23)
     }
-    oven_Profile stamped = p;
+    oven_Profile &stamped = scratch().stamped;
+    stamped = p;
     stamped.mode = mode_; // authoritative: the store's dir decides the mode, not the caller
     stamped.use_seq = nextUseSeq(); // controller owns recency; any wire-supplied use_seq is ignored
     return writeBlob(stamped);
@@ -127,16 +136,16 @@ public:
     if (!validName(p.name) || p.phases_count == 0 || p.phases_count > kMaxPhases) {
       return SeedOutcome::Failed;
     }
-    oven_Profile existing = oven_Profile_init_zero;
-    if (loadBlob(p.name, existing)) {
-      if (!existing.stock) {
+    if (loadBlob(p.name, scratch().probe)) {
+      if (!scratch().probe.stock) {
         return SeedOutcome::UserOwned;
       }
       if (!overwrite) {
         return SeedOutcome::Present;
       }
     }
-    oven_Profile stamped = p;
+    oven_Profile &stamped = scratch().stamped;
+    stamped = p;
     stamped.mode = mode_; // authoritative, as in save(): the directory decides the mode
     stamped.stock = true; // a seeded profile is stock by definition, whatever the table said
     stamped.use_seq = nextUseSeq();
@@ -148,7 +157,7 @@ public:
   // use — so it goes straight to writeBlob (which does not enforce the read-only rule). Returns
   // false only if the profile is absent/malformed.
   bool touch(const char *name) {
-    oven_Profile p = oven_Profile_init_zero;
+    oven_Profile &p = scratch().stamped; // the outgoing copy, same role as in save()
     if (!loadBlob(name, p)) {
       return false;
     }
@@ -159,8 +168,7 @@ public:
   // Delete a named profile. Refuses stock (§23); a corrupt/foreign blob may still be removed
   // (cleanup). Returns false when refused, absent, or on failure.
   bool remove(const char *name) {
-    oven_Profile b = oven_Profile_init_zero;
-    if (loadBlob(name, b) && b.stock) {
+    if (loadBlob(name, scratch().probe) && scratch().probe.stock) {
       return false; // stock (§23)
     }
     return storage_.remove(name);
@@ -206,36 +214,71 @@ public:
     return storage_.remove(src);
   }
 
-  // Enumerate this mode's profiles into `out` (at most `cap`), ordered per `sort` (alphabetical, or
-  // most-recently-used newest-first), skipping any blob that fails validation or belongs to the
-  // other mode. Returns the number written.
-  size_t list(Summary *out, size_t cap, SortMode sort = SortMode::Alpha) const {
-    ProfileEntry names[kMaxListed];
-    size_t total = storage_.list(names, kMaxListed);
-    if (total > kMaxListed) {
-      total = kMaxListed;
+  // What a paged list() actually returned, so the caller never has to re-derive it (§23). The CYD
+  // renders `written` rows starting at `offset` and knows it has reached the end when
+  // offset + written >= total — it does no page arithmetic of its own.
+  struct Page {
+    size_t written = 0; // rows placed in `out`
+    size_t offset = 0;  // the offset ACTUALLY used: clamped, or resolved from an anchor
+    size_t total = 0;   // valid profiles in this mode's library (not in this reply)
+  };
+
+  // Enumerate one WINDOW of this mode's profiles into `out` (at most `cap`), ordered per `sort`
+  // (alphabetical, or most-recently-used newest-first), skipping any blob that fails validation or
+  // belongs to the other mode.
+  //
+  // `offset` is clamped into [0, total-1] and the value used comes back in Page::offset — so a
+  // caller paging through a library that shrank under it (a delete that emptied the last page)
+  // self-corrects instead of rendering a phantom row. `anchor` (optional) overrides `offset` with
+  // the window CONTAINING that name, which is how the CYD keeps a row in view across a mutation
+  // without tracking page numbers; an anchor that is absent falls back to `offset`.
+  //
+  // Paging is only coherent because both orders are TOTAL orders: Alpha is unique-by-name (names
+  // are the store's filesystem key) and Mru ties break by name (see rowAfter). If either ever
+  // admitted equal rows, windows would overlap and rows would duplicate or vanish between pages.
+  Page listPage(Summary *out, size_t cap, SortMode sort = SortMode::Alpha, size_t offset = 0,
+                const char *anchor = nullptr) const {
+    const size_t m = collectSorted(sort);
+    Page pg;
+    pg.total = m;
+    if (m == 0 || cap == 0) {
+      return pg;
     }
-    Summary tmp[kMaxListed];
-    size_t m = 0;
-    for (size_t i = 0; i < total; ++i) {
-      oven_Profile p = oven_Profile_init_zero;
-      if (!loadBlob(names[i].name, p)) {
-        continue; // corrupt / wrong-version / other-mode -> not part of this library
+    size_t start = offset;
+    if (anchor != nullptr && anchor[0] != '\0') {
+      for (size_t i = 0; i < m; ++i) {
+        if (std::strcmp(scratch().rows[i].name, anchor) == 0) {
+          // Snap to the window boundary the anchor falls in, so repeated refreshes on the same
+          // anchor are stable rather than drifting the window by one row each time.
+          start = (i / cap) * cap;
+          break;
+        }
       }
-      std::strncpy(tmp[m].name, names[i].name, kProfileNameCap - 1);
-      tmp[m].name[kProfileNameCap - 1] = '\0';
-      tmp[m].stock = p.stock;
-      tmp[m].facts = facts(p);
-      tmp[m].use_seq = p.use_seq;
-      ++m;
     }
-    sortRows(tmp, m, sort);
-    const size_t n = m < cap ? m : cap;
+    if (start >= m) {
+      start = m - 1; // clamp; the caller learns the truth from Page::offset
+    }
+    size_t n = m - start;
+    if (n > cap) {
+      n = cap;
+    }
     for (size_t i = 0; i < n; ++i) {
-      out[i] = tmp[i];
+      out[i] = scratch().rows[start + i];
     }
-    return n;
+    pg.written = n;
+    pg.offset = start;
+    return pg;
   }
+
+  // The unpaged form: the first `cap` rows in `sort` order, returning how many were written. What
+  // every caller that just wants "the library" (boot logging, tests) should use; the responder uses
+  // listPage() because only the wire needs windowing.
+  size_t list(Summary *out, size_t cap, SortMode sort = SortMode::Alpha) const {
+    return listPage(out, cap, sort).written;
+  }
+
+  // How many valid profiles this mode's library holds. Same walk as listPage(), without the copy.
+  size_t count() const { return collectSorted(SortMode::Alpha); }
 
   // Derived facts for a decoded profile (peak target; approximate total seconds). Static so the
   // seed generator (tools/gen_profiles.cpp) and tests can reuse it.
@@ -299,6 +342,64 @@ public:
   static constexpr size_t kBlobCap = 6 /*header*/ + oven_Profile_size;
 
 private:
+  // Shared working memory, deliberately in .bss rather than on the caller's stack.
+  //
+  // WHY: these buffers are large (a decoded oven_Profile is ~1.3 KB, the encode/decode blob ~1.5
+  // KB) and two of them scale with kMaxListed. On the stack that made list() cost 5377 B of the
+  // ESP32 Arduino loopTask's 8192 — 66% of the stack in one function at the OLD cap of 32 — and
+  // raising the cap to 64 would have overflowed it outright. ManagementResponder already hoisted
+  // its own reply scratch for exactly this reason (see the note on its reply_ member). With this,
+  // the deepest path (duplicate/rename) is ~2.7 KB and, more importantly, **stack no longer scales
+  // with kMaxListed at all** — raising the cap again costs .bss, never headroom.
+  //
+  // SAFETY: one static instance, shared by every store (both modes). That is sound only because a
+  // single loop() owns the link and the stores on each MCU — the same assumption TF_Config.h states
+  // for dropping the TinyFrame TX mutex. There is no ISR or second task in this path. If that ever
+  // changes, these must become per-instance members or acquire a lock.
+  //
+  // LIFETIMES: the fields are separate precisely so that no live value is clobbered by a nested
+  // call. `probe` is only ever a read-only decode target whose value is dead before the next call
+  // — which is what lets save() reuse it for the stock read-back and then let nextUseSeq()
+  // overwrite it. `stamped` is only ever the outgoing copy handed to writeBlob, so it survives the
+  // nextUseSeq() call that fills in its recency field. duplicate()/rename() are the one exception
+  // and keep their carried profile on the STACK, because it stays live across save(), which owns
+  // both scratch profiles. Re-read this before reusing a field for anything new.
+  struct Scratch {
+    ProfileEntry names[kMaxListed]; // storage_.list() destination (collectSorted)
+    Summary rows[kMaxListed];       // the fully-sorted library, sliced into a window by list()
+    oven_Profile probe;             // read-only decode target; value dead before the next call
+    oven_Profile stamped;           // the outgoing copy for writeBlob (save/seedStock/touch)
+    uint8_t blob[kBlobCap];         // on-flash bytes, in either direction (loadBlob/writeBlob)
+  };
+  static Scratch &scratch() {
+    static Scratch s;
+    return s;
+  }
+
+  // Decode every valid profile in this mode's library into scratch().rows, ordered per `sort`.
+  // Returns how many rows are live. The shared walk behind both list() and count().
+  size_t collectSorted(SortMode sort) const {
+    Scratch &s = scratch();
+    size_t total = storage_.list(s.names, kMaxListed);
+    if (total > kMaxListed) {
+      total = kMaxListed; // a library past the cap is truncated, not mis-paged
+    }
+    size_t m = 0;
+    for (size_t i = 0; i < total; ++i) {
+      if (!loadBlob(s.names[i].name, s.probe)) {
+        continue; // corrupt / wrong-version / other-mode -> not part of this library
+      }
+      std::strncpy(s.rows[m].name, s.names[i].name, kProfileNameCap - 1);
+      s.rows[m].name[kProfileNameCap - 1] = '\0';
+      s.rows[m].stock = s.probe.stock;
+      s.rows[m].facts = facts(s.probe);
+      s.rows[m].use_seq = s.probe.use_seq;
+      ++m;
+    }
+    sortRows(s.rows, m, sort);
+    return m;
+  }
+
   static constexpr uint32_t kMagic = 0x50524F32; // "PRO2" — nanopb format (distinct from the
                                                  // CYD's old memcpy "PRO1")
   static constexpr uint16_t kVersion = 1;
@@ -327,8 +428,8 @@ private:
   // Read + validate + decode a named blob into `out`. Rejects a short/absent blob, a bad header,
   // a body nanopb can't decode, and a profile whose mode is not this store's.
   bool loadBlob(const char *name, oven_Profile &out) const {
-    uint8_t buf[kBlobCap];
-    const size_t n = storage_.read(name, buf, sizeof(buf));
+    uint8_t *buf = scratch().blob; // ~1.5 KB — off the stack, see Scratch
+    const size_t n = storage_.read(name, buf, kBlobCap);
     if (!checkHeader(buf, n)) {
       return false;
     }
@@ -350,26 +451,29 @@ private:
   // order among surviving profiles is preserved, and there is no extra persistent state to corrupt.
   // O(n) over n <= kMaxListed blobs, only on a save/touch (rare, user-driven). Wraps at 2^32, which
   // is astronomically far off; the comparator tolerates equal/rolled values.
+  // Reuses scratch().names — safe because this is never called from inside collectSorted(), the
+  // only other user, and callers (save/seedStock/touch) hold their live value in `stamped`.
   uint32_t nextUseSeq() const {
-    ProfileEntry names[kMaxListed];
-    size_t total = storage_.list(names, kMaxListed);
+    Scratch &s = scratch();
+    size_t total = storage_.list(s.names, kMaxListed);
     if (total > kMaxListed) {
       total = kMaxListed;
     }
     uint32_t mx = 0;
     for (size_t i = 0; i < total; ++i) {
-      oven_Profile p = oven_Profile_init_zero;
-      if (loadBlob(names[i].name, p) && p.use_seq > mx) {
-        mx = p.use_seq;
+      if (loadBlob(s.names[i].name, s.probe) && s.probe.use_seq > mx) {
+        mx = s.probe.use_seq;
       }
     }
     return mx + 1U;
   }
 
   bool writeBlob(const oven_Profile &p) {
-    uint8_t buf[kBlobCap];
+    // scratch().blob, not a stack buffer — and never aliased with `p`, which lives in
+    // scratch().stamped or a caller's frame.
+    uint8_t *buf = scratch().blob;
     size_t len = 0;
-    if (!encodeBlob(p, buf, sizeof(buf), len)) {
+    if (!encodeBlob(p, buf, kBlobCap, len)) {
       return false;
     }
     return storage_.write(p.name, buf, len);

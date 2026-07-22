@@ -50,13 +50,18 @@
 #include "sim_thermocouples.h" // plant-backed IThermocouples (replaces the stub)
 #endif
 
-// Bigger loopTask stack: the profile library added a deep call chain with large stack locals —
-// control::ProfileStore::list() holds ProfileEntry[32] (~1 KB) + Summary[32] (~1.4 KB) and calls
-// loadBlob() which nests a kBlobCap (~1.5 KB) decode buffer, and the responder's reply path adds an
-// oven_ProfileList/Data (~1.5 KB) buffer. The 8 kB default overflowed on the first list() (a
-// hardware-only crash: Guru Meditation LoadStoreAlignment + "Stack canary (loopTask)", the boot
-// bench-log listing the seeds; host tests have no such limit). 16 kB gives headroom and costs 8 kB
-// of the controller's ample internal heap. Mirrors src_cyd/main.cpp's identical lesson.
+// Bigger loopTask stack: the profile library added a deep call chain, and the 8 kB default
+// overflowed on the first list() — a hardware-only crash (Guru Meditation LoadStoreAlignment +
+// "Stack canary (loopTask)", the boot bench-log listing the seeds; host tests have no such limit).
+// 16 kB costs 8 kB of the controller's ample internal heap. Mirrors src_cyd/main.cpp's lesson.
+//
+// UPDATED 2026-07-22: the large locals that caused that crash are GONE — ProfileStore now keeps its
+// name/row arrays, decode target and blob buffer in a shared .bss scratch (see profile_library.h),
+// so list() costs ~100 B of stack instead of ~5.4 kB and the deepest path is ~1.3 kB. That was
+// required to raise kMaxListed to 64: on the stack those arrays scaled with the cap and 64 rows
+// would have overflowed even this 16 kB. **Keep the 16 kB anyway** — it is measured headroom for
+// the whole loop, not just this path, and shrinking it back is a change that wants its own
+// stack-watermark measurement rather than an inference from this comment.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 static Esp32Clock g_clk;

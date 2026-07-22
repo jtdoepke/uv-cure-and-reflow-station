@@ -59,10 +59,21 @@ public:
   }
 
   // --- Operations (return false if one is already outstanding) ---
-  bool requestList(oven_Mode mode, oven_ProfileSort sort = oven_ProfileSort_PROFILE_SORT_ALPHA) {
+  // Ask for one WINDOW of the mode's library (§23 paging). `offset` picks the window; `anchor`,
+  // when non-empty and still present, overrides it with the window containing that name — which is
+  // how a caller keeps a row in view across a mutation without tracking page numbers. The reply
+  // carries the offset the controller actually used, so a stale offset self-corrects rather than
+  // erroring.
+  bool requestList(oven_Mode mode, oven_ProfileSort sort = oven_ProfileSort_PROFILE_SORT_ALPHA,
+                   size_t offset = 0, const char *anchor = nullptr) {
     oven_ProfileListReq m = oven_ProfileListReq_init_zero;
     m.mode = mode;
     m.sort = sort;
+    m.offset = static_cast<uint32_t>(offset);
+    m.limit = 0; // 0 => the controller's window
+    if (anchor != nullptr) {
+      copyName(m.anchor_name, sizeof(m.anchor_name), anchor);
+    }
     return begin(Op::List, protocol::kTfTypeProfileListReq, oven_ProfileListReq_fields, &m);
   }
   bool requestGet(oven_Mode mode, const char *name) {

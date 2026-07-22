@@ -16,6 +16,7 @@
 
 #include <sys/stat.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -24,7 +25,9 @@
 #include "IProfileStorage.h"
 #include "codec.h" // protocol::encode — the generated header carries nanopb bodies
 #include "oven.pb.h"
+#include "oven_cal.h" // the plant model the warm-up ramps are derived from
 #include "profile_library.h"
+#include "thermal_math.h" // rampDurationSeconds — so a ramp is computed, not guessed
 
 namespace {
 
@@ -96,6 +99,70 @@ struct Def {
   std::vector<oven_Phase> phases;
 };
 
+// --- Cure-profile authoring (design.md §5/§23) --------------------------------------------------
+//
+// The stock cure set is derived from Formlabs' "Form Cure V2 time and temperature settings"
+// (rev. 14 July 2026). One reference row becomes one profile: a Warm phase that brings the chamber
+// to temperature, then a Cure phase carrying the dose.
+//
+// DOSE, NOT WALL CLOCK. A cure phase authors `exposure_per_surface` and the compiler derives the
+// hold as exposure / model.beamCoverage (recipe_compiler.h). So the number stored here is the
+// per-surface exposure the resin wants — the Formlabs time, since their chamber is built to put a
+// large fraction of emitted light on the part — and this machine's own geometry is what converts it
+// to a run length. oven_cal::BEAM_COVERAGE is still the conservative-low 0.25 placeholder, so a run
+// is currently ~4x its reference time; that self-corrects when the §6 photodiode calibration lands,
+// which is the whole point of authoring dose rather than seconds. hold_s carries the same value the
+// compiler would derive, as the fallback for a model with no coverage at all.
+//
+// WHY THE V2 TABLE AND NOT V1: the two chambers differ ~3-8x in time (V1 is 39 W), and this station
+// is neither. Running V2's numbers through the 0.25 placeholder happens to land within ~0.5-1x of
+// V1's own wall-clock times, whereas V1's numbers x4 would give 8-hour runs. The set is
+// single-sourced from V2; where V2 omits a resin it is left out rather than mixed in from V1.
+constexpr float kCureAmbientC = 25.0F; // == profile_facts::kDefaultAmbientC, the compile origin
+constexpr float kWarmSettleS = 60.0F;  // see cureProfile()
+
+// How long to allow the chamber to reach `targetC` from ambient, computed from the plant model
+// rather than picked. 25% over the fan-off (slower) envelope's projection so recipe_compiler's
+// rateLimitRamp() does not flag the whole stock set amber for an optimistic ramp, rounded up to a
+// tidy 10 s. Lands ~90 s to 60 °C and ~230 s to 100 °C on today's placeholder constants.
+float warmRampSeconds(float targetC) {
+  const float projected =
+      rampDurationSeconds(oven_cal::kDefaultModel.heat.off, kCureAmbientC, targetC);
+  const float padded = projected * 1.25F;
+  return std::ceil(padded / 10.0F) * 10.0F;
+}
+
+// A heated cure profile: Warm to `targetC`, settle, then dose with UV + turntable.
+//
+// The settle hold is load-bearing, not padding. Cure holds are NOT entry-gated — profile_executor
+// gates hold entry on measured temperature for reflow only, because "cure holds are dose timers and
+// start at once" — so nothing waits for the chamber to arrive and, without a settle, the lamp can
+// start while the chamber is still climbing. Where Formlabs specifies an explicit preheat, that
+// time is passed as `warmHoldS` instead.
+Def cureProfile(const char *name, float targetC, float exposureS, float warmHoldS = kWarmSettleS) {
+  return Def{name,
+             oven_Mode_MODE_CURE,
+             /*stock=*/true,
+             {phase("Warm", targetC, warmRampSeconds(targetC), warmHoldS),
+              phase("Cure", targetC, /*ramp=*/0.0F,
+                    /*hold=*/exposureToHoldSeconds(exposureS, oven_cal::BEAM_COVERAGE), exposureS,
+                    /*uv=*/true, /*motor=*/true)}};
+}
+
+// A "no heat" cure (Formlabs runs several of these): one dose phase at nominal ambient, heater
+// idle. Single-phase on purpose — a Warm phase to the temperature the chamber is already at would
+// be a lie. Because the compile ambient is also kCureAmbientC no ramp segment is emitted at all,
+// and needsImplicitCool(25) is false so no cool tail is appended either. The editor labels the lone
+// phase "Phase 1" rather than "Cure" (profile_templates falls back off-template) — expected.
+Def noHeatCureProfile(const char *name, float exposureS) {
+  return Def{name,
+             oven_Mode_MODE_CURE,
+             /*stock=*/true,
+             {phase("Cure", kCureAmbientC, /*ramp=*/0.0F,
+                    /*hold=*/exposureToHoldSeconds(exposureS, oven_cal::BEAM_COVERAGE), exposureS,
+                    /*uv=*/true, /*motor=*/true)}};
+}
+
 std::vector<Def> definitions() {
   return {
       // LF-245 — a leaded reflow profile (245 C peak), with an authored final cool phase.
@@ -110,12 +177,56 @@ std::vector<Def> definitions() {
        /*stock=*/true,
        {phase("Soak", 165.0F, 100.0F, 90.0F), phase("Reflow", 249.0F, 40.0F, 30.0F),
         phase("Cool", 50.0F, 0.0F, 0.0F)}},
-      // Resin-A — a UV-cure profile: a dosed cure phase (turntable + UV) then a cool-down.
-      {"Resin-A",
-       oven_Mode_MODE_CURE,
-       /*stock=*/false,
-       {phase("Cure", 60.0F, 0.0F, 0.0F, /*exp=*/45.0F, /*uv=*/true, /*motor=*/true),
-        phase("Cool", 40.0F, 0.0F, 0.0F)}},
+      // --- Stock UV-cure set: Formlabs Form 3B resins, per the Form Cure V2 settings table -------
+      //
+      // Scope (see the header note on cureProfile for the dose/reference rationale):
+      //   - EXCLUDED, dental + biocompatible: the BioMed family, Dental LT Clear/Comfort, Denture
+      //     Base, Premium Teeth, IBT Flex, Custom Tray, Surgical Guide, Soft Tissue. None has a
+      //     published Form Cure time+temp (all defer to per-resin Manufacturing Guides) and several
+      //     cure submerged in glycerin, which this chamber does not do. A "stock" profile for one
+      //     would imply a validated biocompatible cure this station cannot deliver.
+      //   - EXCLUDED, no post-cure at all: Alumina 4N, Castable Wax (Formlabs marks both N/A).
+      //   - EXCLUDED, no V2 number: Clear Cast Resin (V1 lists 30 min @ 60 °C; V2 dropped it).
+      //   - MERGED: Color Base + the five pigments are the Color Kit (one product, one cure).
+      //     Black/Grey/White V4.1 are NOT merged despite sharing settings and being one grouped row
+      //     in Formlabs' table: an operator looks for the resin on their bench by name, and with a
+      //     64-slot library there is nothing to buy by folding three products into one row. The
+      //     merged name also ran to 21 chars and wrapped to three lines on the 320 px panel.
+      //
+      // Names stay <= 21 chars: a library row is name + facts on one line and the 320 px portrait
+      // panel ellipsizes past roughly that. "(water)" earns its characters — a Profile has no notes
+      // field, so the name is the only place a "submerge the part" instruction can live. And NO
+      // SLASHES: a profile name is the store's filesystem key, so ProfileStore::validName rejects
+      // '/' and '\' outright (the generator refuses the write, which is how this was caught).
+      cureProfile("Black V4.1", 60.0F, 600.0F), // V2: 10 min @ 60 °C
+      cureProfile("Grey V4.1", 60.0F, 600.0F),  // V2: 10 min @ 60 °C
+      cureProfile("White V4.1", 60.0F, 600.0F), // V2: 10 min @ 60 °C
+      cureProfile("Clear V4.1", 60.0F, 420.0F), // V2: 7 min @ 60 °C
+      cureProfile("Color Kit", 60.0F, 600.0F),  // V2: 10 min @ 60 °C
+      // V2: 10 min @ 60 °C. NOTE: the V1 table footnotes Silicone 40A as cured submerged in water;
+      // V2 does not. Following V2, the chosen reference — revisit if a part comes out tacky.
+      cureProfile("Silicone 40A", 60.0F, 600.0F),
+      cureProfile("Durable V2", 60.0F, 720.0F),         // V2: 12 min @ 60 °C (full post-cure)
+      cureProfile("Flexible 80A V1", 60.0F, 180.0F),    // V2: 3 min @ 60 °C (V1/V1.1)
+      cureProfile("Draft V2 UTS", 60.0F, 300.0F),       // V2: 5 min @ 60 °C ("better UTS")
+      noHeatCureProfile("Draft V2 elongation", 300.0F), // V2: 5 min, no heat ("better elongation")
+      cureProfile("ESD", 70.0F, 600.0F),                // V2: 10 min @ 70 °C
+      // V2: 7 min @ 70 °C, parts fully submerged in room-temperature water in a glass beaker.
+      cureProfile("Flexible 50A (water)", 70.0F, 420.0F),
+      cureProfile("Grey Pro", 80.0F, 480.0F),     // V2: 8 min @ 80 °C
+      cureProfile("Rigid 4000", 80.0F, 360.0F),   // V2: 6 min @ 80 °C
+      cureProfile("High Temp V2", 80.0F, 900.0F), // V2: 15 min @ 80 °C
+      // V2: 3 min preheat + 7 min @ 80 °C — the preheat is the Warm phase's hold.
+      cureProfile("Rigid 10K", 80.0F, 420.0F, /*warmHoldS=*/180.0F),
+      // V2: 5 min preheat + 10 min @ 100 °C. The hottest profile in the set, and the reason the UV
+      // cap default moved 100 -> 110 (settings_defaults.h): at a 100 °C cap this compiled with zero
+      // margin, since recipe_compiler rejects on `targetC > capC`.
+      cureProfile("Flame Retardant", 100.0F, 600.0F, /*warmHoldS=*/300.0F),
+      // V2 Flexible 80A V2 runs TWO cycles: 5 min no-heat submerged, then 5 min @ 80 °C dry. Two
+      // profiles, not one recipe — the part has to come out of the water in between, so automating
+      // it as a single run would claim work the machine cannot do unattended.
+      noHeatCureProfile("Flex 80A V2 cy1 water", 300.0F),
+      cureProfile("Flex 80A V2 cy2", 80.0F, 300.0F),
   };
 }
 

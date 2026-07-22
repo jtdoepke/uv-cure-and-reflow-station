@@ -236,7 +236,7 @@ Defense-in-depth, mains outward. The firmware is **never** the last line.
      buggy/malicious CYD can't push a run past it. **Reflow = 300 °C (DECIDED)**;
      cure/UV's is a conservative fixed ceiling (value TBD, §10).
   2. **User per-mode max-temp *setting* — device settings, editable on the CYD.**
-     Defaults **UV = 100 °C, reflow = 250 °C**. A profile in that mode **cannot be
+     Defaults **UV = 110 °C, reflow = 250 °C**. A profile in that mode **cannot be
      authored above its mode's setting** (editor ceiling, §12) and the CYD
      validates before upload. The setting is adjustable only **within** the firmware
      absolute hard-max (layer 1 bounds its range) — never above it; stored settings
@@ -256,6 +256,10 @@ Defense-in-depth, mains outward. The firmware is **never** the last line.
   Effective cap = `min(absolute_hard_max[mode], userMax[mode], recipe values)`; a
   recipe can only *tighten*. This **supersedes the old fixed 100 °C cure constant** —
   100 °C is now merely the *default* of the UV setting, not a hard-coded value.
+  **REVISED 2026-07-22: that default is now 110 °C.** The stock cure set (§23) carries a
+  Flame Retardant profile that post-cures at 100 °C, which against a 100 °C default compiled
+  with zero margin — the check is `targetC > capC`, so trimming the cap at all broke a factory
+  profile. Only the *default* moved; the layer-1 absolute hard-max stays 120 °C on both boards.
   - **Safety weakening (flagged):** making the UV cap a user setting removes the old
     "UV can never exceed 100 °C" guarantee — a user can now raise it. What remains is
     the **UV absolute hard-max** (layer 1) bounding how high the setting goes, plus the
@@ -1008,7 +1012,7 @@ User preferences — units, per-mode **max-temp caps** (UV/reflow, §4), sleep/b
 constants, WiFi — persist in the **controller's** store (its LittleFS, a single blob
 beside the profile library), separate from the profile library. The Settings screen
 (§24) reads them at entry and writes them back over the link (§9 `SettingsGet`/`Put`);
-the CYD boots on the shipped **defaults** (UV max 100 °C, reflow max 250 °C, §4) and
+the CYD boots on the shipped **defaults** (UV max 110 °C, reflow max 250 °C, §4) and
 adopts the stored values when the link comes up (a ~1 s window where brightness/sleep
 use defaults — harmless). Stored values are **clamped to the current hard-max at boot**
 (§4) so an update can't leave a stale higher cap.
@@ -1402,7 +1406,7 @@ starting that step; untagged detail inside an item inherits the tag.
   conservative **UV/cure absolute ceiling** that bounds how high the UV setting
   may be raised, the **max-wall ceiling** (§6 — needs calibration data + margin),
   and the over-temp-trip / stuck-heater margins + times (§4). Defaults now
-  **UV 100 °C / reflow 250 °C**. Open: whether to also enforce the user cap
+  **UV 110 °C / reflow 250 °C**. Open: whether to also enforce the user cap
   **controller-side** for defense-in-depth.
 - **`.proto` + deps** *(gates §8 step 1)*: finalize the schema fields; add
   `nanopb` + `TinyFrame` to both PlatformIO envs and wire up the protobuf codegen
@@ -1757,7 +1761,7 @@ steps, so per the §24 rule they skip the stepper), and each channel is a
   on-screen keyboard: a compact name-tuned layout with large keys, per-key popover
   previews, and no auto-repeat; the header **Back** is the cancel (no on-keyboard ✗).
 - **Safety-limit clamp:** editor ceilings (the keypad's `max`) = the **mode's max-temp *setting*** (device
-  settings — default **UV 100 °C / reflow 250 °C**, itself bounded by the mode's
+  settings — default **UV 110 °C / reflow 250 °C**, itself bounded by the mode's
   firmware absolute hard-max — reflow 300 °C, §4). UI prevents authoring an
   over-limit value; the controller still NAKs over-limit uploads and clamps the
   runtime setpoint against its absolute hard-max as backstop (§9).
@@ -2058,7 +2062,7 @@ compiles to two generic segments (ramp + hold, §5).
 ### Cure variant
 
 Same skeleton, but: the curve is gentle (→ 80 °C hold on wall temp, capped by the UV
-max-temp setting — default 100 °C, §4), the
+max-temp setting — default 110 °C, §4), the
 **`UV ON`** indicator is prominent red (eye-safety), and the **countdown/ETA is the
 star** (cure is mostly a timer); turntable indicator if present.
 
@@ -2710,6 +2714,37 @@ anything off the wire (§9 `ProfileRestoreStock`). It never clobbers a **user** 
 stock name — the operator's work outranks a factory reference, and the promise here is about not
 losing the stock set, not about owning the namespace.
 
+**The shipped cure set (ADDED 2026-07-22).** 19 UV-cure profiles covering the Formlabs Form 3B
+engineering resins, authored in `tools/gen_profiles.cpp` from Formlabs' **Form Cure V2 time and
+temperature settings** (rev. 14 July 2026). The reflow side still ships `SAC305` only.
+
+- **Dose, not wall clock.** Each cure phase authors `exposure_per_surface` = the Formlabs time,
+  and the compiler derives the hold via `beamCoverage` (§5). Their chamber is built to put most of
+  its light on the part, so their time is close to a per-surface exposure; *this* machine's
+  geometry is what converts it into a run length. With `BEAM_COVERAGE` still at its conservative
+  0.25 placeholder a run is ~4× its reference time, and that self-corrects when the §6 photodiode
+  calibration lands — which is the point of authoring dose rather than seconds.
+- **V2 and not V1**, single-sourced. The two chambers differ 3–8× in time (V1 is 39 W) and this
+  station is neither; V2's numbers through the 0.25 placeholder happen to land within ~0.5–1× of
+  V1's own wall clock, whereas V1's × 4 would give 8-hour runs. Where V2 omits a resin (Clear
+  Cast) it is left out rather than mixed in from V1.
+- **Not shipped: the dental and biocompatible resins** (BioMed family, Dental LT, Denture Base,
+  Premium Teeth, IBT Flex, Custom Tray, Surgical Guide, Soft Tissue). None has a published Form
+  Cure time+temp — they defer to per-resin Manufacturing Guides — and several cure submerged in
+  glycerin, which this chamber does not do. A *stock* profile for one would imply a validated
+  biocompatible cure this station cannot deliver. Also not shipped: Alumina 4N and Castable Wax,
+  which Formlabs marks as needing no post-cure at all.
+- **Warm phases carry a settle hold**, because cure holds are **not** entry-gated (§5 — "cure
+  holds are dose timers and start at once"): nothing waits for the chamber to arrive, so without
+  one the lamp can start while it is still climbing. Ramps are derived from the plant model with
+  margin so the factory set is amber-free out of the box.
+- Two profiles carry `(water)` in the **name** — a `Profile` has no notes field, so the name is
+  the only in-band channel for "submerge the part". Flexible 80A V2 ships as two profiles rather
+  than one recipe: the part comes out of the water between its cycles.
+- **Flame Retardant post-cures at 100 °C**, which is why the §4 UV cap *default* moved 100 → 110.
+  At the old default it compiled with zero margin (`targetC > capC` rejects), so any operator who
+  trimmed their cap broke a factory profile.
+
 ### Behavior & tie-ins
 
 - **Reflects the controller's store (REVISED 2026-07-17):** the list is a **remote
@@ -2719,9 +2754,39 @@ losing the stock set, not about owning the namespace.
   link, or future WiFi §21) appear on the next refresh. Because it's now a round-trip,
   the list has **loading / error** states (a brief spinner on entry; a retry affordance
   if the request `Failed`) that a local LittleFS read never needed.
+- **PAGED (ADDED 2026-07-22).** One `ProfileList` carries a **16-row window**, not the whole
+  library. Before this, the reply *was* the library, so the TinyFrame payload budget capped how
+  many profiles a mode could hold: 32 rows is 1542 B against `TF_MAX_PAYLOAD_RX = 2048`, leaving
+  room for at most 42, and a library past the cap was truncated **silently**. Windowing decouples
+  the two — `ProfileStore::kMaxListed` is now **64** and is a storage bound only. The controller
+  still sorts the **whole** library to slice a window from it (it owns `use_seq` and has the DRAM,
+  as above); the CYD caches one window.
+  - `ProfileListReq` carries `offset`, `limit` and **`anchor_name`**; `ProfileList` echoes the
+    `offset` it actually used and the `total`. **The CYD never computes a page number.** It asks
+    for a window by offset when scrolling, and by *anchor* after any mutation: the neighbour row
+    after a delete, the new name after a save/dup/rename, the profile that ran after a
+    `ProfileTouch` reorders MRU. The controller returns whichever window holds that name.
+  - The echoed `offset` is authoritative — the controller clamps an out-of-range one — so a CYD
+    paging through a library that shrank under it converges instead of rendering a phantom row.
+  - This also fixed a latent bug that predates paging: the screen used to re-list after a dup or
+    rename while keeping the old row **index**, so the highlight could land on whatever the
+    re-sort moved into that slot. Identity is now the name, not the position.
+  - **Load-bearing invariant:** both sort orders are *total* orders — Alpha is unique-by-name
+    (the name is the store's filesystem key) and MRU ties break by name. If either admitted equal
+    rows, windows would overlap and rows would duplicate or vanish between pages.
+  - ▲/▼ at a loaded end fetch the adjacent window rather than disabling, landing the highlight on
+    the abutting row so a continuous press walks the library. Fetched **on demand**, not
+    prefetched: a window is ~40–70 ms over the 115200 link, behind the loading state the screen
+    already has, and a prefetch would mean a second request in flight against a
+    single-outstanding client (§9).
 - **Empty state:** "No profiles — New to create one" (shouldn't happen with stock seeds).
 - **Sort:** recently-used first, then alphabetical (default, §10).
 - **Rename** is via the editor (§12 name entry), not a separate library action.
+- **Row height is not guaranteed single-line.** The row gives its value ("peak 60° · ~42:40")
+  its natural width and lets the *name* wrap (`selectable_list`), so a name past ~11 characters
+  takes two lines on the 320 px portrait panel. Stock names are kept short for this reason, but
+  several resin names genuinely need the second line; ~6 rows stay visible either way, so the
+  compactness this section asks for still holds.
 
 ### Design-rule compliance
 
@@ -2851,7 +2916,7 @@ The panel is a 2-row list; `Open` edits the highlighted cap.
 ┌──────────────────────────────────────┐
 │ ‹ Temperature limits              ✓   │
 ├──────────────────────────────────────┤
-│  UV cure max              100 °C      │  ← selected (highlighted)
+│  UV cure max              110 °C      │  ← selected (highlighted)
 │  Reflow max               250 °C      │
 ├───────────────────┬──────────┬───────┤
 │        ▲          │    ▼     │ Open ›│  move highlight · edit selected cap
@@ -2908,7 +2973,7 @@ its own screen (progressive disclosure, as the guide intends).
 ### Persistence & behavior
 
 - All settings persist on the CYD (LittleFS/NVS, §7), separate from the profile stores;
-  firmware ships the **defaults** (units °C, UV cap 100 °C, reflow cap 250 °C, idle ~1–2
+  firmware ships the **defaults** (units °C, UV cap 110 °C, reflow cap 250 °C, idle ~1–2
   min, auto-brightness on). "Restore defaults" (global) lives here too.
 - Changes apply on the panel's **Save** (or immediately for toggles); idle-only entry means
   none of this races a run.

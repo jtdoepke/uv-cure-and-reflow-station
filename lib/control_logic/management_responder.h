@@ -53,13 +53,21 @@ public:
           protocol::wireEnum(m.sort) == oven_ProfileSort_PROFILE_SORT_MRU
               ? control::ProfileStore::SortMode::Mru
               : control::ProfileStore::SortMode::Alpha;
-      size_t n = s->list(rows_, control::ProfileStore::kMaxListed, sort);
+      // A window, not the library (§23 paging). `limit` is advisory and bounded by the wire array:
+      // 0 means "your window", and a peer asking for more than fits gets what fits. The store
+      // clamps `offset` and tells us what it actually used, which is what we echo — so a CYD paging
+      // through a library that shrank under it converges instead of rendering a phantom row.
       const size_t cap = sizeof(r.profiles) / sizeof(r.profiles[0]);
-      if (n > cap) {
-        n = cap;
+      size_t want = m.limit == 0 ? cap : static_cast<size_t>(m.limit);
+      if (want > cap) {
+        want = cap;
       }
-      r.profiles_count = static_cast<pb_size_t>(n);
-      for (size_t i = 0; i < n; ++i) {
+      const control::ProfileStore::Page pg =
+          s->listPage(rows_, want, sort, static_cast<size_t>(m.offset), m.anchor_name);
+      r.profiles_count = static_cast<pb_size_t>(pg.written);
+      r.offset = static_cast<uint32_t>(pg.offset);
+      r.total = static_cast<uint32_t>(pg.total);
+      for (size_t i = 0; i < pg.written; ++i) {
         std::strncpy(r.profiles[i].name, rows_[i].name, sizeof(r.profiles[i].name) - 1);
         r.profiles[i].stock = rows_[i].stock;
         r.profiles[i].peak_c = rows_[i].facts.peak_c;
@@ -294,5 +302,11 @@ private:
     oven_ProfileList list;
     oven_ProfileData data;
   } reply_{};
-  control::ProfileStore::Summary rows_[control::ProfileStore::kMaxListed]{};
+  // Sized to the paging WINDOW, not the library cap (§23): one reply carries at most kListWindow
+  // rows, so holding kMaxListed here would be 64 rows of buffer to fill 16 of wire. The
+  // full-library sort happens inside ProfileStore, on its own scratch.
+  control::ProfileStore::Summary rows_[control::ProfileStore::kListWindow]{};
+  static_assert(control::ProfileStore::kListWindow >=
+                    sizeof(oven_ProfileList::profiles) / sizeof(oven_ProfileSummary),
+                "rows_ must hold a full ProfileList window");
 };

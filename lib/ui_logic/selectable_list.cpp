@@ -14,6 +14,13 @@ void SelectableListModel::init(const SelectableListItem *items, int count, bool 
   wrap_ = wrap;
   on_open_ = nullptr;
   open_ud_ = nullptr;
+  // The windowing seam resets too, so a plain init() always yields a complete, self-contained list
+  // — a caller that forgets to re-declare its window gets saturating ends, not phantom rows it
+  // cannot load. Re-install both seams after init(), as with the Open handler.
+  on_edge_ = nullptr;
+  edge_ud_ = nullptr;
+  more_before_ = false;
+  more_after_ = false;
   int first = firstEnabled();
   lv_subject_init_int(&selected_subject_, first < 0 ? 0 : first);
 }
@@ -56,6 +63,10 @@ int SelectableListModel::prevEnabled(int from) const {
 
 void SelectableListModel::moveUp() {
   int prev = prevEnabled(selected());
+  if (prev == selected() && more_before_ && on_edge_ != nullptr) {
+    on_edge_(-1, edge_ud_); // a window edge, not the list's start — load what is above
+    return;                 // the handler re-inits the model; do not also move within the old rows
+  }
   if (wrap_ && prev == selected()) { // already at the first enabled row → wrap to the last
     int last = lastEnabled();
     if (last >= 0) {
@@ -67,6 +78,10 @@ void SelectableListModel::moveUp() {
 
 void SelectableListModel::moveDown() {
   int next = nextEnabled(selected());
+  if (next == selected() && more_after_ && on_edge_ != nullptr) {
+    on_edge_(+1, edge_ud_);
+    return;
+  }
   if (wrap_ && next == selected()) { // already at the last enabled row → wrap to the first
     int first = firstEnabled();
     if (first >= 0) {
@@ -74,6 +89,19 @@ void SelectableListModel::moveDown() {
     }
   }
   lv_subject_set_int(&selected_subject_, next);
+}
+
+void SelectableListModel::setEdgeHandler(void (*cb)(int, void *), void *user_data) {
+  on_edge_ = cb;
+  edge_ud_ = user_data;
+}
+
+void SelectableListModel::setMore(bool before, bool after) {
+  more_before_ = before;
+  more_after_ = after;
+  // Re-publish so the footer buttons re-evaluate their disabled state against the new edges — the
+  // selection index itself may be unchanged across a page load.
+  lv_subject_set_int(&selected_subject_, selected());
 }
 
 void SelectableListModel::select(int index) {
@@ -96,6 +124,11 @@ void SelectableListModel::setOpenHandler(void (*cb)(int, void *), void *user_dat
 
 bool SelectableListModel::atFirstEnabled() {
   int first = firstEnabled();
+  // A window edge is not the list's start: rows exist above, so Up must stay pressable (it loads
+  // them via the edge handler). Same on the other side in atLastEnabled().
+  if (more_before_ && on_edge_ != nullptr) {
+    return false;
+  }
   // Under wrap, Up always has somewhere to go unless there's ≤1 selectable row (first == last).
   if (wrap_) {
     return first < 0 || first == lastEnabled();
@@ -105,6 +138,9 @@ bool SelectableListModel::atFirstEnabled() {
 
 bool SelectableListModel::atLastEnabled() {
   int last = lastEnabled();
+  if (more_after_ && on_edge_ != nullptr) {
+    return false;
+  }
   if (wrap_) {
     return last < 0 || last == firstEnabled();
   }
