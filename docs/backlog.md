@@ -436,7 +436,7 @@ existing `IClock`/`IHeaterSwitch` idiom:
   the CYD Home screen was wired to the sim's telemetry (temp-driven status badge + readout colours,
   sleep gating), and the touch-safe temperature was unified into one shared
   `lib/calibration/touch_safe.h` (`oven_domain::kTouchSafeC`).
-- [ ] **A11** [A] — end an **orphaned run** to IDLE when the peer is lost or reboots.
+- [x] **A11** [A] — end an **orphaned run** to IDLE when the peer is lost or reboots.
   deps: A4a, A6, A10 (the run path). (§9, §15)
   *Found on the bench 2026-07-21 while verifying the A8-stimulus deletion: the supervisor cuts the
   outputs at `kCommandTimeoutMs` as designed, but **nothing ends the run** — the executor keeps
@@ -476,6 +476,25 @@ existing `IClock`/`IHeaterSwitch` idiom:
   **Known objection:** a reflow run ended by a 30 s glitch — but its outputs were off for those
   30 s, so the profile is already ruined; ending it honestly and letting §16's summary say so beats
   pretending it continued.*
+  **DONE 2026-07-21.** Shipped exactly as shaped: a second clause in `ControllerRunPath::tick()`
+  beside the door check ends the run on either a changed peer `boot_nonce` (immediate) or sustained
+  non-authorization past `ControllerRunPath::kOrphanTimeoutMs` (30 s placeholder, `static_assert`ed
+  `> 10× kCommandTimeoutMs`) via `exec_.abort()` + `link_.gate().clearSession()` + an `orphanAborted()`
+  latch — **not** a `SafetySupervisor::trip()` (§22 excludes it). The run path gained an `IClock`
+  (rippled to all four construction sites); `main.cpp` pushes an immediate telemetry frame on the
+  orphan edge so a fresh CYD reads IDLE at once. **No proto/schema change** — the run-state→IDLE
+  transition is the signal, so the "telemetry bit" is the state itself rather than a new field. Three
+  `test_run_path` cases (same-session reconnect keeps the run; silence past the window ends it, no
+  fault, session cleared; new nonce ends it immediately) + a `fuzz_sim_run` authorization-churn axis
+  and the "no run outlives its last authorized tick by > `kOrphanTimeoutMs`" invariant (24k+ runs
+  clean). Incidental: `fuzz/corpus/run_tracker/` was missing its committed seeds, breaking
+  `make fuzz-corpus` for every harness after it — added `_cure`/`_reflow` seeds (same shared-shaped
+  format as `profile_facts`). **Bench-confirmed** on the two-devkit sim rig: a run armed from Confirm,
+  the CYD unplugged mid-run, and the controller stopped the run — the A11 behaviour end-to-end.
+  (Caveat noted for future bench work: opening the controller's USB port toggles DTR/RTS and reboots
+  it, so live serial monitoring perturbs run-state; a single continuous monitor avoids repeated
+  resets. Also: hot-unplugging the CYD mid-run brown-out-corrupted its app flash and needed a
+  reflash — a bench hazard, unrelated to this controller-side change.)*
 - [x] **C4** [C] — profile library (list + detail). deps: B4, C3. (§23)
   **REWIRED 2026-07-17 (Wave R3):** the view-model binds to a `ProfileClient` (remote,
   over the link) instead of a local `ProfileStore`, gaining loading/error states; the

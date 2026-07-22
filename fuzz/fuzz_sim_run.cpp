@@ -16,14 +16,16 @@
 //              supervisor having latched a fault.
 //   liveness — the run always leaves RUNNING (reaches DONE or a latched FAULT) within the cap.
 //   cooldown — if it reports DONE, the measured chamber is touch-safe (DONE never precedes cool).
+//   orphan   — (A11) a run never outlives its authorization by more than the orphan window: if the
+//              peer stays un-authorized for kOrphanTimeoutMs (or reboots), the run ends to IDLE.
 //
 // Input (little-endian):
 //   [0]      config : bit0 insulated plant; bit1 inject welded SSR; bit2 inject sensor fault;
-//                     bit3 flap the door open/shut (§15)
+//                     bit3 flap the door open/shut (§15); bit4 churn authorization (toggle the
+//                     heartbeat enable bit on a period); bit5 reboot the peer (fresh boot_nonce)
 //   [1]      segCount (mod 7 → 0..6)
-//   [2..3]   weldTick  : u16 — tick to weld the SSR on (if bit1)
-//   [4..5]   faultTick : u16 — tick to open the control sensor (if bit2)
-//                       (the door flaps on a fixed period derived from doorTick, if bit3)
+//   [2..3]   weldTick  : u16 — SSR-weld tick (bit1); also seeds doorPeriod + rebootTick
+//   [4..5]   faultTick : u16 — sensor-open tick (bit2); also seeds authPeriod
 //   then segCount × 6-byte records:
 //     [0]     interp (mod 5 → includes one out-of-range value)
 //     [1..2]  heat : u16 → °C = (v % 3200) / 10   (0..320, spans past the hard-max on purpose)
@@ -94,7 +96,7 @@ struct Rig {
         ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk), heater(heater_sw, clk),
         exec(clk), pid(clk), shaper(clk), plant(pp), tc(plant),
         safety(ctrl, heater, contactor, tc, clk),
-        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
+        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, clk, oven_cal::kDefaultModel) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
     ctrl.setExecutor(exec);
@@ -134,6 +136,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   // during a weld, during a cooldown, or on the same tick the executor advances a segment.
   const bool doDoor = (cfg & 0x08U) != 0U;
   const uint32_t doorPeriod = 1U + (readU16(data + 2) % 37U);
+  // A11 authorization churn. Toggling the heartbeat enable bit on a period exercises both orphan
+  // triggers: an off-phase longer than the ~15-tick window (kOrphanTimeoutMs/kStepMs) ends the run
+  // on the timeout, while a shorter one is the same-session glitch the run must SURVIVE (the enable
+  // returns and resets the window). bit5 reboots the peer once — a fresh boot_nonce, the
+  // immediate-end trigger.
+  const bool doAuthChurn = (cfg & 0x10U) != 0U;
+  const uint32_t authPeriod = 1U + (readU16(data + 4) % 29U);
+  const bool doReboot = (cfg & 0x20U) != 0U;
+  const uint32_t rebootTick = readU16(data + 2) % 64U;
 
   const size_t segsAvail = (size - kHeader) / kSegRec;
   pb_size_t n = static_cast<pb_size_t>(data[1] % (kMaxSeg + 1));
@@ -185,6 +196,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   const float overTempCeiling = hardMax + oven_safety::OVERTEMP_MARGIN_C + 60.0f;
 
   bool sawRunaway = false;
+  uint32_t lastAuthMs = rig.clk.millis(); // authorized right after bring-up
   for (int t = 0; t < kTickCap && rig.exec.state() == oven_RunState_RUN_STATE_RUNNING; ++t) {
     if (doWeld && static_cast<uint32_t>(t) == weldTick) {
       rig.weldDuty = 1.0f; // the SSR welds on
@@ -197,6 +209,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
     if (doDoor) {
       rig.door.open = ((static_cast<uint32_t>(t) / doorPeriod) % 2U) == 1U;
+    }
+    if (doAuthChurn) {
+      rig.cyd.heartbeat().setEnable(((static_cast<uint32_t>(t) / authPeriod) % 2U) == 0U);
+    }
+    if (doReboot && static_cast<uint32_t>(t) == rebootTick) {
+      rig.cyd.begin(0xC1D0F123); // a boot_nonce != the run's (0xC1D0F122) → immediate orphan-end
     }
     const bool doorWasOpen = rig.door.open;
     const bool wasRunning = rig.exec.state() == oven_RunState_RUN_STATE_RUNNING;
@@ -231,6 +249,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (doorWasOpen && wasRunning && rig.exec.state() != oven_RunState_RUN_STATE_RUNNING) {
       FUZZ_ASSERT(rig.exec.state() == oven_RunState_RUN_STATE_IDLE);
       FUZZ_ASSERT(rig.safety.faulted() == faultedBefore);
+    }
+    // A11: a run may not stay RUNNING more than the orphan window past its last authorized tick.
+    // A same-session reconnect keeps refreshing lastAuthMs, so a flapping enable never trips this;
+    // only a SUSTAINED loss (or a peer reboot) does, and the run path must have ended it by then.
+    // Slack of 2 steps covers the per-tick granularity of the run path's timer sampling.
+    if (rig.ctrl.authorized()) {
+      lastAuthMs = rig.clk.millis();
+    }
+    if (rig.exec.state() == oven_RunState_RUN_STATE_RUNNING) {
+      FUZZ_ASSERT(static_cast<uint32_t>(rig.clk.millis() - lastAuthMs) <=
+                  ControllerRunPath::kOrphanTimeoutMs + 2U * kStepMs);
     }
     if (rig.plant.wallTempC() > overTempCeiling) {
       sawRunaway = true;

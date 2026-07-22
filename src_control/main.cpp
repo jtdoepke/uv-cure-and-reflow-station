@@ -127,7 +127,7 @@ static SafetySupervisor g_safety(g_ctrl, g_heater, g_contactor, g_tc, g_clk);
 // load/start/abort lifecycle; the run path ticks it each loop with the measured control temp,
 // drives the PID, and arms/disarms the supervisor's L3 checks around the run.
 static ControllerRunPath g_runpath(g_exec, g_pid, g_shaper, g_safety, g_heater, g_ctrl, g_tc,
-                                   g_door, oven_cal::kDefaultModel);
+                                   g_door, g_clk, oven_cal::kDefaultModel);
 #endif
 
 static Esp32Watchdog g_wdt;
@@ -388,11 +388,24 @@ void loop() {
   // temperature graph but not for the things the door gates — waking the display (§17), ending the
   // run page (§15), enabling Start (§19) — where a quarter second of the UI disagreeing with the
   // physical machine is exactly the lag an operator reads as the thing being broken.
+  bool push_now = false;
   static bool door_open_prev = false;
   static bool door_seen = false;
   if (!door_seen || door_open != door_open_prev) {
     door_seen = true;
     door_open_prev = door_open;
+    push_now = true;
+  }
+#if defined(CONTROL_SIM)
+  // A11: the run path just ended an orphaned run to IDLE (peer lost/rebooted). Push immediately so
+  // a freshly booted CYD reads IDLE at once rather than catching a phantom RUNNING on the next
+  // frame.
+  if (g_runpath.orphanAborted()) {
+    g_runpath.clearOrphanAbort();
+    push_now = true;
+  }
+#endif
+  if (push_now) {
     g_telemetry.sendNow();
   } else {
     g_telemetry.service();

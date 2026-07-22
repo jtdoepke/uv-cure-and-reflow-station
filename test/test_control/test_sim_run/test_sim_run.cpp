@@ -75,7 +75,7 @@ struct SimRig {
         ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk), heater(heater_sw, clk),
         exec(clk), pid(clk), shaper(clk), plant(), tc(plant),
         safety(ctrl, heater, contactor, tc, clk),
-        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
+        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, clk, oven_cal::kDefaultModel) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
     ctrl.setExecutor(exec); // link drives load/start/abort; the run path ticks it

@@ -76,7 +76,7 @@ struct Rig {
       : cyd_router(), cyd_link(pipe.a(), TF_MASTER, cyd_router), cyd(cyd_link, clk), ctrl_router(),
         ctrl_link(pipe.b(), TF_SLAVE, ctrl_router), ctrl(ctrl_link, clk), heater(heater_sw, clk),
         exec(clk), pid(clk), shaper(clk), safety(ctrl, heater, contactor, tc, clk),
-        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, oven_cal::kDefaultModel) {
+        runpath(exec, pid, shaper, safety, heater, ctrl, tc, door, clk, oven_cal::kDefaultModel) {
     cyd_router.setObserver(cyd);
     ctrl_router.setObserver(ctrl);
     ctrl.setExecutor(exec);
@@ -386,6 +386,90 @@ void test_executor_fault_routes_into_the_supervisor(void) {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, r.heater.duty());
 }
 
+// --- A11: orphaned-run handling -----------------------------------------------------------------
+
+// The must-NOT-regress behaviour: a brief loss of authorization — a cable glitch, a few dropped
+// heartbeats — well inside the orphan window is NOT an orphan. The supervisor cuts the outputs, but
+// the run keeps its session and resumes commanding heat the moment authorization returns.
+void test_same_session_reconnect_inside_window_keeps_the_run(void) {
+  Rig r;
+  r.setTemp(25.0f);
+  r.startRun(asapCure());
+  r.run(5000);
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_RUNNING, r.exec.state());
+
+  // Drop authorization (heartbeats keep arriving, but with enable=false) for 6 s « the 30 s window.
+  r.cyd.heartbeat().setEnable(false);
+  for (int i = 0; i < 12; ++i) {
+    r.tick();
+    r.setTemp(r.trackedTemp());
+  }
+  TEST_ASSERT_FALSE(r.ctrl.authorized());
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_RUNNING, r.exec.state()); // run survives the glitch
+  TEST_ASSERT_TRUE(r.ctrl.gate().hasActiveSession());                 // session not cleared
+  TEST_ASSERT_FALSE(r.runpath.orphanAborted());
+
+  // Same session reconnects: authorization returns and the run resumes driving the heater.
+  r.cyd.heartbeat().setEnable(true);
+  for (int i = 0; i < 6; ++i) {
+    r.tick();
+    r.setTemp(r.trackedTemp());
+  }
+  TEST_ASSERT_TRUE(r.ctrl.authorized());
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_RUNNING, r.exec.state());
+  TEST_ASSERT_TRUE(r.heater.duty() > 0.0f);
+  TEST_ASSERT_FALSE(r.runpath.orphanAborted());
+}
+
+// Sustained silence past the orphan window (cable pulled / CYD unpowered — no heartbeats at all)
+// ends the run to IDLE, with the session cleared and WITHOUT faulting (§22 excludes it).
+void test_silence_past_window_ends_run_without_faulting(void) {
+  Rig r;
+  r.setTemp(25.0f);
+  r.startRun(longHoldCure());
+  for (int i = 0; i < 40; ++i) {
+    r.tick();
+    r.setTemp(r.trackedTemp());
+  }
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_RUNNING, r.exec.state());
+  TEST_ASSERT_FALSE(r.safety.faulted());
+
+  // The CYD vanishes: advance the controller alone (no cyd.service() → no heartbeats) past the 30 s
+  // window. Keep feeding a valid measurement so ONLY the orphan timeout can end the run — a frozen
+  // sensor would fault it first, which is a different path.
+  for (uint32_t t = 0; t < 35000; t += kStepMs) {
+    r.clk.advance(kStepMs);
+    r.controllerLoop();
+    r.setTemp(r.trackedTemp());
+  }
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_IDLE, r.exec.state());
+  TEST_ASSERT_FALSE(r.safety.faulted());               // not a fault
+  TEST_ASSERT_FALSE(r.ctrl.gate().hasActiveSession()); // session cleared
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.heater.duty());
+  TEST_ASSERT_TRUE(r.runpath.orphanAborted());
+  r.runpath.clearOrphanAbort();
+  TEST_ASSERT_FALSE(r.runpath.orphanAborted());
+}
+
+// A rebooted peer (a Hello bearing a fresh boot_nonce) ends the run IMMEDIATELY — no waiting out
+// the timeout, because the operator's context is provably gone.
+void test_new_peer_nonce_ends_run_immediately(void) {
+  Rig r;
+  r.setTemp(25.0f);
+  r.startRun(asapCure());
+  r.run(5000);
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_RUNNING, r.exec.state());
+
+  // The CYD reboots: same board, a different boot_nonce. One exchange delivers the new Hello, and
+  // the run ends on that tick — not 30 s later.
+  r.cyd.begin(kCydNonce ^ 0xFFFFu);
+  r.exchange();
+  TEST_ASSERT_EQUAL(oven_RunState_RUN_STATE_IDLE, r.exec.state());
+  TEST_ASSERT_FALSE(r.safety.faulted());
+  TEST_ASSERT_FALSE(r.ctrl.gate().hasActiveSession());
+  TEST_ASSERT_TRUE(r.runpath.orphanAborted());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_duty_is_the_pi_output_for_the_shaped_setpoint);
@@ -396,5 +480,8 @@ int main(int, char **) {
   RUN_TEST(test_door_open_ends_the_run_without_faulting);
   RUN_TEST(test_arms_and_disarms_the_supervisor_around_the_run);
   RUN_TEST(test_executor_fault_routes_into_the_supervisor);
+  RUN_TEST(test_same_session_reconnect_inside_window_keeps_the_run);
+  RUN_TEST(test_silence_past_window_ends_run_without_faulting);
+  RUN_TEST(test_new_peer_nonce_ends_run_immediately);
   return UNITY_END();
 }

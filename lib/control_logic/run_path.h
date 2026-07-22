@@ -26,11 +26,13 @@
 
 #include <cmath> // std::isfinite
 
+#include "IClock.h"
 #include "IDoorSensor.h"
 #include "IThermocouples.h"
 #include "controller_link.h"
 #include "heater_actuator.h"
 #include "heater_control.h"
+#include "link_params.h" // kCommandTimeoutMs (the orphan window is pinned against it)
 #include "oven.pb.h"
 #include "oven_safety.h" // deriveMode
 #include "profile_executor.h"
@@ -48,11 +50,17 @@ static_assert(SetpointShaper::Config{}.minApproachRateCPerS >
 
 class ControllerRunPath {
 public:
+  // How long a run may stay RUNNING with the peer un-authorized before the controller ends it to
+  // IDLE (A11). Must be >> kCommandTimeoutMs (750 ms), so a dropped frame or a brief cable glitch —
+  // which a SAME-session reconnect legitimately resumes from — never ends a run. ~30 s placeholder,
+  // **TBD §10** (the "orphan timeout" open, tuned with the other link windows).
+  static constexpr uint32_t kOrphanTimeoutMs = 30000;
+
   ControllerRunPath(ProfileExecutor &exec, HeaterControl &pid, SetpointShaper &shaper,
                     SafetySupervisor &safety, HeaterActuator &heater, ControllerLink &link,
-                    IThermocouples &tc, IDoorSensor &door, const OvenModel &model)
+                    IThermocouples &tc, IDoorSensor &door, IClock &clock, const OvenModel &model)
       : exec_(exec), pid_(pid), shaper_(shaper), safety_(safety), heater_(heater), link_(link),
-        tc_(tc), door_(door), model_(model) {}
+        tc_(tc), door_(door), clock_(clock), model_(model) {}
 
   // Advance one control loop. Call before heater_.tick() and safety_.tick().
   void tick() {
@@ -72,6 +80,50 @@ public:
     if (door_open_ && exec_.state() == oven_RunState_RUN_STATE_RUNNING) {
       exec_.abort();
       door_aborted_ = true;
+    }
+
+    // 0b. Orphaned run (A11, §9/§15): the peer (CYD) vanished or rebooted while a run is live.
+    //     SafetySupervisor already cut the outputs the moment link_.authorized() dropped — but
+    //     nothing ENDS the run, so the executor keeps advancing (duty 0) and telemetry keeps
+    //     advertising RUNNING. A freshly booted CYD then renders a phantom run nobody started
+    //     (bench 2026-07-21). End it to IDLE, same posture as the door above: bookkeeping, not
+    //     mitigation — deliberately NOT a fault (§22 excludes it) and NOT a
+    //     SafetySupervisor::trip().
+    //
+    //     Two triggers. A changed peer boot_nonce is positive evidence the operator's context is
+    //     gone — a rebooted CYD draws a fresh esp_random() session it can never re-reach — so end
+    //     immediately. Sustained non-authorization past orphanTimeoutMs covers cable-pulled /
+    //     CYD-unpowered, where no new nonce ever arrives; the window is >> kCommandTimeoutMs so a
+    //     dropped frame or a brief glitch (which a SAME-session reconnect resumes from) never ends
+    //     a run. Checked before the duty math so an ended run commands OFF this same tick.
+    if (exec_.state() == oven_RunState_RUN_STATE_RUNNING) {
+      const uint32_t peer_nonce = link_.handshake().peer().boot_nonce;
+      if (!orphan_tracking_) {
+        // Run just became live: snapshot the peer we started with and reset the grace timer. (On
+        // the first RUNNING tick the executor was flipped by ControllerLink::start() during
+        // service(), so this fires here rather than off the arm latch below.)
+        orphan_tracking_ = true;
+        run_peer_nonce_ = peer_nonce;
+        unauth_counting_ = false;
+      }
+      const bool rebooted = link_.handshake().sawPeer() && peer_nonce != run_peer_nonce_;
+      bool timed_out = false;
+      if (link_.authorized()) {
+        unauth_counting_ = false; // a same-session reconnect clears the window: the run continues
+      } else if (!unauth_counting_) {
+        unauth_counting_ = true;
+        unauth_since_ms_ = clock_.millis();
+      } else if (static_cast<uint32_t>(clock_.millis() - unauth_since_ms_) >= kOrphanTimeoutMs) {
+        timed_out = true;
+      }
+      if (rebooted || timed_out) {
+        exec_.abort();
+        link_.gate().clearSession(); // return the gate to IDLE-safe; a stale session authorizes
+                                     // nothing, and a returning/rebooted CYD re-Starts a new one
+        orphan_aborted_ = true;
+      }
+    } else {
+      orphan_tracking_ = false;
     }
 
     // 1. The mode's control sensor. Cure controls on raw wall temp (a good air proxy at 80 °C),
@@ -156,6 +208,12 @@ public:
   bool doorAborted() const { return door_aborted_; }
   void clearDoorAbort() { door_aborted_ = false; }
 
+  // Latched: did the peer being lost/rebooted end a run (A11)? Mirrors doorAborted() —
+  // informational, read by main.cpp to push an immediate telemetry frame so a fresh CYD sees IDLE
+  // promptly rather than a phantom RUNNING. Cleared by the caller once it has reported the edge.
+  bool orphanAborted() const { return orphan_aborted_; }
+  void clearOrphanAbort() { orphan_aborted_ = false; }
+
 private:
   ProfileExecutor &exec_;
   HeaterControl &pid_;
@@ -165,8 +223,22 @@ private:
   ControllerLink &link_;
   IThermocouples &tc_;
   IDoorSensor &door_;
+  IClock &clock_;
   const OvenModel &model_;
   bool armed_ = false; // whether we have armed the supervisor for the current RUNNING run
   bool door_open_ = false;
   bool door_aborted_ = false;
+  // A11 orphan-abort tracking (all scoped to the current RUNNING run).
+  uint32_t run_peer_nonce_ = 0;  // the peer boot_nonce this run started against
+  bool orphan_tracking_ = false; // have we snapshotted the run's peer/timer yet
+  bool unauth_counting_ = false; // are we timing a sustained loss of authorization
+  uint32_t unauth_since_ms_ = 0; // when authorization was first lost (clock_.millis())
+  bool orphan_aborted_ = false;  // latched edge for telemetry
 };
+
+// The orphan-abort grace window (A11) must sit far above the heartbeat command-timeout, or a normal
+// dropped-frame gap — the very thing a same-session reconnect resumes from — would end runs. This
+// is the one place that includes both link_params.h and this Config, so the relationship is pinned
+// here (mirroring the shaper/executor static_assert above).
+static_assert(ControllerRunPath::kOrphanTimeoutMs > 10 * protocol::kCommandTimeoutMs,
+              "orphan timeout must be much larger than the heartbeat command-timeout");
