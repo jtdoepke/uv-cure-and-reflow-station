@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "confirm_dialog.h" // §24 Restore stock profiles — a simple confirm, not §19's hold
 #include "device_info.h"
 #include "link_banner.h" // shared "Controller not responding" banner (§9/§14)
 #include "numeric_keypad.h"
@@ -17,7 +18,7 @@ enum HubIndex {
   HUB_TEMP = 1,
   HUB_NETWORK = 2,  // disabled — WiFi (D9)
   HUB_DATA_FW = 3,  // disabled — OTA / logs
-  HUB_PROFILES = 4, // disabled — ProfileStore (B4)
+  HUB_PROFILES = 4, // §24 Restore stock profiles (needs the remote client, §9)
   HUB_ABOUT = 5,
   HUB_ADVANCED = 6,
   HUB_COUNT = 7,
@@ -70,6 +71,11 @@ struct SettingsThunks {
   static void temp_open(int index, void *ud) {
     static_cast<SettingsScreen *>(ud)->onTempOpen(index);
   }
+  static void profiles_open(int index, void *ud) {
+    static_cast<SettingsScreen *>(ud)->onProfilesOpen(index);
+  }
+  static void restore_confirm(void *ud) { static_cast<SettingsScreen *>(ud)->confirmRestore(); }
+  static void restore_cancel(void *ud) { static_cast<SettingsScreen *>(ud)->cancelRestore(); }
   static void back_evt(lv_event_t *e) {
     static_cast<SettingsScreen *>(lv_event_get_user_data(e))->back();
   }
@@ -84,9 +90,11 @@ struct SettingsThunks {
 
 // --- Lifecycle ---
 
-void SettingsScreen::begin(lv_obj_t *parent, SettingsStore &store) {
+void SettingsScreen::begin(lv_obj_t *parent, SettingsStore &store, ManagementClient *client) {
   parent_ = parent;
   store_ = &store;
+  client_ = client;
+  restore_ = Restore::Idle;
   publishToSubjects();
   // Re-grey the hub's category rows when the link flips (§9). Tied to parent_ so it is removed with
   // the screen (create-on-demand); seed last_link_ok_ from the current state so the first (possibly
@@ -127,6 +135,9 @@ void SettingsScreen::showPage(SettingsPage page) {
   case SettingsPage::TempLimits:
     buildTempLimits();
     break;
+  case SettingsPage::Profiles:
+    buildProfiles();
+    break;
   case SettingsPage::About:
     buildAbout();
     break;
@@ -163,6 +174,10 @@ void SettingsScreen::openHubItem(int index) {
     break;
   case HUB_TEMP:
     showPage(SettingsPage::TempLimits);
+    break;
+  case HUB_PROFILES:
+    restore_ = Restore::Idle; // entering fresh: don't re-show a previous verdict
+    showPage(SettingsPage::Profiles);
     break;
   case HUB_ABOUT:
     showPage(SettingsPage::About);
@@ -251,7 +266,10 @@ void SettingsScreen::buildHub() {
       {"Temperature limits", nullptr, ok, "Open"},
       {"Network (WiFi)", "soon", false},
       {"Data & firmware", "soon", false},
-      {"Profiles", "soon", false},
+      // Profiles is a real panel now (§24 Restore stock profiles) but still needs the remote
+      // client: the library lives on the controller (§7), so with no client there is nothing to
+      // restore and the row reads "soon" like the genuinely-unbuilt ones.
+      {"Profiles", client_ == nullptr ? "soon" : nullptr, client_ != nullptr && ok, "Open"},
       {"About", nullptr, true, "Open"},
       {"Advanced", advanced_value, ok, "Toggle"},
   };
@@ -327,6 +345,96 @@ void SettingsScreen::buildTempLimits() {
   list_model_.init(items, 2, /*wrap=*/true);
   list_model_.setOpenHandler(SettingsThunks::temp_open, this);
   create_selectable_list(parent_, list_model_);
+}
+
+// §24's "Restore stock profiles", per mode (§23 puts it here). Two rows rather than one, because
+// the libraries are independent (§7 never-mixed) and an operator repairing their cure set has no
+// reason to touch reflow.
+void SettingsScreen::buildProfiles() {
+  configParent();
+  buildHeader("Profiles");
+
+  // The verdict from the last attempt, if any — shown above the list, on the panel that issued it.
+  // Plain rows, not a modal: nothing here is hazardous and nothing needs acknowledging (§22 keeps
+  // the modal rare on purpose).
+  switch (restore_) {
+  case Restore::Busy:
+    build_info_row(parent_, "Restoring...", nullptr);
+    break;
+  case Restore::Done:
+    build_info_row(parent_, "Stock profiles restored", nullptr);
+    break;
+  case Restore::Failed:
+    // Deliberately specific about the likely cause. The controller refuses rather than clobber a
+    // user profile that holds a stock name, and an operator told only "failed" would have no way
+    // to work out why the stock profile never came back.
+    build_info_row(parent_, "Restore failed - a saved profile may be using a stock name", nullptr);
+    break;
+  case Restore::Idle:
+  case Restore::Confirming:
+    break;
+  }
+
+  const bool ok = client_ != nullptr && lv_subject_get_int(&subj_link_state) == LINK_OK &&
+                  restore_ != Restore::Busy;
+  const SelectableListItem items[2] = {
+      {"Restore cure stock", nullptr, ok, "Restore"},
+      {"Restore reflow stock", nullptr, ok, "Restore"},
+  };
+  list_model_.init(items, 2, /*wrap=*/true);
+  list_model_.setOpenHandler(SettingsThunks::profiles_open, this);
+  create_selectable_list(parent_, list_model_);
+
+  if (restore_ == Restore::Confirming) {
+    // A SIMPLE confirm, not §19's press-and-hold: restoring writes profiles and energizes nothing.
+    // Not danger-red either, for the same reason (§13/§22 reserve red for the hazardous verb).
+    create_confirm_dialog(
+        parent_,
+        restore_mode_ == oven_Mode_MODE_CURE
+            ? "Reinstall the factory cure profiles? Your own profiles are kept."
+            : "Reinstall the factory reflow profiles? Your own profiles are kept.",
+        "Restore", SettingsThunks::restore_confirm, SettingsThunks::restore_cancel, this);
+  }
+}
+
+void SettingsScreen::onProfilesOpen(int index) {
+  if (client_ == nullptr || restore_ == Restore::Busy) {
+    return;
+  }
+  restore_mode_ = index == 0 ? oven_Mode_MODE_CURE : oven_Mode_MODE_REFLOW;
+  restore_ = Restore::Confirming;
+  showPage(SettingsPage::Profiles);
+  list_model_.select(index); // keep the highlight where the operator left it
+}
+
+void SettingsScreen::confirmRestore() {
+  // requestRestoreStock fails only when the single-outstanding slot is busy; treat that as a
+  // failed attempt rather than silently dropping it, so the operator can retry.
+  restore_ = (client_ != nullptr && client_->requestRestoreStock(restore_mode_)) ? Restore::Busy
+                                                                                 : Restore::Failed;
+  showPage(SettingsPage::Profiles);
+}
+
+void SettingsScreen::cancelRestore() {
+  restore_ = Restore::Idle;
+  showPage(SettingsPage::Profiles);
+}
+
+void SettingsScreen::poll() {
+  if (restore_ != Restore::Busy || client_ == nullptr) {
+    return;
+  }
+  if (client_->busy()) {
+    return;
+  }
+  // Only claim success for OUR request: the client is shared, and a reply to someone else's op
+  // arriving here must not be read as a restore verdict.
+  const bool ours = client_->lastOp() == ManagementClient::Op::RestoreStock;
+  restore_ = (ours && client_->ready()) ? Restore::Done : Restore::Failed;
+  client_->clear();
+  if (page_ == SettingsPage::Profiles) {
+    showPage(SettingsPage::Profiles); // render the verdict
+  }
 }
 
 void SettingsScreen::buildAbout() {

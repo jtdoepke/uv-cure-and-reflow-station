@@ -389,6 +389,54 @@ void test_mgmt_delete_stock_refused(void) {
   TEST_ASSERT_TRUE(r.cure_store.contains("Resin-A")); // still there
 }
 
+// §24 Restore over the wire: an empty library is repopulated from the controller's compiled-in
+// table. Note what the request does NOT carry — no profile content — so the CYD triggers the
+// privileged write without choosing what gets written (§23; oven.proto).
+void test_mgmt_restore_stock_repopulates(void) {
+  Rig r;
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  TEST_ASSERT_EQUAL_UINT32(0, r.reflow_store.list(rows, ProfileStore::kMaxListed));
+
+  oven_ProfileRestoreStock req = oven_ProfileRestoreStock_init_zero;
+  req.mode = oven_Mode_MODE_REFLOW;
+  sendReq(r.client, oven_ProfileRestoreStock_fields, protocol::kTfTypeProfileRestoreStock, req);
+  r.exchange();
+  TEST_ASSERT_TRUE(r.cyd_obs.last_result.ok);
+
+  const size_t n = r.reflow_store.list(rows, ProfileStore::kMaxListed);
+  TEST_ASSERT_TRUE(n > 0);
+  oven_Profile p = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(r.reflow_store.load(rows[0].name, p));
+  TEST_ASSERT_TRUE(p.stock);
+}
+
+// A restore blocked by a USER profile holding a stock name reports failure rather than clobbering
+// it — and rather than succeeding silently, which would leave the operator wondering why the stock
+// profile never came back.
+void test_mgmt_restore_stock_refuses_over_a_user_profile(void) {
+  Rig r;
+  // Discover a stock name by seeding a throwaway store from the same table.
+  FakeProfileStorage probe_fs;
+  ProfileStore probe(probe_fs, oven_Mode_MODE_REFLOW);
+  control::seedStockProfiles(probe, /*overwrite=*/false);
+  ProfileStore::Summary rows[ProfileStore::kMaxListed];
+  probe.list(rows, ProfileStore::kMaxListed);
+
+  TEST_ASSERT_TRUE(
+      r.reflow_store.save(makeProfile(oven_Mode_MODE_REFLOW, rows[0].name, 199.0F, 42)));
+
+  oven_ProfileRestoreStock req = oven_ProfileRestoreStock_init_zero;
+  req.mode = oven_Mode_MODE_REFLOW;
+  sendReq(r.client, oven_ProfileRestoreStock_fields, protocol::kTfTypeProfileRestoreStock, req);
+  r.exchange();
+  TEST_ASSERT_FALSE(r.cyd_obs.last_result.ok);
+
+  oven_Profile still = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(r.reflow_store.load(rows[0].name, still));
+  TEST_ASSERT_FALSE(still.stock);                            // untouched
+  TEST_ASSERT_EQUAL_FLOAT(199.0F, still.phases[1].target_c); // and unaltered
+}
+
 // A dropped reply makes the client resend the Put; the responder dedups — one write only.
 void test_mgmt_dedup_no_double_write(void) {
   Rig r;
@@ -570,6 +618,8 @@ int main(int, char **) {
   RUN_TEST(test_mgmt_get);
   RUN_TEST(test_mgmt_get_not_found);
   RUN_TEST(test_mgmt_delete_stock_refused);
+  RUN_TEST(test_mgmt_restore_stock_repopulates);
+  RUN_TEST(test_mgmt_restore_stock_refuses_over_a_user_profile);
   RUN_TEST(test_mgmt_dedup_no_double_write);
   RUN_TEST(test_mgmt_settings_get);
   RUN_TEST(test_mgmt_settings_put_clamps_cap);

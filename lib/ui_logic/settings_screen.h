@@ -19,6 +19,7 @@
 
 #include <lvgl.h>
 
+#include "management_client.h"
 #include "numeric_keypad_viewmodel.h"
 #include "selectable_list.h"
 #include "settings_store.h"
@@ -28,6 +29,7 @@ enum class SettingsPage {
   Hub,
   DisplayUnits,
   TempLimits,
+  Profiles,
   About,
   Editor,
 };
@@ -42,12 +44,23 @@ public:
   // Build the hub under `parent`, editing `store`. Both must outlive this screen. Publishes the
   // store's cross-screen values into the shared subjects first. Call after lv_init() +
   // ui_subjects_init().
-  void begin(lv_obj_t *parent, SettingsStore &store);
+  //
+  // `client` is the shared remote client (§9) the Profiles panel issues its §24 restore through,
+  // and it too must outlive this screen. Optional: passing nullptr leaves the Profiles row
+  // disabled, which is what the host UI tests and the simulator do — everything else on this
+  // screen works without it.
+  void begin(lv_obj_t *parent, SettingsStore &store, ManagementClient *client = nullptr);
+
+  // Drive the §24 restore round-trip (busy -> done/failed). Call every loop iteration, alongside
+  // the other screens' polls. No-op unless a restore is in flight.
+  void poll();
 
   // Navigation — also the targets of the on-screen Back / Open / editor handlers.
   void showPage(SettingsPage page); // rebuild `parent` with the given panel (not Editor)
   void openHubItem(int index);      // open a category, or toggle Advanced
   void back();                      // Editor → its panel · panel → hub · hub → exit handler
+  void confirmRestore();            // §24 restore confirm dialog: Yes — issue the request
+  void cancelRestore();             // ...and No — dismiss, restore nothing
 
   SettingsPage page() const { return page_; }
 
@@ -93,11 +106,13 @@ private:
   void buildHub();
   void buildDisplayUnits();
   void buildTempLimits();
+  void buildProfiles();
   void buildAbout();
 
   // Per-panel Open dispatchers (the list's open seam; recover `this` via user_data thunks).
   void onDisplayOpen(int index);
   void onTempOpen(int index);
+  void onProfilesOpen(int index);
 
   // Re-grey the hub's editable rows when the controller link flips (§9): the settings live on the
   // controller now, so a dropped link greys the category rows (About, local info, stays open). Only
@@ -115,7 +130,14 @@ private:
 
   lv_obj_t *parent_ = nullptr;
   SettingsStore *store_ = nullptr;
+  ManagementClient *client_ = nullptr; // §24 restore; nullptr disables the Profiles row
   SettingsPage page_ = SettingsPage::Hub;
+
+  // §24 "Restore stock profiles" round-trip state. A plain enum rather than a view-model: it is
+  // one request with one verdict, shown on the panel that issued it.
+  enum class Restore : uint8_t { Idle, Confirming, Busy, Done, Failed };
+  Restore restore_ = Restore::Idle;
+  oven_Mode restore_mode_ = oven_Mode_MODE_UNSPECIFIED;
   bool last_link_ok_ = true; // last link gate applied to the hub — only rebuild when it flips
 
   SettingsPage editor_return_ = SettingsPage::Hub;

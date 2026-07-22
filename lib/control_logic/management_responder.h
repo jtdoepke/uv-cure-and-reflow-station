@@ -21,6 +21,7 @@
 #include "oven.pb.h"
 #include "profile_library.h"
 #include "request_responder.h"
+#include "stock_seed.h" // §24 Restore stock profiles — the compiled-in factory set
 
 class ManagementResponder : public protocol::IMessageObserver {
 public:
@@ -116,6 +117,31 @@ public:
       return;
     }
     replyResult(m.seq, s->remove(m.name), oven_NakReason_NAK_OUT_OF_RANGE);
+  }
+
+  // §23/§24 "Restore stock profiles": reinstall this mode's stock set from the firmware's own
+  // compiled-in table. The request carries no profile content by design (see oven.proto) — the CYD
+  // triggers the privileged write, the controller alone decides what gets written.
+  //
+  // A restore that finds a USER profile squatting a stock name reports failure rather than
+  // clobbering it, because silently overwriting the operator's work to reinstate a factory
+  // reference is the wrong trade — and a silent success would be worse, since they would never
+  // learn why the stock profile is still missing.
+  void onProfileRestoreStock(const oven_ProfileRestoreStock &m) override {
+    if (!rr_.isNew(m.seq)) {
+      return;
+    }
+    control::ProfileStore *s = storeFor(m.mode);
+    if (s == nullptr) {
+      replyResult(m.seq, false, oven_NakReason_NAK_MODE_CONTENT_MISMATCH);
+      return;
+    }
+    const control::SeedReport r = control::seedStockProfiles(*s, /*overwrite=*/true);
+    if (r.userOwned > 0) {
+      replyResult(m.seq, false, oven_NakReason_NAK_NAME_INVALID); // the name is taken by a user
+      return;
+    }
+    replyResult(m.seq, r.ok(), oven_NakReason_NAK_OUT_OF_RANGE);
   }
 
   void onProfileDup(const oven_ProfileDup &m) override {

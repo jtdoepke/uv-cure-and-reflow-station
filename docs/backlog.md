@@ -978,7 +978,7 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   deferred notes later work had quietly resolved retired in place (C4's recently-used sort →
   C6 PR1's controller-owned `use_seq`; B7's link-timeout ownership → A9's two deliberately
   different windows).
-- [ ] **S5** [A/C] — **stock-profile seed + §24 "Restore stock profiles"** (§7/§23/§24).
+- [x] **S5** [A/C] — **stock-profile seed + §24 "Restore stock profiles"** (§7/§23/§24).
   §23 promises the factory references "can't be lost" and only half-delivers: delete is
   refused, but the sole source is a separate `uploadfs` command, and the controller mounts
   `LittleFS.begin(formatOnFail=true)` — so a corrupt filesystem silently reformats the whole
@@ -994,3 +994,26 @@ Two of the notes turned out to be masking real gaps rather than housekeeping.
   firmware's own compiled table, never from the wire: the CYD may *ask* for a restore but can
   never *supply* what gets written. A user profile holding a stock name is skipped, not
   clobbered.
+  **DONE 2026-07-21, both halves, shipped as shaped.** `tools/gen_profiles.cpp` grew a second
+  output from one authored table — the committed `lib/control_logic/stock_profiles.h` (73 bytes of
+  nanopb-encoded `Profile` bodies, `const` → flash `.rodata`) — plus `control::seedStockProfiles()`
+  and `ProfileStore::seedStock()`. Boot fills gaps (`overwrite=false`); §24's Restore repairs
+  (`overwrite=true`) via the new `ProfileRestoreStock` frame (`0x26`) → `ManagementResponder` →
+  a `Profiles` panel on the greyed-out `HUB_PROFILES` row, two per-mode rows behind the shared
+  simple `confirm_dialog`. **The generated header joins the fonts in the pre-commit exclude list**
+  — clang-format rewraps its byte rows, which would dirty the tree on every regeneration.
+  ***Two bugs it turned up, neither in scope:*** *(1) **the generator could never re-run over an
+  existing stock fixture.** Its comment claimed it removed the stale blob first "so a re-run cannot
+  be refused as a stock-overwrite", but `remove()` refuses stock too (§23) — so it returned false
+  and `save()` then refused the overwrite. It only ever worked on a fixture that did not yet exist.
+  `seedStock(overwrite)` turned out to be exactly the missing operation. (2) **Consequently the
+  committed fixtures were stale**: each grew exactly 2 bytes on regeneration, which is the
+  `use_seq` field **C6 PR1** added and which nobody could successfully re-run the generator to pick
+  up. Regeneration is now verified byte-identical across runs.*
+  Tests: 6 store/seed cases + 2 wire round-trips (`test_profile_management`) and 4 UI cases at both
+  geometries (`test_settings_screen`, driven through the real `ManagementResponder` over a
+  `LoopbackPipe` so the restore is exercised end-to-end). Schema hash moved as expected — the two
+  `Hello` fuzz seeds were regenerated (`make fuzz-seed`).
+  **Not done — needs the bench:** flashing a controller *without* `uploadfs` and confirming the
+  boot log reports a seeded library rather than `cure=0 reflow=0`, then driving Settings → Profiles
+  → Restore on glass. Both boards need a matched-pair reflash for the schema change regardless.

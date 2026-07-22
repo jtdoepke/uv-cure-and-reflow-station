@@ -427,7 +427,9 @@ static void build_home_screen_cb(void *, lv_obj_t *scr) {
 
 static void build_settings_screen_cb(void *, lv_obj_t *scr) {
   g_settings_screen.setExitHandler(on_settings_exit, nullptr);
-  g_settings_screen.begin(scr, g_settings);
+  // The shared remote client backs §24's Restore stock profiles (the library lives on the
+  // controller since Wave R2, so the restore is a request, not a local write).
+  g_settings_screen.begin(scr, g_settings, &g_mgmt_client);
 }
 
 static void build_profile_library_cb(void *, lv_obj_t *scr) {
@@ -560,6 +562,7 @@ static void service_settings_sync() {
 // fetch/save and rebuild. Each is a no-op unless that screen is awaiting a reply.
 static void poll_screens() {
   g_profile_library.poll();
+  g_settings_screen.poll(); // §24 restore round-trip; no-op unless one is in flight
   if (g_profile_editor != nullptr) {
     g_profile_editor->poll();
   }

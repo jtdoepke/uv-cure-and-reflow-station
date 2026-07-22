@@ -97,6 +97,10 @@ void MessageRouter::onFrame(uint8_t type, const uint8_t *payload, size_t len) {
     ok = route(oven_ProfileTouch_fields, oven_ProfileTouch{}, payload, len,
                [&](const oven_ProfileTouch &m) { obs.onProfileTouch(m); });
     break;
+  case kTfTypeProfileRestoreStock:
+    ok = route(oven_ProfileRestoreStock_fields, oven_ProfileRestoreStock{}, payload, len,
+               [&](const oven_ProfileRestoreStock &m) { obs.onProfileRestoreStock(m); });
+    break;
   case kTfTypeSettingsGetReq:
     ok = route(oven_SettingsGetReq_fields, oven_SettingsGetReq{}, payload, len,
                [&](const oven_SettingsGetReq &m) { obs.onSettingsGetReq(m); });

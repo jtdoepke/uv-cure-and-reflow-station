@@ -1236,6 +1236,14 @@ reply lands, deduped so a resent request never double-applies.
     old, new }`, `SettingsPut{ seq, Settings }`. The controller's store owns the
     dup/rename **collision resolution** and returns the final name (so the CYD doesn't
     round-trip once per naming attempt, §23).
+  - `ProfileRestoreStock{ seq, mode }` (ADDED 2026-07-21) — reinstall one mode's stock set
+    (§23/§24). **Note what it does not carry: any profile content.** The CYD triggers the
+    privileged write that `save()`/`remove()` refuse under §23's read-only rule; the controller
+    alone decides what gets written, from a table compiled into its own firmware. That asymmetry
+    is the safety argument — a peer cannot use the restore path to plant an unremovable profile.
+    Refused (not silently skipped) when a **user** profile holds a stock name: the operator's work
+    is never clobbered, and a silent success would leave them wondering why the stock profile
+    never came back.
 - **controller → CYD (replies):** `ProfileList{ seq, repeated ProfileSummary }` (≤
   `kMaxListed`), `ProfileData{ seq, Profile }`, `SettingsData{ seq, Settings }`; plus
   the shared `Ack{ seq }` / `Nak{ seq, reason }` for the verdict requests. New
@@ -2680,9 +2688,27 @@ run can only ever load a **same-mode** profile (the §4 cap + §12 template alwa
 
 ### Stock vs. user profiles (DECIDED)
 
-Seeded defaults (`data/` → `uploadfs`, §7) are **stock / read-only** per mode — Edit
-Save-as's, Delete is disabled — so the factory references can't be lost. **Restore stock
-profiles** lives in Settings (per mode, §24).
+Seeded defaults are **stock / read-only** per mode — Edit Save-as's, Delete is disabled — so
+the factory references can't be lost. **Restore stock profiles** lives in Settings (per mode,
+§24).
+
+**REVISED 2026-07-21: the stock set is compiled into the controller firmware, not only
+`uploadfs`-flashed.** The read-only rule alone did not deliver "can't be lost": `data/` reached
+the board only via a **separate** `pio run -t uploadfs`, and the controller mounts LittleFS with
+`formatOnFail=true` — so a plain `-t upload` left the empty state, and a corrupt filesystem
+silently reformatted the whole library away, stock included, recoverable only at a USB cable. A
+promise that survives only as long as the filesystem does is not the promise this section makes.
+`tools/gen_profiles.cpp` now emits the stock set **twice** from one authored table: the `data/`
+fixtures as before, plus a committed `lib/control_logic/stock_profiles.h` of nanopb-encoded
+`Profile` bodies (`const` → flash `.rodata`, so it costs the tight controller DRAM nothing, §6a).
+Boot seeds anything **missing** from that table — idempotent, so a populated board does nothing
+and a freshly formatted one repopulates itself — which also demotes `uploadfs` from load-bearing
+to convenient. §24's Restore is the same operation with `overwrite`, repairing a corrupted entry.
+`ProfileStore::seedStock()` is the privileged write this needs, since `save()` and `remove()`
+correctly refuse a stock profile; **its only legitimate input is that compiled table**, never
+anything off the wire (§9 `ProfileRestoreStock`). It never clobbers a **user** profile holding a
+stock name — the operator's work outranks a factory reference, and the promise here is about not
+losing the stock set, not about owning the namespace.
 
 ### Behavior & tie-ins
 
@@ -2786,7 +2812,16 @@ rows** (≥56–67 px, the whole row is the target, not an inline `[ON]`);
   **Check for / apply firmware update** → launches the **OTA flow** (§25), which is gated
   **idle AND cool** and updates **both boards as a matched pair**.
 - **Profiles** — **Restore stock profiles**, per mode (cure / reflow): re-seeds the
-  read-only stock set from firmware defaults (§23), behind a confirm.
+  read-only stock set from firmware defaults (§23), behind a confirm. **BUILT 2026-07-21.**
+  Two rows rather than one, because the libraries are independent (§7 never-mixed) and someone
+  repairing their cure set has no reason to touch reflow. A **simple** confirm — deliberately
+  not §19's press-and-hold and not danger-red, since restoring writes profiles and energizes
+  nothing (§13/§22 reserve both for the hazardous verb). The verdict renders as a row on the
+  panel that issued it, never the §22 modal; a restore refused because a **user** profile holds
+  a stock name says so, since "failed" alone would leave the operator with no way to work out
+  why the stock profile never came back. Gated on the link like every other management action —
+  the library lives on the controller (§7), so this is a request (`ProfileRestoreStock`, §9),
+  not a local write.
 - **About** — read-only: CYD `fwVer`, controller `fwVer` + caps, the `schemaHash`
   matched-pair fingerprint (§9), active **calibration** params + date (§6), board id.
   The place to verify a matched-pair after an OTA.

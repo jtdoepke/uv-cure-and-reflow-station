@@ -50,6 +50,7 @@ struct IMessageObserver {
   virtual void onProfileDup(const oven_ProfileDup &) {}
   virtual void onProfileRename(const oven_ProfileRename &) {}
   virtual void onProfileTouch(const oven_ProfileTouch &) {}
+  virtual void onProfileRestoreStock(const oven_ProfileRestoreStock &) {}
   virtual void onSettingsGetReq(const oven_SettingsGetReq &) {}
   virtual void onSettingsPut(const oven_SettingsPut &) {}
   virtual void onProfileList(const oven_ProfileList &) {}

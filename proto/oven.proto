@@ -306,6 +306,19 @@ message ProfileTouch {
   Mode mode = 2;
   string name = 3;
 }
+// Reinstall one mode's stock profiles from the CONTROLLER's own compiled-in table
+// (design.md §23 "Restore stock profiles", surfaced in Settings §24).
+//
+// Note what this message does NOT carry: any profile content. The CYD asks for a restore; the
+// controller decides what a stock profile is, from firmware it was built with. That asymmetry is
+// the whole safety argument — a peer can trigger the privileged write that ProfileStore::save()
+// and remove() refuse (§23 read-only), but can never choose what it writes, so it cannot use the
+// restore path to plant an unremovable profile. User profiles are left untouched, including one
+// that happens to hold a stock name.
+message ProfileRestoreStock {
+  uint32 seq = 1;
+  Mode mode = 2;
+}
 message SettingsGetReq {
   uint32 seq = 1;
 }

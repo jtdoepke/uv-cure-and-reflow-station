@@ -9,18 +9,50 @@
 #include <lvgl.h>
 #include "src/debugging/test/lv_test.h"
 
+#include "helpers/fake_clock.h"
+#include "helpers/fake_profile_storage.h"
 #include "helpers/fake_settings_storage.h"
+#include "helpers/pipe_transport.h"
+#include "management_client.h"
+#include "management_responder.h"
 #include "panel.h"
 #include "settings_screen.h"
 #include "settings_store.h"
+#include "stock_seed.h"
 #include "subjects.h"
 
-// Documented hub row order (settings_screen.cpp HubIndex). Enabled: 0,1,5,6.
-enum { ROW_DISPLAY = 0, ROW_TEMP = 1, ROW_ABOUT = 5, ROW_ADVANCED = 6 };
+// Documented hub row order (settings_screen.cpp HubIndex). Enabled: 0,1,4,5,6.
+enum { ROW_DISPLAY = 0, ROW_TEMP = 1, ROW_PROFILES = 4, ROW_ABOUT = 5, ROW_ADVANCED = 6 };
 
 static FakeSettingsStorage fs;
 static SettingsStore store(fs);
 static SettingsScreen screen;
+
+// --- the remote stack, for §24's Restore stock profiles (mirrors test_profile_library's rig) ---
+// A real ManagementResponder over real controller stores, so the restore is exercised end-to-end
+// rather than against a stub that could agree with a wrong client.
+static LoopbackPipe pipe;
+static FakeClock clk;
+static FakeProfileStorage cure_fs;
+static FakeProfileStorage reflow_fs;
+static control::ProfileStore cure_store(cure_fs, oven_Mode_MODE_CURE);
+static control::ProfileStore reflow_store(reflow_fs, oven_Mode_MODE_REFLOW);
+static protocol::MessageRouter ctrl_router;
+static protocol::FrameLink ctrl_link(pipe.b(), TF_SLAVE, ctrl_router);
+static ManagementResponder responder(ctrl_link, cure_store, reflow_store);
+static protocol::MessageRouter cyd_router;
+static protocol::FrameLink cyd_link(pipe.a(), TF_MASTER, cyd_router);
+static ManagementClient client(cyd_link, clk);
+
+// Pump both link directions until the screen's restore leaves Busy (or a bound is hit).
+static void settle() {
+  for (int i = 0; i < 12; ++i) {
+    ctrl_link.poll();
+    cyd_link.poll();
+    client.service();
+    screen.poll();
+  }
+}
 
 static bool exited;
 static void on_exit(void *) {
@@ -41,6 +73,12 @@ void setUp(void) {
   fs.saveCalls = 0;
   store.load(); // defaults
   exited = false;
+  cure_fs.entries.clear();
+  reflow_fs.entries.clear();
+  responder.reset(); // clear the dedup cache between tests
+  ctrl_router.setObserver(responder);
+  cyd_router.setObserver(client);
+  client.clear();
 }
 
 void tearDown(void) {
@@ -268,6 +306,68 @@ void test_no_sleep_panel_and_idle_timeout_lives_on_display(void) {
   TEST_ASSERT_EQUAL_STRING("Idle timeout", screen.listModel().item(3).label);
 }
 
+// --- §24 Restore stock profiles ---
+
+// Without a client the row stays disabled and unopenable: the library lives on the controller
+// (§7), so with no link to it there is nothing a restore could do. Same treatment as the
+// genuinely-unbuilt "soon" rows, which is honest — this one is unreachable for a different reason
+// but is equally not going to work.
+void test_profiles_row_needs_a_client(void) {
+  screen.begin(lv_screen_active(), store); // no client
+  TEST_ASSERT_FALSE(screen.listModel().item(ROW_PROFILES).enabled);
+  // Not "still Hub": the list model refuses to select a disabled row, so the highlight stays put
+  // and Open fires on whatever IS selected. What matters is that the panel is unreachable.
+  open_row(ROW_PROFILES);
+  TEST_ASSERT_NOT_EQUAL(static_cast<int>(SettingsPage::Profiles), static_cast<int>(screen.page()));
+}
+
+// With one, the row opens a real panel offering both modes separately (§7's libraries are
+// independent, so repairing cure has no business touching reflow).
+void test_profiles_panel_offers_both_modes(void) {
+  screen.begin(lv_screen_active(), store, &client);
+  TEST_ASSERT_TRUE(screen.listModel().item(ROW_PROFILES).enabled);
+  open_row(ROW_PROFILES);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Profiles), static_cast<int>(screen.page()));
+  TEST_ASSERT_EQUAL_INT(2, screen.listModel().count());
+  screen.back();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Hub), static_cast<int>(screen.page()));
+}
+
+// Open must not restore anything on its own — §23's confirm step is the guard, and a one-tap
+// rewrite of the library would be exactly the kind of thing that guard exists to prevent.
+void test_restore_requires_the_confirm(void) {
+  screen.begin(lv_screen_active(), store, &client);
+  open_row(ROW_PROFILES);
+  open_row(0); // "Restore cure stock" -> raises the confirm dialog, sends nothing
+  settle();
+  control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
+  TEST_ASSERT_EQUAL_UINT32(0, cure_store.list(rows, control::ProfileStore::kMaxListed));
+
+  screen.cancelRestore();
+  settle();
+  TEST_ASSERT_EQUAL_UINT32(0, cure_store.list(rows, control::ProfileStore::kMaxListed));
+}
+
+// The whole round trip: confirm -> request -> the real responder seeds from the compiled-in table
+// -> the panel reports it. Driven through the reflow store, which is the one the stock table has
+// an entry for.
+void test_restore_confirmed_repopulates_the_library(void) {
+  screen.begin(lv_screen_active(), store, &client);
+  open_row(ROW_PROFILES);
+  open_row(1); // "Restore reflow stock"
+  screen.confirmRestore();
+  settle();
+
+  control::ProfileStore::Summary rows[control::ProfileStore::kMaxListed];
+  const size_t n = reflow_store.list(rows, control::ProfileStore::kMaxListed);
+  TEST_ASSERT_TRUE(n > 0);
+  oven_Profile p = oven_Profile_init_zero;
+  TEST_ASSERT_TRUE(reflow_store.load(rows[0].name, p));
+  TEST_ASSERT_TRUE(p.stock);
+  // Still on the panel that issued it, with a verdict rather than a modal (§22 keeps that rare).
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsPage::Profiles), static_cast<int>(screen.page()));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_shows_hub);
@@ -284,5 +384,9 @@ int main(int, char **) {
   RUN_TEST(test_uv_cap_edit_commits_and_publishes);
   RUN_TEST(test_idle_timeout_edit_uses_stepper);
   RUN_TEST(test_no_sleep_panel_and_idle_timeout_lives_on_display);
+  RUN_TEST(test_profiles_row_needs_a_client);
+  RUN_TEST(test_profiles_panel_offers_both_modes);
+  RUN_TEST(test_restore_requires_the_confirm);
+  RUN_TEST(test_restore_confirmed_repopulates_the_library);
   return UNITY_END();
 }

@@ -37,6 +37,7 @@ public:
     Dup,
     Rename,
     Touch,
+    RestoreStock,
     SettingsGet,
     SettingsPut
   };
@@ -103,6 +104,16 @@ public:
     m.mode = mode;
     copyName(m.name, sizeof(m.name), name);
     return begin(Op::Touch, protocol::kTfTypeProfileTouch, oven_ProfileTouch_fields, &m);
+  }
+  // §24 "Restore stock profiles": ask the controller to reinstall one mode's factory set from its
+  // OWN compiled-in table. Deliberately carries no profile content — we trigger the write, the
+  // controller decides what it writes (see oven.proto). The verdict matters here, unlike Touch:
+  // a restore blocked by a user profile holding a stock name has to be reported.
+  bool requestRestoreStock(oven_Mode mode) {
+    oven_ProfileRestoreStock m = oven_ProfileRestoreStock_init_zero;
+    m.mode = mode;
+    return begin(Op::RestoreStock, protocol::kTfTypeProfileRestoreStock,
+                 oven_ProfileRestoreStock_fields, &m);
   }
   bool requestSettingsGet() {
     oven_SettingsGetReq m = oven_SettingsGetReq_init_zero;
