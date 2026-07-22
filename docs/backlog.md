@@ -796,7 +796,42 @@ existing `IClock`/`IHeaterSwitch` idiom:
   rewritten, because forcing `rampSeconds` to 0 switches that phase from a timed ramp to
   `RAMP_ASAP` and B1 lowers the two differently. Unreachable at realistic phase counts, but the
   reason **Resume is gated on the remainder compiling** rather than assumed. 19.7M runs clean.*
-- [ ] **B9** [B] — random-profile generator within safety bounds. deps: B1, B2. (§5, §20)
+- [x] **B9** [B] — characterization-run generator within safety bounds. deps: B1, B2. (§5, §20)
+  **DONE 2026-07-21 — reframed from "random-profile" to a PLANNED calibration sweep.** Scoping this
+  surfaced that §5/§20's DECIDED *random*-profile approach is the wrong tool for this plant:
+  thermal-plant system-ID practice (FOPDT step/decay tests → gain-schedule) wants **planned tests at
+  several operating points**, and a random *setpoint* profile run closed-loop lets the PID cancel the
+  excitation (§5 itself already conceded the open-loop-duty alternative gives "cleaner
+  identifiability"). Confirmed the direction with the user, then revised design.md §5/§7/§20/§10 and
+  built the planned generator instead. **The pivot cost no scope or risk** — the data is observable
+  through a *planned, closed-loop* sweep with no new actuator/segment type: an ASAP ramp saturates the
+  PID (→ `heatRate(T,fan)` over its bulk), each hold settles to `duty_ss(T,fan)`, every run's implicit
+  passive cool-down (recipe_compiler) logs `coolRate(T)`, and the wall-vs-workpiece lag gives
+  `{a,b,τ}(fan)`.
+  *New `lib/app_logic/calibration_sweep.h` (namespace `cal_sweep`, header-only, pure, **deterministic
+  — no RNG**, modeled on B6's `remainder.h`): `gridFor(Scope)` expands Quick/Standard/Thorough into a
+  `Grid` (setpoint bands + hold + cool-repeats, all §10-open placeholders); `runCount()` +
+  `generateRun(grid, i, caps, out)` emit run `i` as a plain-heat **REFLOW** `ProfileDraft` — a
+  fan-off then a fan-on staircase (ASAP-ramp+hold per band) followed by dedicated cool-only decays.
+  **Airtight-by-construction safety, identical posture to the compiler/remainder differential:** takes
+  `Caps` from the call site (never reaches into `oven_safety.h`), clamps every target into
+  `[caps.minC, caps.capC]` (dropping bands the cap forbids, refusing degenerate caps), emits no
+  `uv`/`motor` so content-derived mode is REFLOW (the higher cap), floors every hold `>0`, and stays
+  ≪ the 32-segment budget — so every emitted run compiles `hardValid` and the real `RecipeValidator`
+  accepts it.
+  Host-tested `test_calibration_sweep` (7 cases: every run of every scope uploadable; tight-cap drops
+  high bands; degenerate caps refused; runCount boundary; both fan states + ascending staircase;
+  cool-only runs; determinism) **plus `fuzz/fuzz_calibration_sweep.cpp`** — the fuzz_compiler/
+  fuzz_remainder differential over any scope × untrusted user cap (clamped to the reflow hard-max as
+  the real call site does): every generated run is `hardValid`, validator-accepted, and never exceeds
+  the content hard-max. 9.2M+ runs clean. **No runtime consumer yet** — the §20 wizard doesn't exist
+  (`NAV_CALIBRATE` is a dead-end, `src_cyd/main.cpp`), so B9 ships as a standalone logic utility, the
+  host-tested/wiring-deferred posture A5/A6/A4b took. **§10-open:** the grid numbers (bands, hold
+  time, cool repeats per scope) and whether to add the parked open-loop-duty **PRBS** refinement once
+  a first fit exists (§5). *(Adjacent design discussions the same session, not built here: the ESP32
+  MCU-internal die sensor is only a fail-safe-conservative secondary to §6's dedicated I²C bay sensor;
+  and PCB thermal mass need not enter reflow control — the measured-workpiece-TC loop is already
+  mass-invariant — so no per-run mass entry, favor adaptive ETA if projection accuracy is wanted.)*
 
 ## Wave 4 — Mains hardware + complete safety chain (§8 step 2; gated by D1)
 

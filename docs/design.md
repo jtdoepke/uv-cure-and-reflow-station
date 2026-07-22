@@ -398,7 +398,8 @@ the **controller stays a generic executor** — no fan policy in the safety MCU.
   heat-rate envelope modelled **with the convection fan on vs off** (`heatRate(T, conv_fan)`)
   — a standard part of `oven_cal.h`, so `Auto` decides against real fan-on-vs-off rates. The
   cool-rate envelope is fan-off only (passive cooling, no chamber cool fan — §6). The
-  characterization runs supply the data by randomizing per-phase fan state (below). See §6.
+  characterization runs supply the data by covering both fan states — the sweep runs each
+  staircase fan-off and fan-on (below). See §6.
 - **Pre-first-calibration fallback only:** before any calibration exists, `Auto` uses a
   simple heuristic — `conv_fan` on while heating — flagged like the idealized preview (§12).
   Once calibrated, the fan-conditioned envelopes govern.
@@ -427,25 +428,46 @@ the segment still carries plain seconds, and the controller stays generic.
   `beamCoverage` is an *effective, empirically-characterized* factor (part size/position
   dependent), not a clean geometric constant (§10).
 
-### Characterization / random-profile runs (DECIDED)
+### Characterization / calibration-sweep runs (DECIDED — revised 2026-07-21)
 
-For ML data collection, the CYD has a **random-profile generator**: it produces *n*
-random profiles of *m* random phases each and runs them back-to-back, logging
-everything (§7). Each generated phase randomizes values across **all** channels — a
-random heater setpoint, random per-phase on/off of `conv_fan` / `uv`,
-and a random duration. These are **ordinary profiles through the normal
+For the data behind `oven_cal.h`, the CYD has a **planned calibration-sweep
+generator** (`lib/app_logic/calibration_sweep.h`, B9): it expands a scope preset
+(§20) into a deterministic sequence of characterization runs and runs them
+back-to-back, logging everything (§7). Each run is a **staircase** — ASAP-ramp to a
+setpoint band, hold, ASAP-ramp to the next, hold, … — repeated **fan-off and
+fan-on**, plus dedicated **cool-only** runs (ramp to the top band, brief hold, then
+coast). Every run is an **ordinary plain-heat profile through the normal
 recipe/executor path** (closed-loop PID on the setpoint), just generated rather than
-hand-authored — no special actuator mode needed. `n`, `m`, and the per-channel
-ranges are parameters.
+hand-authored — **no special actuator mode needed**. The bands, hold time, and cool
+repeats per scope are parameters (§10-open).
 
-**Randomized *within* the safety envelope:** setpoints are clamped to the hard max
-and the controller's high-limit / interlock / heartbeat still govern — "random" is
-never unbounded.
+The sweep maps directly onto what the fit needs: an ASAP ramp saturates the PID to
+~full duty, so its **saturated bulk gives `heatRate(T, conv_fan)`**; the **hold at
+each band settles to `duty_ss(T, conv_fan)`**; every run ends with the implicit
+passive cool-down (below), and the cool-only runs add more, giving **`coolRate(T)`**;
+the **wall-vs-workpiece lag on every ramp/hold gives `{a,b,τ}(conv_fan)`**.
 
-*Optional future enhancement (not baseline):* an open-loop heater-**duty** channel
-mode would inject raw inputs the PID otherwise masks, giving cleaner plant
-identifiability for a data-driven estimator (§6). Add only if the random-profile
-data proves insufficient.
+**Why planned, not random (revised).** An earlier draft DECIDED a *random*-profile
+generator. Thermal-plant system-identification practice is decisively against that
+here: the oven is slow, dominantly **first-order-plus-dead-time**, and nonlinear in a
+**predictable, temperature-indexed** way (convective loss ∝ ΔT, radiative ∝ T⁴), so
+the standard method is **planned step/decay tests at several operating points**, then
+gain-schedule — which is exactly the fan × temperature-band grid above. Random
+*setpoint* profiles run closed-loop, so the PID cancels the excitation and shapes the
+plant input — poorly-conditioned data at higher oven-time cost.
+
+**Within the safety envelope:** targets are clamped to the per-mode cap and the
+controller's high-limit / interlock / heartbeat still govern; runs carry no
+`uv`/`motor`, so every one is accepted by the controller's `RecipeValidator` by
+construction (a differential fuzz harness proves it) — "generated" is never
+unbounded.
+
+*Optional future refinement (not baseline):* a **designed PRBS on the heater
+`duty`, open-loop** — the legitimate randomized method, band-limited excitation of
+the *actuator* (not random setpoints) — would inject raw inputs the PID otherwise
+masks, for cleaner identification of the fast/secondary dynamics an MPC or high-order
+model would need (§6). It requires an open-loop-duty command path the baseline
+deliberately avoids; add only if the closed-loop sweep data proves insufficient.
 
 ### Control loop (DECIDED): PI + feedforward + anti-windup
 
@@ -613,7 +635,7 @@ the HMI board itself.
       nonlinear), **gain-schedule** `{a,b,τ}` via a small temperature LUT — only if
       single-fit residuals are poor.
   - **Calibration workflow (DECIDED — offline fit, compiled into both):** log
-    wall-TCs + workpiece-TC + the random characterization runs to SD (§7); do the
+    wall-TCs + workpiece-TC + the calibration-sweep characterization runs to SD (§7); do the
     fit / ML **on a PC**; emit a **generated calibration file**
     (`lib/calibration/oven_cal.h` — fan-conditioned `{a,b,τ}(conv_fan)` +
     fan-conditioned heat/cool-rate envelopes + the feedforward duty model below +
@@ -653,8 +675,8 @@ the HMI board itself.
       different plants and bias every projection. Planning code switches parameter
       sets with each segment's **resolved** fan state (known at compile time, §5/§9).
       All standard parts of the `oven_cal.h` deliverable, not optional. The
-      characterization runs already supply the data by randomizing per-phase fan
-      state (§5). The heuristic (§5) is only the pre-first-calibration fallback,
+      characterization runs already supply the data by running each staircase both
+      fan-off and fan-on (§5). The heuristic (§5) is only the pre-first-calibration fallback,
       never the steady state.
   - **Known limitation (now planning-only):** the estimator is fit for one
     calibration board's thermal mass; very different boards lag differently and will
@@ -1012,8 +1034,8 @@ board-temp estimator arc (§6).
   file: run-id, profile, run mode, `schemaHash`, controller fwVer, active
   calibration params. A small **PC decoder** uses the same `.proto` → `duckdb` →
   CSV/Parquet.
-- **Scope (DECIDED):** **every real run**, **plus artificial random-profile
-  characterization runs** (§5 — *n*×*m* random profiles within safety bounds).
+- **Scope (DECIDED):** **every real run**, **plus the planned calibration-sweep
+  characterization runs** (§5 — the staircase + cool-only runs within safety bounds).
   `workTemp` (the permanent workpiece TC, §6) is logged like every channel;
   calibration runs attach it to the scrap calibration PCB (§20).
 - **One file per run**, named by run-id + profile.
@@ -1436,9 +1458,10 @@ starting that step; untagged detail inside an item inherits the tag.
   RTC/WiFi (run-relative + run-id may suffice); ring-buffer sizing — **measure
   the real card's worst-case write stall** against the 750 ms heartbeat budget
   (§7).
-- **Random-profile generator** *(§8 step 4)*: ranges/`n`/`m` defaults;
-  pure-random vs structured sampling (e.g. Latin-hypercube) for better coverage.
-  (§5)
+- **Calibration-sweep grid** *(§8 step 4)*: the per-scope setpoint **bands**, the
+  per-band **hold time** (long enough for `duty_ss` to settle), and the number of
+  **cool-only** runs; whether to add the open-loop-duty **PRBS** refinement (§5) once
+  a first fit exists. (§5, `calibration_sweep.h`)
 - **Fan `Auto` resolution (§5/§6)** *(§8 step 4)*: the exact decision rule
   (rate/target margins for turning each fan on). (Fan-conditioned envelopes +
   estimator are committed calibration deliverables — §6; the
@@ -2284,7 +2307,7 @@ get a **full-width button row** (three ~106×56 px buttons), not a cramped half-
 Produces the data behind `oven_cal.h`. **Honest framing:** because the fit/ML is
 **offline on the PC** and calibration is **compiled into both firmwares** (§6), this
 on-device flow **collects + logs data — it does not compute or apply the
-calibration.** It ends by handing off to the PC. It unifies the random-profile
+calibration.** It ends by handing off to the PC. It unifies the calibration-sweep
 characterization (§5), the workpiece TC in its reference role (§6), and SD
 logging (§7).
 
@@ -2308,13 +2331,15 @@ A step-wizard:
      credibly; characterizes nothing above it.
    - **Standard (~2 h, recommended):** full-range heating + a passive cool.
    - **Thorough (~3–4 h):** adds fuller passive-cool characterization (multiple cools).
-   Maps to the random-generator `n`/`m`/coverage (§5, exact values §10).
+   Maps to the calibration-sweep grid (bands / hold time / cool repeats) per scope
+   (§5, `calibration_sweep.h`; exact values §10).
 3. **Hazardous confirm** — press-and-hold (§19): it drives the oven across the **full
    temperature range** for a long time (needed to characterize the heat/cool-rate
    envelopes end to end), bounded by the safety envelope.
-4. **Run** — like Run/Monitor but for the sweep; projected-vs-actual is meaningless
-   for random profiles, so it shows **live wall TCs + workpiece(PCB) temp** (watch the
-   lag), run `k/N`, ETA, and a persistent **STOP**.
+4. **Run** — like Run/Monitor but for the sweep; a characterization run deliberately
+   pushes the plant to measure it, so projected-vs-actual is not the point — it shows
+   **live wall TCs + workpiece(PCB) temp** (watch the lag), run `k/N`, ETA, and a
+   persistent **STOP**.
    - **UV spin (optional step, cure calibration):** with the 405 nm photodiode
      coupon on the turntable (§6), a short UV-on spin logs intensity vs turntable
      angle → the measured `beamCoverage`. Skippable; until run, `beamCoverage`
