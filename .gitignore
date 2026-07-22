@@ -15,9 +15,17 @@ __pycache__/
 include/secrets.h
 
 # libFuzzer failure artifacts (make fuzz): dropped in the run dir, reproduce with
-# `.pio/build/fuzz_<name>/program <file>`. The committed corpus (fuzz/corpus/**) is NOT ignored.
+# `.pio/build/fuzz_<name>/program <file>`.
 crash-*
 timeout-*
 oom-*
 leak-*
 slow-unit-*
+
+# Fuzz corpus: commit only the curated seeds, which carry a '_' basename prefix
+# (seed_gen.cpp / fuzz/README.md). libFuzzer writes discoveries into the corpus dir as
+# bare SHA1 filenames when a harness is driven directly — ignore those. The two middle
+# lines re-include the harness subdirs so the seed negation can reach files inside them.
+fuzz/corpus/**
+!fuzz/corpus/**/
+!fuzz/corpus/**/_*

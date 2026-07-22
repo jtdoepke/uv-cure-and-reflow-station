@@ -3,7 +3,8 @@
 // Emits on-contract starting inputs for each harness by reusing the REAL encoder and
 // framer, so the corpus is valid wire traffic rather than hand-typed bytes. Run once
 // from the project root; commit fuzz/corpus/**. Re-run and re-commit if the seed set
-// or the input formats change.
+// or the input formats change. Every seed is written with a '_' basename prefix (see
+// writeFile) so .gitignore keeps the seeds and drops libFuzzer's SHA1-named discoveries.
 //
 //   .pio/build/fuzz_seedgen/program            # writes every fuzz/corpus/<harness>/ subdir
 //   .pio/build/fuzz_seedgen/program <basedir>  # override the corpus base dir
@@ -54,7 +55,10 @@ struct NullHandler : protocol::IFrameHandler {
   void onFrame(uint8_t, const uint8_t *, size_t) override {}
 };
 
-void writeFile(const fs::path &path, const std::vector<uint8_t> &bytes) {
+void writeFile(const fs::path &wanted, const std::vector<uint8_t> &bytes) {
+  // Every committed seed's basename is prefixed with '_' so .gitignore can keep the seeds
+  // while dropping libFuzzer's SHA1-named discoveries (see fuzz/README.md, .gitignore).
+  const fs::path path = wanted.parent_path() / ("_" + wanted.filename().string());
   std::FILE *f = std::fopen(path.string().c_str(), "wb");
   if (f == nullptr) {
     std::fprintf(stderr, "seed_gen: cannot write %s\n", path.string().c_str());

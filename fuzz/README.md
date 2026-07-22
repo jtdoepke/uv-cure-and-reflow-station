@@ -98,6 +98,15 @@ they are valid wire traffic; the compiler seeds are hand-packed in that harness'
 struct format (it fuzzes a producer, so there is no wire message to encode). Each input
 format is documented at the top of its harness and mirrored in `seed_gen.cpp`.
 
+**Every committed seed's filename is prefixed with `_`** (`_hello.bin`, `_idle_ticks`).
+That is what `.gitignore` keys on: it ignores everything under `fuzz/corpus/**` except the
+`_`-prefixed seeds, so libFuzzer discoveries — written as bare 40-char SHA1 filenames when
+a harness is driven directly (the "drive it directly" command above uses the corpus dir as
+its writable output) — never show up as untracked and never get committed by accident.
+`make fuzz` itself already keeps the corpus pristine (it writes to a scratch dir and passes
+the corpus read-only); the prefix guards the direct-invocation path. New hand-dropped seeds
+must carry the prefix too, or they won't be tracked.
+
 ## Add a fuzz target
 
 Fuzzing new code is mechanical — the run tooling auto-discovers harnesses, so you never
@@ -114,7 +123,7 @@ edit the Makefile or CI:
 2. **Add** `[env:fuzz_<name>]` to `platformio.ini`: `extends = fuzz_common` plus one
    `build_src_filter = -<*> +<../fuzz/fuzz_<name>.cpp>` line. That is the whole env.
 3. **Seed** `fuzz/corpus/<name>/` (extend `seed_gen.cpp`, or drop representative
-   inputs). Commit the seeds.
+   inputs). Prefix every seed filename with `_` so `.gitignore` tracks it; commit the seeds.
 4. **Run** `make fuzz FUZZ_TARGET=<name>`.
 
 **Which base to `extends`:** `fuzz_common` = nanopb + schema-hash + controller/protocol
