@@ -29,6 +29,7 @@
 #include "heater_actuator.h"
 #include "link_params.h"
 #include "message_router.h"
+#include "recipe_validator.h" // A7 upload-time recipe/start checks (§4/§9)
 #include "safety_supervisor.h"
 #include "schema.h"             // shared wire-contract identity (lib/protocol)
 #include "stub_thermocouples.h" // placeholder high-limit sensor until D4's TC adapter lands
@@ -57,15 +58,53 @@
 // of the controller's ample internal heap. Mirrors src_cyd/main.cpp's identical lesson.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
+static Esp32Clock g_clk;
+
+// --- Control core + temperature source (A5/A6/A10) ---
+// Declared BEFORE the link stack, ahead of the outputs the rest of this file orders itself around,
+// for one reason: A7's RecipeValidator reads both of them (a Start while RUNNING, and the reflow
+// workpiece-probe check), and ControllerLink takes its validator at CONSTRUCTION — there is no
+// setter to defer it to. So the sources come first, then the validator, then the link.
+#if defined(CONTROL_SIM)
+static ProfileExecutor g_exec(g_clk);
+static HeaterControl g_pid(g_clk);
+static SetpointShaper g_shaper(g_clk); // paces the PI's reference so ramps don't overcharge the
+                                       // element (§5) — see setpoint_shaper.h
+static OvenPlant g_plant;
+static SimThermocouples g_tc(g_plant);
+#else
+// High-limit input for the L3 over-temp / stuck-heater checks (§4). Stubbed (reports no
+// usable channel) until D4's real TC adapter; the L3 checks only run once a run is armed,
+// which rides in with D4. See stub_thermocouples.h.
+static StubThermocouples g_tc;
+#endif
+
+// A7's upload-time recipe/start checks (§4/§9) — range, the content-derived hard-max, the
+// mode/content cross-check, and the two Start guards.
+//
+// **This wiring is new (backlog: the A7 follow-up).** A7 shipped the validator host-tested and
+// nobody ever passed it here, so the controller ran ControllerLink's AcceptAllValidator: on real
+// hardware §4's layer-1 untrusted-CYD backstop was simply not executing, and any recipe the CYD
+// sent was Acked whatever its setpoints. A4b's SafetySupervisor still clamped and tripped on
+// MEASURED temperature, so this was a missing layer rather than no protection — but the layer is
+// the point, and an upload-time Nak tells the operator why where a runtime trip only alarms.
+//
+// The executor is only passed where one exists: without it the already-RUNNING guard is inert,
+// which is correct, since a build with no executor never runs anything to collide with.
+#if defined(CONTROL_SIM)
+static RecipeValidator g_validator(&g_tc, &g_exec);
+#else
+static RecipeValidator g_validator(&g_tc);
+#endif
+
 // --- Link stack (§9) ---
 // The MessageRouter is default-constructed and bound in setup(): FrameLink binds its handler at
 // construction, but ControllerLink needs the FrameLink in order to send, so the cycle is broken
 // with setObserver() (message_router.h). Forgetting that call drops every frame *silently*.
-static Esp32Clock g_clk;
 static Esp32SerialTransport g_link_uart(linkSerial());
 static protocol::MessageRouter g_router;
 static protocol::FrameLink g_link(g_link_uart, TF_SLAVE, g_router); // controller = TF_SLAVE
-static ControllerLink g_ctrl(g_link, g_clk);
+static ControllerLink g_ctrl(g_link, g_clk, &g_validator);
 
 // Telemetry back to the CYD (§9), emitted unconditionally from boot — run or no run. Beyond
 // feeding the live graph later, this stream is the CYD's *only* evidence we exist: its heartbeat
@@ -97,24 +136,13 @@ static Esp32HeaterSwitch g_heater_sw(kHeaterPin);
 static Esp32Contactor g_contactor(kContactorPin);
 static HeaterActuator g_heater(g_heater_sw, g_clk);
 
-#if defined(CONTROL_SIM)
-// The bench simulator's temperature source: the OvenPlant turns commanded outputs into
-// temperatures, and SimThermocouples feeds them back through the real IThermocouples port in place
-// of the stub. The executor (A6) + PID (A5) are the same units the production loop will run once
-// D4's real TC adapter lands — composed here by ControllerRunPath. NOT production; fabricates
-// readings, so never at a real oven.
-static ProfileExecutor g_exec(g_clk);
-static HeaterControl g_pid(g_clk);
-static SetpointShaper g_shaper(g_clk); // paces the PI's reference so ramps don't overcharge the
-                                       // element (§5) — see setpoint_shaper.h
-static OvenPlant g_plant;
-static SimThermocouples g_tc(g_plant);
-#else
-// High-limit input for the L3 over-temp / stuck-heater checks (§4). Stubbed (reports no
-// usable channel) until D4's real TC adapter; the L3 checks only run once a run is armed,
-// which rides in with D4. See stub_thermocouples.h.
-static StubThermocouples g_tc;
-#endif
+// The control core and the temperature source are declared much earlier in this file — see the
+// note there on why the validator forces that ordering. Under CONTROL_SIM the OvenPlant turns
+// commanded outputs into temperatures and SimThermocouples feeds them back through the real
+// IThermocouples port in place of the stub, so the executor (A6) + PID (A5) run exactly as the
+// production loop will once D4's TC adapter lands. NOT production; it fabricates readings, so
+// never at a real oven.
+//
 // Door sense (§4/§6/§15). Declared UNCONDITIONALLY — unlike the plant, this is production wiring:
 // a real GPIO reading the donor's DS3 dry contact, the same posture A8 took with the contactor. On
 // the bench a jumper to GND stands in for DS3. Nothing here gates power; the DS1 interlock does

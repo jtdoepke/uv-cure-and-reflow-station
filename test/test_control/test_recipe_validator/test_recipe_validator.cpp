@@ -5,8 +5,11 @@
 
 #include <cmath>
 
+#include "helpers/fake_clock.h"
+#include "helpers/fake_thermocouples.h"
 #include "oven.pb.h"
 #include "oven_safety.h"
+#include "profile_executor.h"
 #include "recipe_validator.h"
 
 // Build a one-segment recipe; callers tweak fields for the case under test.
@@ -217,6 +220,154 @@ void test_start_session_zero_out_of_range(void) {
   TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_OUT_OF_RANGE, reason);
 }
 
+// --- The two Start guards A7 deferred (both blockers landed with A6) ---
+
+// Accept a recipe and return a Start naming it, so the guard cases below reach past the
+// known-recipe / session-zero checks that precede them.
+static oven_Start acceptAndStart(RecipeValidator &v, const oven_Recipe &rec) {
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_TRUE(v.validateRecipe(rec, reason));
+  oven_Start s = oven_Start_init_default;
+  s.session = 7;
+  s.recipe_id = rec.id;
+  return s;
+}
+
+// A Start arriving while the executor is RUNNING is an illegal transition. A genuine retransmit
+// never reaches the validator (SetupResponder dedups on seq), so this is a second run request and
+// must not silently restart a live run under the operator.
+void test_start_while_running_is_illegal_transition(void) {
+  FakeClock clk;
+  ProfileExecutor exec(clk);
+  RecipeValidator v(nullptr, &exec);
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_CURE, 80.0F, /*uv=*/true, false);
+  rec.id = 5;
+  const oven_Start s = acceptAndStart(v, rec);
+
+  // IDLE: the ordinary path, accepted.
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_TRUE(v.validateStart(s, reason));
+
+  exec.load(rec, /*holdEntryGated=*/false);
+  exec.start();
+  TEST_ASSERT_EQUAL_INT(oven_RunState_RUN_STATE_RUNNING, exec.state());
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_ILLEGAL_TRANSITION, reason);
+}
+
+// ...and the guard releases the moment the run ends. This is the case that must not regress: §15's
+// cure resume, A11's orphan-end and §16's "Run again" all re-Start after the executor has gone
+// IDLE or DONE, and each would break if the guard latched on "a run happened".
+void test_start_accepted_again_once_run_ends(void) {
+  FakeClock clk;
+  ProfileExecutor exec(clk);
+  RecipeValidator v(nullptr, &exec);
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_CURE, 80.0F, /*uv=*/true, false);
+  rec.id = 6;
+  const oven_Start s = acceptAndStart(v, rec);
+
+  exec.load(rec, /*holdEntryGated=*/false);
+  exec.start();
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+
+  exec.abort(); // the door abort / A11 orphan-end / STOP path: back to IDLE
+  TEST_ASSERT_EQUAL_INT(oven_RunState_RUN_STATE_IDLE, exec.state());
+  TEST_ASSERT_TRUE(v.validateStart(s, reason));
+}
+
+// With no executor wired the guard is inert — a build that runs nothing has nothing to collide
+// with, and every existing construction site must keep behaving as it did.
+void test_no_executor_leaves_transition_guard_inert(void) {
+  RecipeValidator v; // neither source
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_REFLOW, 200.0F, false, false);
+  rec.id = 8;
+  const oven_Start s = acceptAndStart(v, rec);
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_TRUE(v.validateStart(s, reason));
+}
+
+// Reflow is CONTROLLED on the workpiece probe (§5), so a Start whose probe reads faulted is
+// refused: the run would track nothing. The CYD refuses the same Start in Confirm (§19) off the
+// shared predicate; this is the controller holding that line without trusting it.
+void test_reflow_start_faulted_probe_invalid(void) {
+  FakeThermocouples tc;
+  RecipeValidator v(&tc);
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_REFLOW, 200.0F, false, false);
+  rec.id = 9;
+  const oven_Start s = acceptAndStart(v, rec);
+
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_TRUE(v.validateStart(s, reason)); // a healthy 25 C probe is fine
+
+  tc.workpieceFault = true;
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_WORKPIECE_TC_INVALID, reason);
+}
+
+// The same guard over the shapes a broken probe actually presents: NaN, the open-circuit
+// out-of-band sentinel, and a reading running implausibly hotter than the chamber (dangling in
+// free air rather than clipped to the board — the one the plain band cannot catch).
+void test_reflow_start_implausible_probe_invalid(void) {
+  FakeThermocouples tc;
+  RecipeValidator v(&tc);
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_REFLOW, 200.0F, false, false);
+  rec.id = 10;
+  const oven_Start s = acceptAndStart(v, rec);
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+
+  tc.workpieceC = NAN;
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_WORKPIECE_TC_INVALID, reason);
+
+  tc.workpieceC = -300.0F; // open-circuit sentinel, well below the physical floor
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_WORKPIECE_TC_INVALID, reason);
+
+  tc.setAll(25.0F);
+  tc.workpieceC = 25.0F + oven_domain::kWorkpieceWallSlackC + 5.0F; // way above the walls
+  TEST_ASSERT_FALSE(v.validateStart(s, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_WORKPIECE_TC_INVALID, reason);
+
+  // A COLD workpiece in a warm chamber is the normal case, not a fault — the cross-check is
+  // deliberately one-sided.
+  tc.setAll(80.0F);
+  tc.workpieceC = 25.0F;
+  TEST_ASSERT_TRUE(v.validateStart(s, reason));
+}
+
+// Cure controls on the chamber wall, not the workpiece (§5), so a dead workpiece probe must not
+// block a cure run — the check keys off the recipe's CONTENT-derived mode, not its untrusted tag.
+void test_cure_start_unaffected_by_dead_probe(void) {
+  FakeThermocouples tc;
+  tc.workpieceFault = true;
+  RecipeValidator v(&tc);
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_CURE, 80.0F, /*uv=*/true, false);
+  rec.id = 11;
+  const oven_Start s = acceptAndStart(v, rec);
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_TRUE(v.validateStart(s, reason));
+
+  // And the tag cannot buy a pass: a recipe TAGGED cure but carrying plain heat derives REFLOW,
+  // so it is gated on the probe like any other reflow run.
+  oven_Recipe mislabelled = recipeWith(oven_Mode_MODE_CURE, 200.0F, false, false);
+  mislabelled.id = 12;
+  const oven_Start s2 = acceptAndStart(v, mislabelled);
+  TEST_ASSERT_FALSE(v.validateStart(s2, reason));
+  TEST_ASSERT_EQUAL_INT(oven_NakReason_NAK_WORKPIECE_TC_INVALID, reason);
+}
+
+// With no temperature source wired the probe check is skipped entirely — the posture that keeps
+// every bare `RecipeValidator v;` (the tests above, fuzz_pipeline.h) behaving as before.
+void test_no_tc_source_leaves_probe_guard_inert(void) {
+  RecipeValidator v;
+  oven_Recipe rec = recipeWith(oven_Mode_MODE_REFLOW, 200.0F, false, false);
+  rec.id = 13;
+  const oven_Start s = acceptAndStart(v, rec);
+  oven_NakReason reason = oven_NakReason_NAK_UNSPECIFIED;
+  TEST_ASSERT_TRUE(v.validateStart(s, reason));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_empty_recipe_out_of_range);
@@ -234,5 +385,12 @@ int main(int, char **) {
   RUN_TEST(test_start_requires_known_recipe);
   RUN_TEST(test_start_session_zero_out_of_range);
   RUN_TEST(test_rejected_recipe_not_remembered);
+  RUN_TEST(test_start_while_running_is_illegal_transition);
+  RUN_TEST(test_start_accepted_again_once_run_ends);
+  RUN_TEST(test_no_executor_leaves_transition_guard_inert);
+  RUN_TEST(test_reflow_start_faulted_probe_invalid);
+  RUN_TEST(test_reflow_start_implausible_probe_invalid);
+  RUN_TEST(test_cure_start_unaffected_by_dead_probe);
+  RUN_TEST(test_no_tc_source_leaves_probe_guard_inert);
   return UNITY_END();
 }

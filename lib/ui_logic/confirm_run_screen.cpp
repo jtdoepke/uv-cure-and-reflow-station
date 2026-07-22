@@ -9,6 +9,7 @@
 #include "profile_facts.h"
 #include "subjects.h"
 #include "theme.h"
+#include "workpiece_tc.h" // the shared §19/§9 workpiece-probe predicate (lib/calibration)
 
 using protocol::ReliableSender;
 
@@ -16,11 +17,10 @@ using protocol::ReliableSender;
 // feel broken. Shared with any future Resume arm (cure HOLD, a later PR).
 static constexpr uint32_t kArmHoldMs = 1500;
 
-namespace {
-constexpr float kMinPlausibleC = -10.0f; // below → an open/short probe, not a real reading
-constexpr float kMaxPlausibleC = 300.0f; // above → out of the oven's physical range
-constexpr float kWallSlackC = 30.0f;     // a real probe can't run this far above the chamber walls
-} // namespace
+// The band + wall-slack constants and the predicate itself now live in lib/calibration/
+// workpiece_tc.h: the controller NAKs a reflow Start on the SAME rule (A7,
+// NAK_WORKPIECE_TC_INVALID), and a private copy here would let the two drift into a Start this
+// screen offers and the controller then refuses.
 
 struct ConfirmThunks {
   static void back_evt(lv_event_t *e) {
@@ -81,26 +81,16 @@ void ConfirmRunScreen::setCommitHandler(void (*cb)(void *, const ProfileDraft &)
 // --- The TC precondition (pure) ---
 
 bool ConfirmRunScreen::tcAttached(const oven_Telemetry &t) {
-  const float w = t.work_temp;
-  if (!(w == w)) {
-    return false; // NaN → open/faulted probe
-  }
-  if (w < kMinPlausibleC || w > kMaxPlausibleC) {
-    return false; // open-circuit sentinel / out of physical range
-  }
-  float hottest = -1.0e30f;
+  // Telemetry carries no per-channel fault flag (the wire has one fault_code for the whole
+  // machine), so pass workFault=false and let the band + cross-check do the work — a faulted probe
+  // reaches us as NaN or an out-of-band value either way.
+  float hottest = oven_domain::kWallRefSeedC;
   const size_t n = t.wall_temp_count <= 4 ? t.wall_temp_count : 4;
   for (size_t i = 0; i < n; ++i) {
-    if (t.wall_temp[i] > hottest) {
-      hottest = t.wall_temp[i];
-    }
+    hottest = oven_domain::foldWallRef(hottest, t.wall_temp[i]);
   }
-  // A real probe can read cooler than the walls (a cold workpiece in a warm chamber), but not
-  // implausibly hotter — that is a dangling/miswired probe, not the load.
-  if (n > 0 && w > hottest + kWallSlackC) {
-    return false;
-  }
-  return true;
+  return oven_domain::workpieceTcPlausible(t.work_temp, /*workFault=*/false,
+                                           /*haveWallRef=*/n > 0, hottest);
 }
 
 // --- Readiness ---

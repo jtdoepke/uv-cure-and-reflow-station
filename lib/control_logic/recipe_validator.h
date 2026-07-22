@@ -16,27 +16,53 @@
 //     tighten the whole run to the cure ceiling regardless of the tag.
 // validateStart requires the referenced recipe to be the one most recently
 // accepted (NAK_UNKNOWN_RECIPE) — a stateless "the controller only starts what it
-// just validated" check.
+// just validated" check, plus the two guards below.
 //
-// Deferred to their owners (would need ports/state A7 doesn't have): the
-// workpiece-TC plausibility check on a reflow Start (NAK_WORKPIECE_TC_INVALID,
-// needs the temp-input port — A6/D4) and the already-running guard
-// (NAK_ILLEGAL_TRANSITION, needs run state — A6). Runtime measured-temp trips are
-// A4b, a separate layer from this upload-time validation.
+// The two Start guards A7 deferred, landed once their blockers did (A6 shipped both
+// the run state and the temp-input port). Both exist because the CYD already refuses
+// these in ConfirmRunScreen (§19) and §4/§9 require the controller to hold the same
+// line without trusting it:
+//   - NAK_ILLEGAL_TRANSITION: a Start while a run is already RUNNING. A genuine
+//     retransmit never reaches here (SetupResponder dedups on seq), so a Start with a
+//     fresh seq mid-run is a second run request. Read straight off the ProfileExecutor
+//     rather than pushed in per-loop: the executor already IS the authority on run
+//     state, and a cached flag could be a tick stale at exactly the moment this
+//     decides. Optional, like the probe source below.
+//   - NAK_WORKPIECE_TC_INVALID: a REFLOW-content Start whose workpiece probe is not
+//     attached and reading like the load. Reflow is *controlled* on that channel, so
+//     a dangling probe makes the whole run a lie. The predicate is shared with the
+//     CYD's arm gate (oven_domain::workpieceTcPlausible, lib/calibration/
+//     workpiece_tc.h) — a private copy here would drift into a Start the CYD offers
+//     and this then refuses. Optional: with no IThermocouples wired the check is
+//     skipped, which is what keeps the existing construction sites and the fuzz
+//     harness unchanged.
+// Note the layering: these are UPLOAD-time checks on the accept path. Runtime
+// measured-temp trips are A4b's SafetySupervisor, and they cut outputs rather than
+// Nak a frame.
 //
-// Header-only, DI-free, no Arduino: unit-testable in native_control.
+// Header-only, no Arduino: unit-testable in native_control.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
 
+#include "IThermocouples.h"
 #include "codec.h"
 #include "oven.pb.h"
 #include "oven_safety.h"
+#include "profile_executor.h"
 #include "setup_responder.h"
+#include "workpiece_tc.h"
 
 class RecipeValidator : public protocol::ISetupValidator {
 public:
+  // Both sources are optional and borrowed, and each disables only its own guard when null — so
+  // every existing construction site (the many bare `RecipeValidator v;` in tests, fuzz_pipeline.h,
+  // a controller build with no temp adapter) keeps its previous behaviour. Both must outlive this.
+  explicit RecipeValidator(const IThermocouples *tc = nullptr,
+                           const ProfileExecutor *exec = nullptr)
+      : tc_(tc), exec_(exec) {}
+
   bool validateRecipe(const oven_Recipe &recipe, oven_NakReason &reason) override {
     if (recipe.segments_count == 0) {
       reason = oven_NakReason_NAK_OUT_OF_RANGE;
@@ -82,6 +108,10 @@ public:
     }
 
     last_accepted_id_ = recipe.id;
+    // Cache the CONTENT-derived mode alongside the id, so validateStart's probe check need not
+    // re-derive it — and, more to the point, so it keys off the same verdict the cap above was
+    // chosen from rather than off the untrusted `mode` tag.
+    last_accepted_reflow_ = oven_safety::deriveMode(recipe) == oven_Mode_MODE_REFLOW;
     have_accepted_ = true;
     return true;
   }
@@ -99,10 +129,44 @@ public:
       reason = oven_NakReason_NAK_UNKNOWN_RECIPE;
       return false;
     }
+    // A run is already executing. The CYD cannot reach this on any sanctioned path — §15's cure
+    // resume, A11's orphan-end and §16's "Run again" all leave the executor IDLE or DONE before
+    // re-Starting — so a Start arriving here is a stray, a duplicate that outlived the seq dedup,
+    // or a CYD that has lost track of the machine. Refuse it rather than silently restarting a
+    // live run under the operator (§9).
+    if (exec_ != nullptr && exec_->state() == oven_RunState_RUN_STATE_RUNNING) {
+      reason = oven_NakReason_NAK_ILLEGAL_TRANSITION;
+      return false;
+    }
+    if (last_accepted_reflow_ && !workpieceProbeUsable()) {
+      reason = oven_NakReason_NAK_WORKPIECE_TC_INVALID;
+      return false;
+    }
     return true;
   }
 
 private:
+  // Reflow's control sensor is the workpiece probe (§5), so a run started on a probe that is not
+  // on the load tracks nothing. Skipped entirely when no IThermocouples is wired.
+  bool workpieceProbeUsable() const {
+    if (tc_ == nullptr) {
+      return true;
+    }
+    const TcReading w = tc_->workpiece();
+    const int n = tc_->wallCount();
+    float hottest = oven_domain::kWallRefSeedC;
+    for (int i = 0; i < n; ++i) {
+      const TcReading r = tc_->wall(i);
+      if (!r.fault) {
+        hottest = oven_domain::foldWallRef(hottest, r.celsius);
+      }
+    }
+    return oven_domain::workpieceTcPlausible(w.celsius, w.fault, /*haveWallRef=*/n > 0, hottest);
+  }
+
+  const IThermocouples *tc_ = nullptr;
+  const ProfileExecutor *exec_ = nullptr;
   bool have_accepted_ = false;
+  bool last_accepted_reflow_ = false;
   uint32_t last_accepted_id_ = 0;
 };
