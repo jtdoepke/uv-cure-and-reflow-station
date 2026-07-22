@@ -101,10 +101,13 @@ existing `IClock`/`IHeaterSwitch` idiom:
   input), the controller has no use for it, and its thresholds are hand-authored TBD §10
   constants D6's emitter must never clobber.
   Unblocks **C8**'s Fault overlay + Run Summary. All thresholds are unmeasured placeholders —
-  §10 "Deviation/drift thresholds" (§8 step 4) owns them. Two items want a human pass: the
-  split advisory strings (§16 gives one paragraph for both causes and says the advisory now
-  "picks its wording accordingly" without supplying the two texts), and whether the CYD-side
-  link timeout belongs here or with C7/B6's link owner.*
+  §10 "Deviation/drift thresholds" (§8 step 4) owns them. Two items wanted a human pass; both are
+  now settled. The **link-timeout ownership** question was answered by **A9**: `kLinkTimeoutMs`
+  (1000 ms) is *liveness* — "is the controller still there" — while `FaultController::
+  linkTimeoutMs` (2000 ms) is the separate, deliberately more patient question of when a run-scoped
+  silence earns §22's red modal. Two numbers answering two questions, not one number in the wrong
+  place. The **split advisory strings** have a revision drafted and awaiting review — see **S3** in
+  the deferred-follow-ups sweep below.*
 - [x] **C1** [C] — `NumericEntry` logic + keypad widget. deps: none. (§26)
   *Host-tested `NumericEntry` state machine (`lib/app_logic`) + on-screen keypad widget &
   view-model (`lib/ui_logic/numeric_keypad*`) with commit/cancel/clamp seams shared with C2/C8.
@@ -145,6 +148,30 @@ existing `IClock`/`IHeaterSwitch` idiom:
   port) and `NAK_ILLEGAL_TRANSITION` (needs A6's run state). Two §10 opens still bear on it — the
   UV/cure absolute ceiling (`CURE_HARD_MAX_C` is a TBD placeholder, gating §8 step 3) and D1's
   fan-motor decision, which fixes the `Segment` fan field's domain.*
+  ***COMPLETED 2026-07-21 by the deferred-follow-ups sweep, which also found that A7 was never
+  actually running.*** *`RecipeValidator` was host-tested and never passed to `ControllerLink`, so
+  the controller firmware ran the `AcceptAllValidator` default: on real hardware §4's layer-1
+  untrusted-CYD backstop was not executing at all, and any recipe the CYD sent was Acked whatever
+  its setpoints. (A4b's supervisor still clamped and tripped on **measured** temperature, so this
+  was a missing layer rather than no protection — but the layer is the point, and an upload-time
+  Nak tells the operator why where a runtime trip only alarms.) Wiring it forced a reordering of
+  `src_control/main.cpp`: `ControllerLink` takes its validator at construction with no setter, and
+  the validator reads the executor + temp source, so both now precede the link stack.
+  Both deferred NAK reasons landed with it — their blockers arrived with **A6** — and each mirrors a
+  gate the CYD already applies in Confirm (§19), which §4/§9 require the controller to hold without
+  trusting: `NAK_ILLEGAL_TRANSITION` (a Start while the executor is RUNNING, read off
+  `ProfileExecutor` rather than pushed per-loop, since a cached flag could be a tick stale exactly
+  when it decides) and `NAK_WORKPIECE_TC_INVALID` (a REFLOW-**content** Start whose probe is not
+  attached and reading like the load). The plausibility predicate moved into a shared
+  `lib/calibration/workpiece_tc.h` — the `touch_safe.h` treatment — because two copies would drift
+  into a Start the CYD offers and the controller then refuses, a dead button with no explanation.
+  **Behaviour change:** production `esp32dev_control` runs `StubThermocouples` (every channel
+  faulted) until **D4**, so it now refuses every reflow Start. Fail-closed and correct — the stub's
+  own comment notes a run armed against it would trip `SENSOR_FAULT` immediately — but visible. The
+  sim build supplies readings, so the bench is unaffected. Both guards are inert when their source
+  is null, which keeps every bare `RecipeValidator v;` behaving as before. `fuzz_validator` now
+  drives an adversarial `FakeThermocouples` + a live executor off the same input bytes (11.1M runs
+  clean).*
 - [ ] **D1** [D] — §10 teardown verifications (one investigation task): fan motor
   type, cooling-fan existence, SMPS reuse, humidity-sensor interface, relay board.
   deps: hardware access. *Gates the `Recipe` schema details, the drivers, and all
@@ -540,7 +567,11 @@ existing `IClock`/`IHeaterSwitch` idiom:
   default is SPIFFS, which would not mount). **Verified end-to-end on the 3.5" board** (flash +
   `uploadfs` demo fixtures `data/profiles/` → boot reports `[profiles] cure=1 reflow=2`; chooser →
   list → detail curve render on glass, stock gating on the seeded stock profile).
-  **Deferred**: the **recently-used sort** (no usage clock — `list()` stays alphabetical), and the
+  **Deferred**: ~~the **recently-used sort** (no usage clock — `list()` stays alphabetical)~~
+  *(landed with **C6 PR1**: the controller stamps a monotonic `oven_Profile.use_seq` and sorts the
+  reply per the request's `ProfileSort`, so the CYD renders the order it receives and carries no
+  recency key of its own — the missing "usage clock" turned out to be a sequence counter, which is
+  the right answer on a board with no RTC)*, and the
   **stock-seed *feature*** — a reviewable seed source (JSON→generator), §24 "Restore stock profiles",
   and the marking semantics (needs a seed-source decision; the `uploadfs` mechanism + demo fixtures
   above are in place, but the feature itself is future work) — a fresh flash otherwise shows the §23
@@ -627,7 +658,7 @@ existing `IClock`/`IHeaterSwitch` idiom:
   temperature onto the chart's first point, feeding a bogus residual into the §16 stats, and
   skewing the phase model enough that the remainder re-ran an already-finished phase. Only RUNNING
   frames reach the tracker now; the DONE/FAULT paths were equally affected.*
-- [ ] **Bench-found follow-ups** (C6/C7 validation on the two-devkit bench against the A10 sim,
+- [x] **Bench-found follow-ups** (C6/C7 validation on the two-devkit bench against the A10 sim,
   2026-07-19; a full cure ran ramp→hold→cool→"Run complete" end-to-end):
   - [x] ~~**ASAP ramp starting above target faulted TARGET_UNREACHABLE** (§5/§15).~~ *Bench-found
     2026-07-19 on the cure resume, fixed same day. `ProfileExecutor::reached()` used a SYMMETRIC
@@ -901,6 +932,16 @@ design.md §2/§7/§9/§11/§21/§25/§27. Ordered; each ~one PR.
   `tools/gen_profiles.cpp`; `ProfileResponder`/`SettingsResponder` into `ControllerLink`.
   Move `fuzz_profile_store` to the control context; add `fuzz_profile_wire` (controller
   parsing untrusted management frames — it is the safety MCU). deps: R1. (§7/§11/§23)
+  ***Fuzz correction 2026-07-21 (the deferred-follow-ups sweep):*** *the `fuzz_profile_store` move
+  above did **not** happen — it kept fuzzing the CYD's `lib/app_logic/profile_store.h`, which R3
+  then deleted, so for four days the harness covered a store no board runs while
+  `control::ProfileStore` had no dedicated coverage. Retargeted now. The wire half of R2's intent
+  was already met without a `fuzz_profile_wire` env: `fuzz_frontdoor`/`fuzz_decode` drive raw bytes
+  through `fuzz_pipeline.h`'s `ManagementResponder` → store, so a `ProfilePut` is covered end-to-end.
+  What genuinely had nothing was the **raw flash-blob** path — reachable via §7's no-reflash push,
+  and via `LittleFS.begin(formatOnFail)` leaving a half-written blob after a reset. The differential
+  also got stronger in the move: a loaded profile now decodes through the real `phase_codec` before
+  `compileRecipe`, which is the actual CYD path since R3, so the property spans the wire types.*
 - [x] **R3** [B/C] — **CYD remote client.** `phase_codec` (`Phase↔oven_Phase`);
   `ProfileClient`/`SettingsClient` (`lib/app_logic`) over the request/reply path; rewire
   `ProfileLibraryViewModel`, `ProfileEditorScreen`, `SettingsScreen` to async with
@@ -912,3 +953,44 @@ design.md §2/§7/§9/§11/§21/§25/§27. Ordered; each ~one PR.
   measured menu) and optionally restore the 80 kB LVGL pool — each **clean-build verified**
   (`pio run -t clean`). Re-measure with `make perf` + the on-glass perf probe. deps: R3.
   (§6a)
+
+## Deferred follow-ups sweep (2026-07-21)
+
+Not a wave — a pass over the "deferred, land with its consumer" notes that had accumulated
+across A7, B7, C4, C8 and Wave R, once every item through Wave 3 + Wave R was done and the
+only remaining `[ ]` work was **D1**'s teardown, the hardware chain behind it, and **B8·1**.
+Two of the notes turned out to be masking real gaps rather than housekeeping.
+
+- [x] **S1** [A] — **A7's validator was never wired, and its two Start guards.** The find:
+  `RecipeValidator` was host-tested from the day it shipped and never passed to
+  `ControllerLink`, so the controller ran the accept-all default and §4 layer 1 was not
+  executing on hardware. Wired, plus `NAK_ILLEGAL_TRANSITION` + `NAK_WORKPIECE_TC_INVALID`
+  and a shared `lib/calibration/workpiece_tc.h`. Full note under **A7** above.
+- [x] **S2** [A] — **`fuzz_profile_store` retargeted** at `control::ProfileStore`, covering
+  the raw flash-blob path nothing tested, and the Wave R3 dead code deleted with it
+  (`lib/app_logic/profile_store.h`, the two orphaned `src_cyd/` adapters, the suite that
+  tested the dead store, `filesystem=littlefs` on both CYD envs). Full note under **R2**.
+- [ ] **S3** [C] — **§16's split drift-advisory strings.** B7 shipped them as drafts explicitly
+  wanting a human pass, and copy is the one thing in this sweep that is not the machine's to
+  decide. A revision is drafted and awaiting review; the wording is asserted verbatim in
+  `test_run_fit`, so approving it updates those assertions too. Full note under **B7**.
+- [x] **S4** — **backlog hygiene**: the completed bench-found follow-ups marked done, and the
+  deferred notes later work had quietly resolved retired in place (C4's recently-used sort →
+  C6 PR1's controller-owned `use_seq`; B7's link-timeout ownership → A9's two deliberately
+  different windows).
+- [ ] **S5** [A/C] — **stock-profile seed + §24 "Restore stock profiles"** (§7/§23/§24).
+  §23 promises the factory references "can't be lost" and only half-delivers: delete is
+  refused, but the sole source is a separate `uploadfs` command, and the controller mounts
+  `LittleFS.begin(formatOnFail=true)` — so a corrupt filesystem silently reformats the whole
+  library away with no field recovery, and a plain `-t upload` leaves the §23 empty state.
+  Two halves: **(a)** extend `tools/gen_profiles.cpp` to also emit a committed
+  `stock_profiles.h` of encoded blobs compiled into the controller (234 bytes today, `const`
+  → flash `.rodata`, not the tight DRAM), seeded if-missing at boot — idempotent, and it
+  makes `uploadfs` optional; **(b)** a `ProfileRestoreStock` request (new frame id, so the
+  schema hash moves → matched-pair reflash + corpus reseed) driving the greyed-out
+  `HUB_PROFILES` Settings row, per mode, behind the simple `confirm_dialog` (restoring
+  energizes nothing, so **not** §19's press-and-hold). `ProfileStore` needs a privileged
+  `seedStock()` since `save()`/`remove()` correctly refuse stock — reachable only from the
+  firmware's own compiled table, never from the wire: the CYD may *ask* for a restore but can
+  never *supply* what gets written. A user profile holding a stock name is skipped, not
+  clobbered.
